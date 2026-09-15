@@ -23,8 +23,11 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
         "shadow": false,
         "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
         "focus": false,
         "visible": false
       },
@@ -39,8 +42,11 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
         "shadow": false,
         "visibleOnAllWorkspaces": true,
+        "acceptFirstMouse": true,
         "focus": false,
         "visible": false
       },
@@ -61,15 +67,18 @@
     },
     "trayIcon": {
       "id": "main",
-      "iconPath": "icons/32x32.png",
+      "iconPath": "icons/tray.png",
       "iconAsTemplate": true,
       "tooltip": "AI Usage Sidebar"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["deb", "rpm", "appimage", "dmg", "app", "nsis", "msi"],
     "category": "DeveloperTool",
+    "publisher": "Harvey Xia",
+    "homepage": "https://github.com/harveyxiacn/AI-usage-monitor-sidebar",
+    "copyright": "Copyright © 2026 Harvey Xia. MIT licensed.",
     "shortDescription": "Claude Code / Codex quota sidebar",
     "longDescription": "An always-on-top edge sidebar showing Claude Code and OpenAI Codex rate-limit quotas, with token usage history.",
     "icon": [
@@ -78,6 +87,23 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libayatana-appindicator3-1"],
+        "desktopTemplate": "main.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "main.desktop"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

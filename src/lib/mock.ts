@@ -1,8 +1,34 @@
 // Browser mock of the Rust backend for `pnpm dev` without Tauri. [FRONTEND owns]
-import type { AppSnapshot, Settings } from './types';
+//
+// Everything here is deterministic (seeded LCG) so the dashboard charts look
+// the same on every reload and screenshots are comparable. The mock implements
+// the *semantics* of the real commands (bucketing, filtering, grouping, cost
+// estimation) so the UI code is exercised exactly as it would be in Tauri.
+import type {
+  AppInfo,
+  AppSnapshot,
+  Bucket,
+  HistoryQuery,
+  HistoryResult,
+  HistoryRow,
+  IngestStats,
+  MonitorInfo,
+  PricingEntry,
+  PricingTable,
+  ProviderId,
+  ProviderInfo,
+  QuotaHistoryQuery,
+  QuotaSample,
+  Settings,
+  TokenTotals,
+} from './types';
 
 const now = Date.now();
 const iso = (ms: number) => new Date(ms).toISOString();
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+// --------------------------------------------------------------- snapshot ---
 
 export const mockSnapshot: AppSnapshot = {
   generatedAt: iso(now),
@@ -13,15 +39,16 @@ export const mockSnapshot: AppSnapshot = {
       plan: 'max',
       planLabel: 'Claude Max 5x',
       account: { email: 'you@example.com', name: 'You' },
-      fetchedAt: iso(now),
+      fetchedAt: iso(now - 12_000),
       source: 'api',
       status: 'ok',
       error: null,
       credits: null,
       windows: [
         { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true },
-        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 7, resetsAt: iso(now + 3 * 86_400_000), scope: null, isPrimary: false },
-        { kind: 'seven_day', label: 'Weekly · Fable', windowSeconds: 604800, usedPercent: 24, resetsAt: iso(now + 3 * 86_400_000), scope: 'Fable', isPrimary: false },
+        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false },
+        { kind: 'seven_day', label: 'Weekly · Fable', windowSeconds: 604800, usedPercent: 24, resetsAt: iso(now + 3 * DAY), scope: 'Fable', isPrimary: false },
+        { kind: 'seven_day', label: 'Weekly · Opus', windowSeconds: 604800, usedPercent: 62, resetsAt: iso(now + 3 * DAY), scope: 'Opus', isPrimary: false },
       ],
     },
     {
@@ -30,14 +57,16 @@ export const mockSnapshot: AppSnapshot = {
       plan: 'plus',
       planLabel: 'ChatGPT Plus',
       account: { email: 'you@example.com', name: null },
-      fetchedAt: iso(now),
+      fetchedAt: iso(now - 12_000),
       source: 'api',
       status: 'ok',
       error: null,
       credits: { hasCredits: false, unlimited: false, balance: '0' },
       windows: [
-        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * 3600_000), scope: null, isPrimary: true },
-        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * 86_400_000), scope: null, isPrimary: false },
+        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true },
+        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false },
+        { kind: 'other', label: 'GPT-5.3-Codex-Spark · 5-hour', windowSeconds: 18000, usedPercent: 4, resetsAt: iso(now + 4 * HOUR), scope: 'GPT-5.3-Codex-Spark', isPrimary: false },
+        { kind: 'other', label: 'GPT-5.3-Codex-Spark · weekly', windowSeconds: 604800, usedPercent: 12, resetsAt: iso(now + 5 * DAY), scope: 'GPT-5.3-Codex-Spark', isPrimary: false },
       ],
     },
   ],
@@ -47,6 +76,7 @@ export const mockSettings: Settings = {
   version: 1,
   language: 'auto',
   theme: 'dark',
+  surfaceStyle: 'glass',
   edge: 'right',
   verticalAlign: 'center',
   verticalOffset: 0,
@@ -54,7 +84,8 @@ export const mockSettings: Settings = {
   autoHide: false,
   autoHideDelayMs: 800,
   collapsedWidth: 6,
-  ringMode: 'primary',
+  ringMode: 'concentric',
+  showScopedRing: true,
   percentMode: 'used',
   showPercentLabel: true,
   refreshIntervalSec: 60,
@@ -68,7 +99,283 @@ export const mockSettings: Settings = {
   alwaysOnTop: true,
 };
 
+export const mockProviders: ProviderInfo[] = [
+  {
+    id: 'claude',
+    displayName: 'Claude',
+    loggedIn: true,
+    credentialPath: '~/.claude/.credentials.json',
+    logPath: '~/.claude/projects/**/*.jsonl',
+    planLabel: 'Claude Max 5x',
+  },
+  {
+    id: 'codex',
+    displayName: 'Codex',
+    loggedIn: true,
+    credentialPath: '~/.codex/auth.json',
+    logPath: '~/.codex/sessions/**/*.jsonl',
+    planLabel: 'ChatGPT Plus',
+  },
+];
+
+export const mockMonitors: MonitorInfo[] = [
+  { name: 'DP-1', x: 0, y: 0, width: 3840, height: 2160, scaleFactor: 1.5, isPrimary: true },
+  { name: 'HDMI-A-1', x: 3840, y: 240, width: 1920, height: 1080, scaleFactor: 1, isPrimary: false },
+];
+
+const PRICING: PricingEntry[] = [
+  { modelPattern: 'claude-opus-5', inputPerM: 5, outputPerM: 25, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-sonnet-4', inputPerM: 3, outputPerM: 15, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
+  { modelPattern: 'claude-haiku-4', inputPerM: 0.8, outputPerM: 4, cacheWritePerM: 1, cacheReadPerM: 0.08 },
+  { modelPattern: 'gpt-5.3-codex', inputPerM: 1.25, outputPerM: 10, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.3-codex-spark', inputPerM: 0.25, outputPerM: 2, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
+  { modelPattern: 'o4-mini', inputPerM: 1.1, outputPerM: 4.4, cacheWritePerM: 1.1, cacheReadPerM: 0.275 },
+];
+
+let pricing: PricingTable = { entries: structuredClone(PRICING), updatedAt: iso(now - 9 * DAY) };
+
+export const mockAppInfo: AppInfo = {
+  version: '0.1.0-mock',
+  dataDir: '~/.local/share/ai-usage-sidebar',
+  configDir: '~/.config/ai-usage-sidebar',
+  platform: 'linux',
+  backend: 'browser',
+};
+
+// ------------------------------------------------------------ fake events ---
+
+interface MockEvent {
+  ts: number;
+  provider: ProviderId;
+  model: string;
+  inputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  requests: number;
+}
+
+const MODELS: Record<ProviderId, string[]> = {
+  claude: ['claude-opus-5-20260514', 'claude-sonnet-4-6-20260219', 'claude-haiku-4-5-20251001'],
+  codex: ['gpt-5.3-codex', 'gpt-5.3-codex-spark'],
+};
+
+/** Deterministic 32-bit LCG so every reload produces the same chart. */
+function lcg(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 0x1_0000_0000;
+  };
+}
+
+/** 90 days of synthetic sessions — enough for the 90d preset and hour buckets. */
+const events: MockEvent[] = (() => {
+  const rnd = lcg(0xc0ffee);
+  const out: MockEvent[] = [];
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  for (let dayBack = 89; dayBack >= 0; dayBack -= 1) {
+    const dayStart = startOfToday.getTime() - dayBack * DAY;
+    const weekday = new Date(dayStart).getDay();
+    // weekends are quiet; a slow upward trend over the 90 days
+    const dayWeight = (weekday === 0 || weekday === 6 ? 0.35 : 1) * (0.55 + (89 - dayBack) / 120);
+
+    for (const provider of ['claude', 'codex'] as ProviderId[]) {
+      // Codex is used roughly half as much as Claude in this fake dataset
+      const providerWeight = provider === 'claude' ? 1 : 0.55;
+      const models = MODELS[provider];
+      for (let m = 0; m < models.length; m += 1) {
+        // the flagship model dominates, the small model is a long tail
+        const modelWeight = [1, 0.45, 0.18][m] ?? 0.1;
+        for (let hour = 8; hour <= 23; hour += 1) {
+          // working-hours bell curve
+          const hourWeight = Math.max(0, 1 - Math.abs(hour - 15) / 9);
+          const p = 0.55 * dayWeight * providerWeight * modelWeight * hourWeight;
+          if (rnd() > p) continue;
+
+          const requests = 1 + Math.floor(rnd() * 12 * dayWeight);
+          const scale = 900 + rnd() * 5200;
+          const input = Math.round(requests * scale * (0.25 + rnd() * 0.4));
+          const cacheRead = Math.round(requests * scale * (2 + rnd() * 6));
+          const cacheWrite = Math.round(requests * scale * (0.15 + rnd() * 0.5));
+          const output = Math.round(requests * scale * (0.1 + rnd() * 0.35));
+          const reasoning = provider === 'codex' ? Math.round(output * (0.2 + rnd() * 0.8)) : Math.round(output * rnd() * 0.3);
+          out.push({
+            ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
+            provider,
+            model: models[m],
+            inputTokens: input,
+            cacheWriteTokens: cacheWrite,
+            cacheReadTokens: cacheRead,
+            outputTokens: output,
+            reasoningTokens: reasoning,
+            requests,
+          });
+        }
+      }
+    }
+  }
+  return out.sort((a, b) => a.ts - b.ts);
+})();
+
+// ---------------------------------------------------------------- helpers ---
+
+function emptyTotals(): TokenTotals {
+  return {
+    inputTokens: 0,
+    cacheWriteTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    requests: 0,
+    estimatedCostUsd: null,
+  };
+}
+
+/** Longest-prefix match against the (editable) pricing table, §9. */
+function priceFor(model: string): PricingEntry | null {
+  let best: PricingEntry | null = null;
+  for (const e of pricing.entries) {
+    if (model.startsWith(e.modelPattern) && (!best || e.modelPattern.length > best.modelPattern.length)) best = e;
+  }
+  return best;
+}
+
+function costOf(model: string | null, t: TokenTotals): number | null {
+  if (!model) return null;
+  const p = priceFor(model);
+  if (!p) return null;
+  return (
+    (t.inputTokens * p.inputPerM +
+      t.outputTokens * p.outputPerM +
+      t.cacheWriteTokens * p.cacheWritePerM +
+      t.cacheReadTokens * p.cacheReadPerM) /
+    1_000_000
+  );
+}
+
+/** Start of the bucket containing `ts`, in *local* time (contract §4). */
+function bucketStart(ts: number, bucket: Bucket): number {
+  const d = new Date(ts);
+  d.setMinutes(0, 0, 0);
+  if (bucket === 'hour') return d.getTime();
+  d.setHours(0, 0, 0, 0);
+  if (bucket === 'day') return d.getTime();
+  if (bucket === 'week') {
+    // ISO weeks: Monday is day 0
+    const shift = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() - shift);
+    return d.getTime();
+  }
+  d.setDate(1);
+  return d.getTime();
+}
+
+function addInto(acc: TokenTotals, e: MockEvent) {
+  acc.inputTokens += e.inputTokens;
+  acc.cacheWriteTokens += e.cacheWriteTokens;
+  acc.cacheReadTokens += e.cacheReadTokens;
+  acc.outputTokens += e.outputTokens;
+  acc.reasoningTokens += e.reasoningTokens;
+  acc.requests += e.requests;
+  acc.totalTokens += e.inputTokens + e.cacheWriteTokens + e.cacheReadTokens + e.outputTokens;
+}
+
+function runHistory(q: HistoryQuery): HistoryResult {
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const rows = new Map<string, HistoryRow>();
+  const totals = emptyTotals();
+  const byProvider: Record<string, TokenTotals> = {};
+  // cost is accumulated per model then summed, because the price list is
+  // per-model — a grouped-by-provider row still gets a meaningful estimate.
+  const rowCost = new Map<string, number | null>();
+  const providerCost: Record<string, number | null> = {};
+  let totalCost: number | null = 0;
+
+  for (const e of events) {
+    if (e.ts < from || e.ts > to) continue;
+    if (q.provider && e.provider !== q.provider) continue;
+
+    const bs = bucketStart(e.ts, q.bucket);
+    const key = `${bs}|${e.provider}|${q.groupByModel ? e.model : ''}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = {
+        ...emptyTotals(),
+        bucketStart: iso(bs),
+        provider: e.provider,
+        model: q.groupByModel ? e.model : null,
+      };
+      rows.set(key, row);
+      rowCost.set(key, 0);
+    }
+    addInto(row, e);
+    addInto(totals, e);
+    byProvider[e.provider] ??= emptyTotals();
+    addInto(byProvider[e.provider], e);
+
+    const c = costOf(e.model, {
+      ...emptyTotals(),
+      inputTokens: e.inputTokens,
+      cacheWriteTokens: e.cacheWriteTokens,
+      cacheReadTokens: e.cacheReadTokens,
+      outputTokens: e.outputTokens,
+    });
+    const prev = rowCost.get(key);
+    rowCost.set(key, prev == null || c == null ? null : prev + c);
+    if (!(e.provider in providerCost)) providerCost[e.provider] = 0;
+    const pc = providerCost[e.provider];
+    providerCost[e.provider] = pc == null || c == null ? null : pc + c;
+    totalCost = totalCost == null || c == null ? null : totalCost + c;
+  }
+
+  for (const [key, row] of rows) row.estimatedCostUsd = rowCost.get(key) ?? null;
+  for (const p of Object.keys(byProvider)) byProvider[p].estimatedCostUsd = providerCost[p] ?? null;
+  totals.estimatedCostUsd = totalCost;
+
+  const list = [...rows.values()].sort(
+    (a, b) =>
+      Date.parse(a.bucketStart) - Date.parse(b.bucketStart) ||
+      a.provider.localeCompare(b.provider) ||
+      (a.model ?? '').localeCompare(b.model ?? '')
+  );
+  return { rows: list, totals, byProvider };
+}
+
+/** Quota samples every 30 min for the last 14 days, sawtooth per window. */
+function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const rnd = lcg(0xbeef);
+  const out: QuotaSample[] = [];
+  for (const provider of ['claude', 'codex'] as ProviderId[]) {
+    if (q.provider && provider !== q.provider) continue;
+    const plan = provider === 'claude' ? 'max' : 'plus';
+    for (let ts = to - 14 * DAY; ts <= to; ts += HOUR / 2) {
+      if (ts < from) continue;
+      const base = provider === 'claude' ? 1 : 0.6;
+      // 5-hour window: sawtooth that resets every 5 h
+      const phase5 = ((ts % (5 * HOUR)) / (5 * HOUR)) * 100;
+      const five = Math.min(100, Math.max(0, phase5 * base * (0.5 + rnd() * 0.9)));
+      // weekly window: slow ramp that resets on the week boundary
+      const phase7 = ((ts % (7 * DAY)) / (7 * DAY)) * 100;
+      const seven = Math.min(100, Math.max(0, phase7 * base * (0.6 + rnd() * 0.4)));
+      out.push({ provider, kind: 'five_hour', scope: null, usedPercent: Math.round(five), resetsAt: iso(ts + 5 * HOUR - (ts % (5 * HOUR))), plan, ts: iso(ts) });
+      out.push({ provider, kind: 'seven_day', scope: null, usedPercent: Math.round(seven), resetsAt: iso(ts + 7 * DAY - (ts % (7 * DAY))), plan, ts: iso(ts) });
+    }
+  }
+  return out;
+}
+
+// ------------------------------------------------------------- event bus ----
+
 let settings = structuredClone(mockSettings);
+let snapshot = structuredClone(mockSnapshot);
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 
 export function mockEmit(event: string, payload: unknown) {
@@ -82,43 +389,84 @@ export async function mockListen<T>(event: string, handler: (p: T) => void): Pro
   return () => listeners.get(event)?.delete(h);
 }
 
+/** Small random walk so "Refresh" visibly does something in the browser. */
+function jitterSnapshot(provider?: ProviderId | null) {
+  const stamp = iso(Date.now());
+  snapshot = {
+    generatedAt: stamp,
+    providers: snapshot.providers.map((p) => {
+      if (provider && p.provider !== provider) return p;
+      return {
+        ...p,
+        fetchedAt: stamp,
+        windows: p.windows.map((w) => ({
+          ...w,
+          usedPercent: Math.min(100, Math.max(0, Math.round(w.usedPercent + (Math.random() * 8 - 3)))),
+        })),
+      };
+    }),
+  };
+  return structuredClone(snapshot);
+}
+
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  // eslint-disable-next-line no-console
-  console.debug('[mock invoke]', cmd, args);
   switch (cmd) {
     case 'get_snapshot':
-    case 'refresh_now':
-      return structuredClone(mockSnapshot) as T;
+      return structuredClone(snapshot) as T;
+    case 'refresh_now': {
+      const s = jitterSnapshot(args?.provider as ProviderId | null);
+      mockEmit('snapshot-updated', structuredClone(s));
+      return s as T;
+    }
     case 'get_settings':
       return structuredClone(settings) as T;
-    case 'update_settings':
-      settings = { ...settings, ...(args?.patch as Partial<Settings>) };
+    case 'update_settings': {
+      const patch = (args?.patch ?? {}) as Partial<Settings>;
+      settings = {
+        ...settings,
+        ...patch,
+        providers: patch.providers ? { ...settings.providers, ...patch.providers } : settings.providers,
+      };
       mockEmit('settings-updated', structuredClone(settings));
       return structuredClone(settings) as T;
+    }
     case 'get_usage_history':
-      return { rows: [], totals: emptyTotals(), byProvider: {} } as T;
+      return runHistory(args?.query as HistoryQuery) as T;
     case 'get_quota_history':
-      return [] as T;
+      return runQuotaHistory(args?.query as QuotaHistoryQuery) as T;
     case 'get_pricing':
-      return { entries: [], updatedAt: null } as T;
+      return structuredClone(pricing) as T;
     case 'set_pricing':
-      return args?.table as T;
-    case 'reingest_logs':
-      return { filesScanned: 0, filesUpdated: 0, eventsAdded: 0, durationMs: 0, errors: [], running: false } as T;
+      pricing = { ...(args?.table as PricingTable), updatedAt: iso(Date.now()) };
+      return structuredClone(pricing) as T;
+    case 'reingest_logs': {
+      const start = Date.now();
+      const stats: IngestStats = { filesScanned: 0, filesUpdated: 0, eventsAdded: 0, durationMs: 0, errors: [], running: true };
+      for (let i = 1; i <= 4; i += 1) {
+        setTimeout(() => {
+          mockEmit('ingest-progress', { ...stats, filesScanned: i * 312, filesUpdated: i * 7, eventsAdded: i * 1840, durationMs: Date.now() - start, running: true });
+        }, i * 180);
+      }
+      const done: IngestStats = { filesScanned: 1248, filesUpdated: 29, eventsAdded: 7361, durationMs: 940, errors: [], running: false };
+      setTimeout(() => mockEmit('ingest-progress', done), 900);
+      return new Promise<T>((resolve) => setTimeout(() => resolve(done as T), 900));
+    }
     case 'get_providers':
-      return [] as T;
+      return structuredClone(mockProviders) as T;
     case 'get_app_info':
-      return { version: '0.0.0-mock', dataDir: '/mock', configDir: '/mock', platform: 'linux', backend: 'browser' } as T;
+      return structuredClone(mockAppInfo) as T;
     case 'get_monitors':
-      return [] as T;
+      return structuredClone(mockMonitors) as T;
     case 'popover_show':
       mockEmit('popover-target', args?.req);
+      return undefined as T;
+    case 'sidebar_set_expanded':
+      mockEmit('sidebar-state', { expanded: Boolean(args?.expanded), pinned: false });
+      return undefined as T;
+    case 'open_dashboard':
+      mockEmit('dashboard-navigate', { tab: args?.tab ?? 'overview' });
       return undefined as T;
     default:
       return undefined as T;
   }
-}
-
-function emptyTotals() {
-  return { inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, requests: 0, estimatedCostUsd: null };
 }

@@ -8,25 +8,58 @@ pub mod state;
 pub mod window;
 
 use tauri::Manager;
+use tauri_plugin_autostart::MacosLauncher;
+
+/// Log verbosity, overridable with `AI_USAGE_SIDEBAR_LOG=trace|debug|warn|error`
+/// (window placement decisions are logged at `debug`).
+fn log_level() -> log::LevelFilter {
+    match std::env::var("AI_USAGE_SIDEBAR_LOG")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "trace" => log::LevelFilter::Trace,
+        "debug" => log::LevelFilter::Debug,
+        "warn" => log::LevelFilter::Warn,
+        "error" => log::LevelFilter::Error,
+        _ => log::LevelFilter::Info,
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin: a second launch hands its argv to the
+        // running instance instead of starting another sidebar.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            log::info!("second instance ({argv:?} in {cwd}), focusing the dashboard");
+            window::dashboard::focus(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_log::Builder::new().level(log::LevelFilter::Info).build())
+        .plugin(tauri_plugin_log::Builder::new().level(log_level()).build())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .setup(|app| {
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .expect("app config dir");
+            let config_dir = app.path().app_config_dir().expect("app config dir");
             let data_dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&config_dir).ok();
             std::fs::create_dir_all(&data_dir).ok();
             app.manage(state::AppState::new(config_dir, data_dir));
             window::setup(app.handle())?;
             scheduler::start(app.handle().clone());
+
+            #[cfg(debug_assertions)]
+            if std::env::var("AI_USAGE_SIDEBAR_DEVTOOLS").as_deref() == Ok("1") {
+                for label in [model::windows::DASHBOARD, model::windows::SIDEBAR] {
+                    if let Some(win) = app.get_webview_window(label) {
+                        win.open_devtools();
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

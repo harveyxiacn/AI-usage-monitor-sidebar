@@ -10,8 +10,17 @@ const config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter({
-      fallback: "index.html",
+      // NOT "index.html": that name is taken by the prerendered "/" page (the
+      // sidebar window loads build/index.html directly and needs the real
+      // prerendered shell, not the catch-all SPA fallback).
+      fallback: "200.html",
     }),
+    // The three Tauri windows load build/index.html, build/popover.html and
+    // build/dashboard.html directly. Nothing links between them, so the
+    // prerender crawler cannot discover /popover and /dashboard on its own.
+    prerender: {
+      entries: ["/", "/popover", "/dashboard"],
+    },
   },
 };
 

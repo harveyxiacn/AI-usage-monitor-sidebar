@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="AI Usage Sidebar">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c20"/>
+      <stop offset="1" stop-color="#0c0c0e"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+  <rect x="8" y="8" width="1008" height="1008" rx="216" ry="216" fill="none" stroke="#2e2e34" stroke-width="16"/>
+  <g transform="rotate(-90 512 512)" fill="none" stroke-linecap="round">
+    <!-- outer ring: Claude 5-hour window -->
+    <circle cx="512" cy="512" r="330" stroke="#26262c" stroke-width="72"/>
+    <circle cx="512" cy="512" r="330" stroke="#ff5c1a" stroke-width="72"
+            stroke-dasharray="1493 581" stroke-dashoffset="0"/>
+    <!-- inner ring: Codex weekly window -->
+    <circle cx="512" cy="512" r="206" stroke="#26262c" stroke-width="64"/>
+    <circle cx="512" cy="512" r="206" stroke="#10a37f" stroke-width="64"
+            stroke-dasharray="712 583" stroke-dashoffset="0"/>
+  </g>
+  <circle cx="512" cy="512" r="104" fill="#f4f4f5"/>
+  <circle cx="512" cy="512" r="46" fill="#0c0c0e"/>
+</svg>

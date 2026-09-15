@@ -1,0 +1,183 @@
+/* Design tokens. [FRONTEND]
+ *
+ * Runtime-controlled variables (written by applyTheme() in
+ * $lib/stores/theme.svelte.ts onto <html>):
+ *   --ui-scale       Settings.scale  (0.75 .. 1.5) — drives the root font-size,
+ *                    every size in the widget is expressed in rem so the whole
+ *                    UI scales without a layout rewrite.
+ *   --surface-alpha  Settings.opacity (0.3 .. 1) — multiplied into the alpha of
+ *                    the pill / popover surfaces only (never the dashboard).
+ * <html data-theme="dark|light"> selects the palette; 'auto' is resolved in JS
+ * from prefers-color-scheme so the two other windows agree with each other.
+ * <html data-surface="glass|solid"> selects the widget *material*: 'glass' is
+ * the translucent liquid-glass pill/bubble (see .surface in base.css), 'solid'
+ * the opaque one. The dashboard ignores it and is always opaque.
+ */
+
+:root {
+  --ui-scale: 1;
+  --surface-alpha: 1;
+
+  /* ---- provider accents ----
+   * `--accent-<p>`            base hue, also step 1 of the concentric ramp
+   * `--accent-<p>-1/-2/-3`    concentric ring ramp, outer → inner. Same hue at
+   *                           roughly +0 / +18 / +34 % lightness, so a ring
+   *                           group reads as one provider with decreasing
+   *                           intensity. Redefined per theme below: on a light
+   *                           surface the pale end would vanish, so the light
+   *                           ramp stays a little more saturated/darker.
+   * `--accent-<p>-alt`        the *contrasting* secondary used by
+   *                           ringMode="all" (one ring per window), where the
+   *                           weekly ring must be told apart from the 5-hour
+   *                           one rather than blend with it.
+   */
+  --accent-claude: #ff5c1a;
+  --accent-codex: #10a37f;
+  --accent-claude-alt: #ff9a6b;
+  --accent-codex-alt: #8b7cf6;
+
+  /* ---- threshold colours ---- */
+  --warn: #f5c542;
+  --critical: #ff3b30;
+  --ok: #34c759;
+
+  /* ---- typography ---- */
+  --font-sans:
+    system-ui, -apple-system, 'SF Pro Text', 'SF Pro Display', 'Segoe UI Variable Text', 'Segoe UI',
+    Inter, Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  /* ---- motion ---- */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-ring: 400ms;
+  --dur-ui: 160ms;
+
+  /* ---- radii ---- */
+  --r-pill: 1.625rem; /* 26px @ scale 1 */
+  --r-card: 0.875rem;
+  --r-bubble: 1.125rem;
+  --r-control: 0.5rem;
+}
+
+/* ============================ dark (default) ============================ */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* widget surfaces (alpha-blended with --surface-alpha) */
+  --bar-bg-rgb: 12 12 14; /* #0c0c0e */
+  --bar-bg: rgb(var(--bar-bg-rgb) / calc(0.96 * var(--surface-alpha)));
+  --bar-border: rgb(255 255 255 / 0.08);
+  --bar-shadow: 0 0.5rem 1.75rem rgb(0 0 0 / 0.45), 0 0.125rem 0.375rem rgb(0 0 0 / 0.35);
+
+  /* concentric ramp — pale end is fine here, it sits on a near-black pill */
+  --accent-claude-1: #ff5c1a;
+  --accent-claude-2: #ff9a6b;
+  --accent-claude-3: #ffcdb3;
+  --accent-codex-1: #10a37f;
+  --accent-codex-2: #3fd0aa;
+  --accent-codex-3: #7fe3cb;
+
+  --ring-inner: #232329; /* disc behind the provider logo */
+  --track: #2a2a30;
+  /* what the pill / bubble is painted with, and the track colour of the rings
+     and bars drawn on it; both are re-pointed by the glass block below */
+  --surface-fill: var(--bar-bg);
+  --surface-track: var(--track);
+
+  --text: #f5f5f7;
+  --muted: #9a9aa3;
+  --faint: #6a6a73;
+
+  /* dashboard (opaque) */
+  --bg: #121215;
+  --surface: #1a1a1f;
+  --surface-2: #232329;
+  --surface-3: #2c2c34;
+  --border: rgb(255 255 255 / 0.09);
+  --border-strong: rgb(255 255 255 / 0.16);
+  --hover: rgb(255 255 255 / 0.06);
+  --focus: #6c9cff;
+  --shadow-card: 0 0.0625rem 0.125rem rgb(0 0 0 / 0.4);
+  --label-shadow: 0 1px 2px rgb(0 0 0 / 0.6);
+  --grid: rgb(255 255 255 / 0.07);
+  --logo: #f5f5f7;
+}
+
+/* ================================ light ================================ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bar-bg-rgb: 252 252 253;
+  --bar-bg: rgb(var(--bar-bg-rgb) / calc(0.97 * var(--surface-alpha)));
+  --bar-border: rgb(0 0 0 / 0.1);
+  --bar-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.16), 0 0.125rem 0.25rem rgb(0 0 0 / 0.1);
+
+  /* concentric ramp — stops short of the pale end so every ring keeps a
+     usable contrast against the #fcfcfd pill and the #dedee5 track */
+  --accent-claude-1: #ff5c1a;
+  --accent-claude-2: #ff8a52;
+  --accent-claude-3: #ffae86;
+  --accent-codex-1: #10a37f;
+  --accent-codex-2: #37b896;
+  --accent-codex-3: #6fcfb4;
+
+  --ring-inner: #ececf1;
+  --track: #dedee5;
+  --surface-fill: var(--bar-bg);
+  --surface-track: var(--track);
+
+  --text: #16161a;
+  --muted: #6b6b76;
+  --faint: #9a9aa3;
+
+  --bg: #f4f4f7;
+  --surface: #ffffff;
+  --surface-2: #f0f0f4;
+  --surface-3: #e5e5ec;
+  --border: rgb(0 0 0 / 0.1);
+  --border-strong: rgb(0 0 0 / 0.2);
+  --hover: rgb(0 0 0 / 0.045);
+  --focus: #2563eb;
+  --shadow-card: 0 0.0625rem 0.1875rem rgb(0 0 0 / 0.08);
+  --label-shadow: 0 1px 2px rgb(255 255 255 / 0.75);
+  --grid: rgb(0 0 0 / 0.08);
+  --logo: #16161a;
+}
+
+/* ======================= liquid glass (widget only) =======================
+ * The sidebar/popover windows are transparent, but on Linux/X11 WebKitGTK
+ * cannot blur the *desktop* behind a window — `backdrop-filter` only blurs
+ * content inside the webview. So the material is faked with layers (a
+ * translucent fill, a gradient rim, a specular sheen and a noise grain) and
+ * `backdrop-filter` is declared anyway because it becomes real on macOS /
+ * Windows once the platform layer turns on vibrancy / acrylic.
+ */
+:root[data-surface='glass'],
+:root[data-surface='glass'][data-theme='dark'] {
+  --surface-fill: rgb(18 18 22 / calc(0.55 * var(--surface-alpha)));
+  /* top rim light and the gradient stroke, bright top-left → faint bottom-right */
+  --glass-rim: rgb(255 255 255 / 0.35);
+  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / 0.55) 0%, rgb(255 255 255 / 0.18) 38%, rgb(255 255 255 / 0.08) 100%);
+  --glass-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.28) 0%, rgb(255 255 255 / 0.06) 35%, transparent 60%);
+  --glass-reflect: radial-gradient(ellipse at 50% 0%, rgb(255 255 255 / 0.22) 0%, transparent 70%);
+  /* fractal grain, greyed and pre-faded in the SVG itself (a custom
+     property cannot reach inside a data URI), blended with `overlay` */
+  --glass-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.4'/%3E%3C/svg%3E");
+  --bar-shadow: 0 0.5rem 2rem rgb(0 0 0 / 0.35), 0 0.0625rem 0.125rem rgb(0 0 0 / 0.25);
+  /* the neutral track would disappear into the translucent fill */
+  --surface-track: rgb(255 255 255 / 0.18);
+}
+
+:root[data-surface='glass'][data-theme='light'] {
+  --surface-fill: rgb(255 255 255 / calc(0.45 * var(--surface-alpha)));
+  --glass-rim: rgb(255 255 255 / 0.85);
+  --glass-edge: linear-gradient(135deg, rgb(255 255 255 / 0.95) 0%, rgb(255 255 255 / 0.45) 38%, rgb(0 0 0 / 0.08) 100%);
+  --glass-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.5) 0%, rgb(255 255 255 / 0.12) 35%, transparent 60%);
+  --glass-reflect: radial-gradient(ellipse at 50% 0%, rgb(255 255 255 / 0.6) 0%, transparent 70%);
+  --glass-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.22'/%3E%3C/svg%3E");
+  --bar-shadow: 0 0.5rem 2rem rgb(0 0 0 / 0.18), 0 0.0625rem 0.125rem rgb(0 0 0 / 0.12);
+  /* white-on-white is invisible here, so the track goes dark instead */
+  --surface-track: rgb(20 20 25 / 0.14);
+}

@@ -20,7 +20,7 @@ impl WindowKind {
             WindowKind::Other => "other",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "five_hour" => WindowKind::FiveHour,
             "seven_day" => WindowKind::SevenDay,
@@ -31,7 +31,7 @@ impl WindowKind {
     pub fn from_seconds(secs: u64) -> Self {
         if secs <= 6 * 3600 {
             WindowKind::FiveHour
-        } else if secs >= 6 * 86_400 && secs <= 8 * 86_400 {
+        } else if (6 * 86_400..=8 * 86_400).contains(&secs) {
             WindowKind::SevenDay
         } else {
             WindowKind::Other
@@ -131,6 +131,7 @@ pub enum VerticalAlign {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RingMode {
+    Concentric,
     Primary,
     All,
 }
@@ -148,6 +149,13 @@ pub enum Theme {
     Dark,
     Light,
     Auto,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceStyle {
+    Glass,
+    Solid,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -171,6 +179,7 @@ pub struct Settings {
     /// "auto" | "en" | "zh-CN"
     pub language: String,
     pub theme: Theme,
+    pub surface_style: SurfaceStyle,
     pub edge: Edge,
     pub vertical_align: VerticalAlign,
     pub vertical_offset: i32,
@@ -179,6 +188,7 @@ pub struct Settings {
     pub auto_hide_delay_ms: u64,
     pub collapsed_width: u32,
     pub ring_mode: RingMode,
+    pub show_scoped_ring: bool,
     pub percent_mode: PercentMode,
     pub show_percent_label: bool,
     pub refresh_interval_sec: u64,
@@ -195,12 +205,25 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         let mut providers = BTreeMap::new();
-        providers.insert("claude".to_string(), ProviderSettings { enabled: true, order: 0 });
-        providers.insert("codex".to_string(), ProviderSettings { enabled: true, order: 1 });
+        providers.insert(
+            "claude".to_string(),
+            ProviderSettings {
+                enabled: true,
+                order: 0,
+            },
+        );
+        providers.insert(
+            "codex".to_string(),
+            ProviderSettings {
+                enabled: true,
+                order: 1,
+            },
+        );
         Settings {
             version: 1,
             language: "auto".into(),
             theme: Theme::Dark,
+            surface_style: SurfaceStyle::Glass,
             edge: Edge::Right,
             vertical_align: VerticalAlign::Center,
             vertical_offset: 0,
@@ -208,7 +231,8 @@ impl Default for Settings {
             auto_hide: false,
             auto_hide_delay_ms: 800,
             collapsed_width: 6,
-            ring_mode: RingMode::Primary,
+            ring_mode: RingMode::Concentric,
+            show_scoped_ring: true,
             percent_mode: PercentMode::Used,
             show_percent_label: true,
             refresh_interval_sec: 60,
@@ -217,7 +241,10 @@ impl Default for Settings {
             autostart: false,
             opacity: 1.0,
             scale: 1.0,
-            thresholds: Thresholds { warn: 70.0, critical: 90.0 },
+            thresholds: Thresholds {
+                warn: 70.0,
+                critical: 90.0,
+            },
             notifications: false,
             always_on_top: true,
         }

@@ -60,10 +60,13 @@ export interface AppSnapshot {
 
 export type Edge = 'left' | 'right';
 export type VerticalAlign = 'top' | 'center' | 'bottom';
-export type RingMode = 'primary' | 'all';
+/** concentric: one ring group per provider (outer weekly, inner 5-hour, optional 3rd scoped ring); primary: single ring; all: one ring per window */
+export type RingMode = 'concentric' | 'primary' | 'all';
 export type PercentMode = 'used' | 'remaining';
 export type Theme = 'dark' | 'light' | 'auto';
 export type Language = 'auto' | 'en' | 'zh-CN';
+/** glass: translucent "liquid glass" surface with specular highlights; solid: opaque dark/light pill */
+export type SurfaceStyle = 'glass' | 'solid';
 
 export interface ProviderSettings {
   enabled: boolean;
@@ -79,6 +82,7 @@ export interface Settings {
   version: number;
   language: Language;
   theme: Theme;
+  surfaceStyle: SurfaceStyle;
   edge: Edge;
   verticalAlign: VerticalAlign;
   /** px offset applied after alignment (positive moves down) */
@@ -90,6 +94,8 @@ export interface Settings {
   /** width of the visible handle when collapsed (px) */
   collapsedWidth: number;
   ringMode: RingMode;
+  /** concentric mode: show a third innermost ring for the first scoped window (e.g. Claude per-model weekly) */
+  showScopedRing: boolean;
   percentMode: PercentMode;
   showPercentLabel: boolean;
   refreshIntervalSec: number;

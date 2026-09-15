@@ -152,10 +152,16 @@ Key semantics:
   "remaining" when the user prefers it.
 * `QuotaWindow.resetsAt` is RFC 3339 UTC or `null`.
 * `QuotaWindow.isPrimary`: exactly one window per provider is primary (the
-  5‑hour window when the plan has one, else the weekly window). In
-  `ringMode = "primary"` the sidebar shows one ring per provider using the
-  primary window; in `ringMode = "all"` it shows one ring per window that is
-  not scoped (`scope == null`).
+  5‑hour window when the plan has one, else the weekly window).
+  `ringMode = "concentric"` (default): one ring *group* per provider — outer
+  ring = non-scoped weekly window, inner ring = 5-hour window (omitted when the
+  plan has none, e.g. Codex Pro), optional innermost third ring = first scoped
+  window (e.g. Claude "Weekly · Fable") when `showScopedRing` is on; Codex
+  never gets a third ring (its scoped windows are additional per-feature
+  limits). Rings of one group share the provider hue in decreasing intensity;
+  threshold colours override per ring. The percent label shows the primary
+  window. `ringMode = "primary"`: one plain ring per provider (primary window).
+  `ringMode = "all"`: one ring per non-scoped window.
 * `ProviderQuota.status`: `ok | not_logged_in | token_expired | error |
   disabled`. Any status other than `ok` still returns the last known windows
   (from cache or local logs) if available, with `source` telling where they
@@ -225,8 +231,8 @@ follow-up.
 ## 7. Settings (`settings.json` in the app config dir)
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
-shown (`autoHide=false`), `ringMode="primary"`, `percentMode="used"`,
-`refreshIntervalSec=60`, dark theme, language `auto`, ingestion enabled,
+shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
+`refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90.
 
 ## 8. Storage (`usage.db` in the app data dir, SQLite)

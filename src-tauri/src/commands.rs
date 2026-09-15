@@ -1,10 +1,41 @@
 //! Backend (data) commands. [BACKEND owns this file]
 //! Signatures are part of the contract (docs/ARCHITECTURE.md §5) — keep names
-//! and argument names stable; replace the stub bodies with real logic.
+//! and argument names stable.
+//!
+//! `lib.rs` (owned by the platform layer) only declares `commands, model,
+//! scheduler, state, window`, so every other backend module hangs off this one
+//! via `#[path]` declarations.
+
+#[path = "ingest/mod.rs"]
+pub mod ingest;
+#[path = "pricing.rs"]
+pub mod pricing;
+#[path = "providers/mod.rs"]
+pub mod providers;
+#[path = "settings.rs"]
+pub mod settings;
+#[path = "store/mod.rs"]
+pub mod store;
+#[cfg(test)]
+#[path = "test_support.rs"]
+pub mod test_support;
 
 use crate::model::*;
 use crate::state::AppState;
-use tauri::State;
+use tauri::{AppHandle, State};
+
+/// SQLite work runs on the blocking pool; map both failure modes to a string.
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(f).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(format!("{e:#}")),
+        Err(e) => Err(format!("background task failed: {e}")),
+    }
+}
 
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
@@ -12,12 +43,8 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 }
 
 #[tauri::command]
-pub async fn refresh_now(
-    state: State<'_, AppState>,
-    provider: Option<String>,
-) -> Result<AppSnapshot, String> {
-    let _ = provider;
-    Ok(state.snapshot.read().clone())
+pub async fn refresh_now(app: AppHandle, provider: Option<String>) -> Result<AppSnapshot, String> {
+    Ok(crate::scheduler::refresh_now(&app, provider).await)
 }
 
 #[tauri::command]
@@ -26,12 +53,8 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
 }
 
 #[tauri::command]
-pub async fn update_settings(
-    state: State<'_, AppState>,
-    patch: serde_json::Value,
-) -> Result<Settings, String> {
-    let _ = patch;
-    Ok(state.settings.read().clone())
+pub async fn update_settings(app: AppHandle, patch: serde_json::Value) -> Result<Settings, String> {
+    settings::update(&app, &patch).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -39,8 +62,9 @@ pub async fn get_usage_history(
     state: State<'_, AppState>,
     query: HistoryQuery,
 ) -> Result<HistoryResult, String> {
-    let _ = (state, query);
-    Ok(HistoryResult::default())
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_history(&db, &query, &pricing)).await
 }
 
 #[tauri::command]
@@ -48,14 +72,13 @@ pub async fn get_quota_history(
     state: State<'_, AppState>,
     query: QuotaHistoryQuery,
 ) -> Result<Vec<QuotaSample>, String> {
-    let _ = (state, query);
-    Ok(vec![])
+    let db = state.db()?;
+    blocking(move || store::query_quota_history(&db, &query)).await
 }
 
 #[tauri::command]
 pub async fn get_pricing(state: State<'_, AppState>) -> Result<PricingTable, String> {
-    let _ = state;
-    Ok(PricingTable::default())
+    Ok(state.pricing.read().clone())
 }
 
 #[tauri::command]
@@ -63,20 +86,20 @@ pub async fn set_pricing(
     state: State<'_, AppState>,
     table: PricingTable,
 ) -> Result<PricingTable, String> {
-    let _ = state;
-    Ok(table)
+    let merged = pricing::save(&state.config_dir, &table).map_err(|e| format!("{e:#}"))?;
+    *state.pricing.write() = merged.clone();
+    Ok(merged)
 }
 
 #[tauri::command]
-pub async fn reingest_logs(state: State<'_, AppState>) -> Result<IngestStats, String> {
-    let _ = state;
-    Ok(IngestStats::default())
+pub async fn reingest_logs(app: AppHandle) -> Result<IngestStats, String> {
+    Ok(crate::scheduler::run_ingest(&app, true).await)
 }
 
 #[tauri::command]
 pub async fn get_providers(state: State<'_, AppState>) -> Result<Vec<ProviderInfo>, String> {
-    let _ = state;
-    Ok(vec![])
+    let settings = state.settings.read().clone();
+    Ok(providers::provider_infos(&state.provider_ctx, &settings))
 }
 
 #[tauri::command]
