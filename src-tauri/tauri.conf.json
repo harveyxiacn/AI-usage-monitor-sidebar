@@ -1,0 +1,83 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI Usage Sidebar",
+  "version": "0.1.0",
+  "identifier": "io.github.harveyxiacn.ai-usage-sidebar",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "sidebar",
+        "url": "/",
+        "title": "AI Usage Sidebar",
+        "width": 96,
+        "height": 320,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visibleOnAllWorkspaces": true,
+        "focus": false,
+        "visible": false
+      },
+      {
+        "label": "popover",
+        "url": "/popover",
+        "title": "AI Usage Details",
+        "width": 360,
+        "height": 240,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visibleOnAllWorkspaces": true,
+        "focus": false,
+        "visible": false
+      },
+      {
+        "label": "dashboard",
+        "url": "/dashboard",
+        "title": "AI Usage Sidebar — Dashboard",
+        "width": 1040,
+        "height": 720,
+        "minWidth": 880,
+        "minHeight": 600,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/32x32.png",
+      "iconAsTemplate": true,
+      "tooltip": "AI Usage Sidebar"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Claude Code / Codex quota sidebar",
+    "longDescription": "An always-on-top edge sidebar showing Claude Code and OpenAI Codex rate-limit quotas, with token usage history.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
