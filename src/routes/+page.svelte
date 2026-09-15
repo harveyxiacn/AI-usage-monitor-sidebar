@@ -39,6 +39,10 @@
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
 
+  // stamped before the first applyTheme() effect so the theme store knows
+  // which window it is (the custom text colour is widget-only)
+  markWindow('sidebar');
+
   const s = $derived(settings.value);
   const items = $derived(rings.items);
   const loading = $derived(snapshot.value === null);
@@ -64,7 +68,6 @@
   });
 
   onMount(() => {
-    markWindow('sidebar');
     const disposers: Array<() => void> = [settings.init(), snapshot.init()];
     let un: Unlisten | null = null;
     let disposed = false;
@@ -199,13 +202,17 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    /* ~76px wide @ scale 1: 56px ring + 2 × 10px side padding; 14px top/bottom.
-       max-content (not a fixed width) so removing the edge-side border below
-       can never squeeze the 56px ring out of the content box. */
+    /* Geometry comes from Settings.sizes (applied to <html> by applyTheme).
+       At the defaults this is the original ~76px pill: 56px ring + 2 × 10px
+       side padding, 14px top/bottom, 18px between groups. max-content (not a
+       fixed width) so removing the edge-side border below can never squeeze
+       the ring out of the content box. */
     width: max-content;
-    min-width: 4.75rem;
-    padding: 0.875rem 0.625rem;
-    gap: 1.125rem; /* 18px between rings */
+    min-width: calc(var(--ring-size) + 2 * var(--bar-padding));
+    /* vertical padding tracks the horizontal one but stays 4px roomier, which
+       reproduces the 14/10 of the reference design at the default size */
+    padding: calc(var(--bar-padding) + 0.25rem) var(--bar-padding);
+    gap: var(--bar-gap);
     /* background / border / shadow / glass layers come from the global
        `.surface` material in base.css so the popover bubble matches exactly */
     border-radius: var(--r-pill);

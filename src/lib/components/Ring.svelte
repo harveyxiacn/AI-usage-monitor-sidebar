@@ -5,6 +5,9 @@
   of them for one provider; the other two modes pass a single arc, which makes
   this exactly the old single ring.
 
+  Geometry follows Settings.sizes.ringSize / .ringStroke (props may override);
+  the inter-ring gap stays a constant 2.5 user units.
+
   Ring geometry (all in the SVG's own user units, viewBox = size × size):
     cx = cy = size / 2
     r(i)   = (size - stroke) / 2 - i * (stroke + gap)
@@ -16,12 +19,14 @@
   Each arc is rotated -90° about the centre so 0 % starts at 12 o'clock.
   The element is sized in rem (size / 16) so Settings.scale scales it.
 
-  The logo shrinks as arcs are added (3 → 16px, 2 → 18px, 1 → 22px) so it always
-  clears the innermost stroke; the size is handed to the `logo` snippet.
+  The logo shrinks as arcs are added (3 → 16px, 2 → 18px, 1 → 22px at the
+  default 56px ring, scaled by ringSize/56 and capped to the inner disc) so it
+  always clears the innermost stroke; the size is handed to the `logo` snippet.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { severityColor, severityOf, clampPercent, shortPercent } from '$lib/format';
+  import { clampSize, settings } from '$lib/stores/settings.svelte';
   import type { PercentMode, ProviderStatus, Thresholds } from '$lib/types';
 
   export interface RingArcView {
@@ -37,7 +42,9 @@
     thresholds: Thresholds;
     /** percent written under the group — the primary window's */
     labelPercent?: number | null;
+    /** override Settings.sizes.ringSize (px at scale 1) */
     size?: number;
+    /** override Settings.sizes.ringStroke */
     stroke?: number;
     /** space between two concentric arcs, in user units */
     gap?: number;
@@ -55,8 +62,8 @@
     arcs,
     thresholds,
     labelPercent = null,
-    size = 56,
-    stroke = 4.5,
+    size,
+    stroke,
     gap = 2.5,
     showPercentLabel = false,
     percentMode = 'used',
@@ -67,12 +74,16 @@
     logo,
   }: Props = $props();
 
-  const c = $derived(size / 2);
+  // geometry follows Settings.sizes unless the caller pinned it (the settings
+  // preview does, so it can show a size before it is applied)
+  const dim = $derived(clampSize('ringSize', size ?? settings.value.sizes.ringSize));
+  const sw = $derived(clampSize('ringStroke', stroke ?? settings.value.sizes.ringStroke));
+  const c = $derived(dim / 2);
 
   /** Geometry + resolved colour for every arc, outer → inner. */
   const drawn = $derived.by(() =>
     arcs.map((a, i) => {
-      const r = (size - stroke) / 2 - i * (stroke + gap);
+      const r = (dim - sw) / 2 - i * (sw + gap);
       const circumference = 2 * Math.PI * r;
       const used = a.percent == null ? 0 : clampPercent(a.percent);
       return {
@@ -88,10 +99,13 @@
   );
 
   /** Radius of the innermost drawn ring, or the outermost track when empty. */
-  const lastR = $derived(drawn.length > 0 ? drawn[drawn.length - 1].r : (size - stroke) / 2);
+  const lastR = $derived(drawn.length > 0 ? drawn[drawn.length - 1].r : (dim - sw) / 2);
   /** disc behind the logo: just inside the innermost stroke */
-  const innerR = $derived(lastR - stroke / 2 - 1);
-  const logoSize = $derived(arcs.length >= 3 ? 16 : arcs.length === 2 ? 18 : 22);
+  const innerR = $derived(lastR - sw / 2 - 1);
+  /** the logo keeps the same share of the disc at every ring size */
+  const logoSize = $derived(
+    Math.max(8, Math.min(innerR * 2 - 1, (arcs.length >= 3 ? 16 : arcs.length === 2 ? 18 : 22) * (dim / 56)))
+  );
 
   const dimmed = $derived(loading || arcs.length === 0 || status === 'not_logged_in');
   const badge = $derived(
@@ -101,17 +115,17 @@
   const px = (v: number) => `${v / 16}rem`;
 </script>
 
-<div class="ring-wrap" class:interactive style:--ring-size={px(size)}>
+<div class="ring-wrap" class:interactive style:--ring-size={px(dim)}>
   <div class="ring" class:dimmed class:loading aria-label={ariaLabel} role={ariaLabel ? 'img' : undefined}>
-    <svg viewBox="0 0 {size} {size}" width={px(size)} height={px(size)} aria-hidden="true">
+    <svg viewBox="0 0 {dim} {dim}" width={px(dim)} height={px(dim)} aria-hidden="true">
       <!-- logo backdrop -->
       <circle cx={c} cy={c} r={Math.max(innerR, 0)} fill="var(--ring-inner)" />
       {#if drawn.length === 0}
-        <circle cx={c} cy={c} r={(size - stroke) / 2} fill="none" stroke="var(--surface-track)" stroke-width={stroke} />
+        <circle cx={c} cy={c} r={(dim - sw) / 2} fill="none" stroke="var(--surface-track)" stroke-width={sw} />
       {:else}
         {#each drawn as d, i (i)}
           <!-- track -->
-          <circle cx={c} cy={c} r={d.r} fill="none" stroke="var(--surface-track)" stroke-width={stroke} />
+          <circle cx={c} cy={c} r={d.r} fill="none" stroke="var(--surface-track)" stroke-width={sw} />
           <!-- value arc -->
           {#if !loading && d.known}
             <circle
@@ -121,7 +135,7 @@
               r={d.r}
               fill="none"
               stroke={d.color}
-              stroke-width={stroke}
+              stroke-width={sw}
               stroke-linecap="round"
               stroke-dasharray={d.circumference}
               stroke-dashoffset={d.dashOffset}
@@ -233,7 +247,7 @@
   }
 
   .pct {
-    font-size: 0.8125rem;
+    font-size: var(--label-size, 0.8125rem);
     font-weight: 600;
     letter-spacing: 0.01em;
     color: var(--text);

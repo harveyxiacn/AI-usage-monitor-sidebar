@@ -53,6 +53,15 @@
   --dur-ring: 400ms;
   --dur-ui: 160ms;
 
+  /* ---- user-tunable geometry (Settings.sizes) ----
+   * applyTheme() overwrites these inline on <html>; the values here are the
+   * contract defaults so the very first paint is already correct. */
+  --ring-size: 3.5rem; /* 56px */
+  --ring-stroke: 4.5; /* SVG user units, unitless on purpose */
+  --bar-gap: 1.125rem; /* 18px */
+  --bar-padding: 0.625rem; /* 10px */
+  --label-size: 0.8125rem; /* 13px */
+
   /* ---- radii ---- */
   --r-pill: 1.625rem; /* 26px @ scale 1 */
   --r-card: 0.875rem;

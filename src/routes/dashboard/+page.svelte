@@ -17,6 +17,10 @@
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
   import type { DashboardTab } from '$lib/types';
 
+  // stamped before the first applyTheme() effect so the theme store knows
+  // which window it is (the custom text colour is widget-only)
+  markWindow('dashboard');
+
   const TABS: DashboardTab[] = ['overview', 'history', 'settings'];
 
   let tab = $state<DashboardTab>('overview');
@@ -24,7 +28,6 @@
   let themeKey = $state('dark');
 
   onMount(() => {
-    markWindow('dashboard');
     const disposers: Array<() => void> = [settings.init(), snapshot.init()];
 
     // applyTheme() writes data-theme on <html>; watching the attribute also

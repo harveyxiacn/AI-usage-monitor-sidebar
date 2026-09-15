@@ -84,6 +84,18 @@ pub fn relayout(app: &AppHandle, width: f64, height: f64) {
         return;
     }
     window::with_state(app, |inner| inner.popover_content = (width, height));
+    // A popover page that (re)loaded while visible has lost its target
+    // (dev-server reloads, webview restarts); re-sending it is idempotent for
+    // a page that already renders it, so always refresh the target here.
+    if let Some(state) = window::snapshot(app) {
+        if state.popover_visible {
+            if let Some(req) = state.popover_req {
+                if let Err(e) = app.emit_to(windows::POPOVER, events::POPOVER_TARGET, req) {
+                    log::debug!("re-emitting popover target failed: {e}");
+                }
+            }
+        }
+    }
     reposition(app);
 }
 

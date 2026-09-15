@@ -32,6 +32,10 @@
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
   import type { PopoverRequest } from '$lib/types';
 
+  // stamped before the first applyTheme() effect so the theme store knows
+  // which window it is (the custom text colour is widget-only)
+  markWindow('popover');
+
   const s = $derived(settings.value);
 
   let target = $state<PopoverRequest | null>(null);
@@ -47,7 +51,6 @@
   });
 
   onMount(() => {
-    markWindow('popover');
     const disposers: Array<() => void> = [settings.init(), snapshot.init()];
     const timer = setInterval(() => (now = Date.now()), 1000);
     let un: Unlisten | null = null;

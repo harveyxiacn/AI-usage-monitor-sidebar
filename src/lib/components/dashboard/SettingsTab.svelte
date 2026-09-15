@@ -6,6 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Field from './Field.svelte';
+  import SizeColourGroup from './SizeColourGroup.svelte';
   import Toggle from './Toggle.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import {
@@ -221,6 +222,8 @@
       </select>
     </Field>
   </article>
+
+  <SizeColourGroup />
 
   <article class="card group">
     <h3>{t('settings.position')}</h3>

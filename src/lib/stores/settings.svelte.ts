@@ -2,7 +2,52 @@
 // One instance per window (each Tauri window is its own page load); the
 // `settings-updated` event keeps the three windows in sync.
 import { applyWindowSettings, getSettings, onSettingsUpdated, updateSettings, type Unlisten } from '$lib/api';
-import type { Settings } from '$lib/types';
+import type { ColorSettings, Settings, SizeSettings } from '$lib/types';
+
+/** Contract defaults for the user-tunable palette (empty = keep the theme's). */
+export const defaultColors: ColorSettings = {
+  claude: '#ff5c1a',
+  codex: '#10a37f',
+  warn: '#f5c542',
+  critical: '#ff3b30',
+  surface: '',
+  text: '',
+};
+
+/** Contract defaults for the user-tunable geometry, in CSS px at scale 1. */
+export const defaultSizes: SizeSettings = {
+  ringSize: 56,
+  ringStroke: 4.5,
+  barGap: 18,
+  barPadding: 10,
+  cornerRadius: 26,
+  labelSize: 13,
+};
+
+/** [min, max, step] per size key — the UI and applyTheme both clamp with these. */
+export const SIZE_LIMITS: Record<keyof SizeSettings, [min: number, max: number, step: number]> = {
+  ringSize: [40, 96, 1],
+  ringStroke: [3, 8, 0.5],
+  barGap: [6, 40, 1],
+  barPadding: [4, 24, 1],
+  cornerRadius: [8, 40, 1],
+  labelSize: [9, 18, 1],
+};
+
+export function clampSize<K extends keyof SizeSettings>(key: K, value: number): number {
+  const [min, max] = SIZE_LIMITS[key];
+  if (!Number.isFinite(value)) return defaultSizes[key];
+  return Math.min(max, Math.max(min, value));
+}
+
+/** Every size key clamped into range, falling back to the default when absent. */
+export function clampSizes(sizes: Partial<SizeSettings> | undefined): SizeSettings {
+  const out = {} as SizeSettings;
+  for (const key of Object.keys(defaultSizes) as (keyof SizeSettings)[]) {
+    out[key] = clampSize(key, sizes?.[key] ?? defaultSizes[key]);
+  }
+  return out;
+}
 
 /** Frontend-side fallback so the first paint never has to null-check. */
 export const defaultSettings: Settings = {
@@ -28,6 +73,8 @@ export const defaultSettings: Settings = {
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
+  colors: structuredClone(defaultColors),
+  sizes: structuredClone(defaultSizes),
   notifications: false,
   alwaysOnTop: true,
 };

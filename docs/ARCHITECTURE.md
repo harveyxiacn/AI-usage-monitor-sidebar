@@ -235,6 +235,14 @@ shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `perce
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90.
 
+### Colours and sizes
+
+`Settings.colors` (hex strings; `surface`/`text` empty = theme default) and
+`Settings.sizes` (px at scale 1: `ringSize` 40–96, `ringStroke` 3–8, `barGap`
+6–40, `barPadding` 4–24, `cornerRadius` 8–40, `labelSize` 9–18) are applied by
+the frontend as CSS custom properties; the backend only clamps and persists
+them. `update_settings` merges `colors` and `sizes` per key like `providers`.
+
 ## 8. Storage (`usage.db` in the app data dir, SQLite)
 
 ```sql

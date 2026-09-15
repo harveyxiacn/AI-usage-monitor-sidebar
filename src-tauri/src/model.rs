@@ -172,6 +172,56 @@ pub struct Thresholds {
     pub critical: f64,
 }
 
+/// User-tunable colours (CSS hex strings; empty = theme default).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ColorSettings {
+    pub claude: String,
+    pub codex: String,
+    pub warn: String,
+    pub critical: String,
+    pub surface: String,
+    pub text: String,
+}
+
+impl Default for ColorSettings {
+    fn default() -> Self {
+        ColorSettings {
+            claude: "#ff5c1a".into(),
+            codex: "#10a37f".into(),
+            warn: "#f5c542".into(),
+            critical: "#ff3b30".into(),
+            surface: "".into(),
+            text: "".into(),
+        }
+    }
+}
+
+/// User-tunable geometry (CSS px at scale 1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SizeSettings {
+    pub ring_size: f64,
+    pub ring_stroke: f64,
+    pub bar_gap: f64,
+    pub bar_padding: f64,
+    pub corner_radius: f64,
+    pub label_size: f64,
+}
+
+impl Default for SizeSettings {
+    fn default() -> Self {
+        SizeSettings {
+            ring_size: 56.0,
+            ring_stroke: 4.5,
+            bar_gap: 18.0,
+            bar_padding: 10.0,
+            corner_radius: 26.0,
+            label_size: 13.0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -198,6 +248,8 @@ pub struct Settings {
     pub opacity: f64,
     pub scale: f64,
     pub thresholds: Thresholds,
+    pub colors: ColorSettings,
+    pub sizes: SizeSettings,
     pub notifications: bool,
     pub always_on_top: bool,
 }
@@ -245,6 +297,8 @@ impl Default for Settings {
                 warn: 70.0,
                 critical: 90.0,
             },
+            colors: ColorSettings::default(),
+            sizes: SizeSettings::default(),
             notifications: false,
             always_on_top: true,
         }

@@ -3,7 +3,7 @@
 //! Loading never fails: a missing, partial or partly-invalid file degrades to
 //! the defaults for the fields it cannot supply.
 
-use crate::model::{ProviderSettings, Settings};
+use crate::model::{ColorSettings, ProviderSettings, Settings, SizeSettings};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -59,9 +59,9 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
     };
     for (key, value) in patch {
         let mut candidate = current.clone();
-        if key == "providers" {
-            // per-key merge so a patch can toggle one provider only
-            let mut merged = match current.get("providers") {
+        if key == "providers" || key == "colors" || key == "sizes" {
+            // per-key merge so a patch can toggle one provider / one colour only
+            let mut merged = match current.get(key.as_str()) {
                 Some(Value::Object(o)) => o.clone(),
                 _ => serde_json::Map::new(),
             };
@@ -72,11 +72,11 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
                     }
                 }
                 None => {
-                    log::warn!("settings patch: `providers` is not an object, ignored");
+                    log::warn!("settings patch: `{key}` is not an object, ignored");
                     continue;
                 }
             }
-            candidate.insert("providers".into(), Value::Object(merged));
+            candidate.insert(key.clone(), Value::Object(merged));
         } else {
             candidate.insert(key.clone(), value.clone());
         }
@@ -87,6 +87,22 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
     }
     let merged = serde_json::from_value::<Settings>(Value::Object(current)).unwrap_or_default();
     clamp(merged)
+}
+
+/// `value` if it is a CSS hex colour (or empty), otherwise `fallback`.
+fn hex_or(value: &str, fallback: &str) -> String {
+    let v = value.trim();
+    if v.is_empty() {
+        return fallback.to_string();
+    }
+    let ok = v.starts_with('#')
+        && matches!(v.len(), 4 | 7 | 9)
+        && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if ok {
+        v.to_ascii_lowercase()
+    } else {
+        fallback.to_string()
+    }
 }
 
 /// Force every value into its supported range (ARCHITECTURE §7).
@@ -107,6 +123,25 @@ pub fn clamp(mut s: Settings) -> Settings {
     }
     s.thresholds.warn = warn;
     s.thresholds.critical = critical;
+
+    // Geometry (px at scale 1) — ARCHITECTURE §7 "Colours and sizes".
+    let d = SizeSettings::default();
+    s.sizes.ring_size = clamp_f64(s.sizes.ring_size, 40.0, 96.0, d.ring_size);
+    s.sizes.ring_stroke = clamp_f64(s.sizes.ring_stroke, 3.0, 8.0, d.ring_stroke);
+    s.sizes.bar_gap = clamp_f64(s.sizes.bar_gap, 6.0, 40.0, d.bar_gap);
+    s.sizes.bar_padding = clamp_f64(s.sizes.bar_padding, 4.0, 24.0, d.bar_padding);
+    s.sizes.corner_radius = clamp_f64(s.sizes.corner_radius, 8.0, 40.0, d.corner_radius);
+    s.sizes.label_size = clamp_f64(s.sizes.label_size, 9.0, 18.0, d.label_size);
+
+    // Colours must be CSS hex (#rgb, #rrggbb, #rrggbbaa); anything else falls
+    // back to the default (or the theme default for the optional ones).
+    let dc = ColorSettings::default();
+    s.colors.claude = hex_or(&s.colors.claude, &dc.claude);
+    s.colors.codex = hex_or(&s.colors.codex, &dc.codex);
+    s.colors.warn = hex_or(&s.colors.warn, &dc.warn);
+    s.colors.critical = hex_or(&s.colors.critical, &dc.critical);
+    s.colors.surface = hex_or(&s.colors.surface, "");
+    s.colors.text = hex_or(&s.colors.text, "");
 
     // Every known provider must have an entry so the UI can render a toggle.
     for (id, order) in [("claude", 0), ("codex", 1)] {
@@ -222,6 +257,38 @@ mod tests {
         assert_eq!(merged.theme, Theme::Light);
         assert_eq!(merged.language, "zh-CN");
         assert_eq!(merged.ring_mode, base.ring_mode, "untouched fields survive");
+    }
+
+    #[test]
+    fn colors_and_sizes_are_merged_and_clamped() {
+        let merged = merge(
+            &Settings::default(),
+            &json!({"colors": {"claude": "#123ABC", "warn": "not-a-colour"}, "sizes": {"ringSize": 500, "ringStroke": 1}}),
+        );
+        assert_eq!(
+            merged.colors.claude, "#123abc",
+            "valid hex is kept, lower-cased"
+        );
+        assert_eq!(
+            merged.colors.warn, "#f5c542",
+            "invalid hex falls back to the default"
+        );
+        assert_eq!(
+            merged.colors.codex, "#10a37f",
+            "untouched keys survive a per-key merge"
+        );
+        assert_eq!(
+            merged.sizes.ring_size, 96.0,
+            "ring size is clamped to its maximum"
+        );
+        assert_eq!(
+            merged.sizes.ring_stroke, 3.0,
+            "stroke is clamped to its minimum"
+        );
+        assert_eq!(
+            merged.sizes.bar_gap, 18.0,
+            "untouched sizes keep their default"
+        );
     }
 
     #[test]

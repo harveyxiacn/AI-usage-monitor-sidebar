@@ -78,6 +78,35 @@ export interface Thresholds {
   critical: number;
 }
 
+/** User-tunable colours (CSS hex). Empty string = theme default. */
+export interface ColorSettings {
+  /** provider accents; the concentric ramp (-1/-2/-3) is derived by lightening */
+  claude: string;
+  codex: string;
+  warn: string;
+  critical: string;
+  /** tint of the glass / solid surface, alpha comes from `opacity` */
+  surface: string;
+  /** percent label + popover text */
+  text: string;
+}
+
+/** User-tunable geometry (CSS px at scale 1). */
+export interface SizeSettings {
+  /** ring group diameter, 40..96 (default 56) */
+  ringSize: number;
+  /** ring stroke width, 3..8 (default 4.5) */
+  ringStroke: number;
+  /** vertical gap between ring groups in the bar, 6..40 (default 18) */
+  barGap: number;
+  /** bar horizontal padding, 4..24 (default 10) */
+  barPadding: number;
+  /** corner radius of the pill/bubble, 8..40 (default 26) */
+  cornerRadius: number;
+  /** percent label font size, 9..18 (default 13) */
+  labelSize: number;
+}
+
 export interface Settings {
   version: number;
   language: Language;
@@ -107,6 +136,8 @@ export interface Settings {
   /** UI scale 0.75 .. 1.5 */
   scale: number;
   thresholds: Thresholds;
+  colors: ColorSettings;
+  sizes: SizeSettings;
   notifications: boolean;
   alwaysOnTop: boolean;
 }

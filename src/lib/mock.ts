@@ -95,6 +95,8 @@ export const mockSettings: Settings = {
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
+  colors: { claude: '#ff5c1a', codex: '#10a37f', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
+  sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   alwaysOnTop: true,
 };
@@ -422,10 +424,14 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return structuredClone(settings) as T;
     case 'update_settings': {
       const patch = (args?.patch ?? {}) as Partial<Settings>;
+      // `providers`, `colors` and `sizes` are merged per key, like the Rust
+      // update_settings does (docs/ARCHITECTURE.md §5 / §7).
       settings = {
         ...settings,
         ...patch,
         providers: patch.providers ? { ...settings.providers, ...patch.providers } : settings.providers,
+        colors: patch.colors ? { ...settings.colors, ...patch.colors } : settings.colors,
+        sizes: patch.sizes ? { ...settings.sizes, ...patch.sizes } : settings.sizes,
       };
       mockEmit('settings-updated', structuredClone(settings));
       return structuredClone(settings) as T;
