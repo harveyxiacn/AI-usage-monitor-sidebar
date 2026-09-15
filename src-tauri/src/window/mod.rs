@@ -246,6 +246,34 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
         });
     }
 
+    // Debug-only demo hook for screenshots: AI_USAGE_SIDEBAR_DEMO=popover|dashboard|both
+    // shows the popover for the first ring / opens the dashboard a few seconds
+    // after start, without needing a real pointer.
+    #[cfg(debug_assertions)]
+    if let Ok(demo) = std::env::var("AI_USAGE_SIDEBAR_DEMO") {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            if demo == "popover" || demo == "both" {
+                popover::show(
+                    &handle,
+                    PopoverRequest {
+                        provider: "claude".into(),
+                        ring_index: 0,
+                        anchor_y: 52.0,
+                        window_kind: None,
+                    },
+                );
+                popover::set_pinned(&handle, true);
+            }
+            if demo == "dashboard" || demo == "both" {
+                let tab = std::env::var("AI_USAGE_SIDEBAR_DEMO_TAB")
+                    .unwrap_or_else(|_| "overview".into());
+                dashboard::open(&handle, Some(tab));
+            }
+        });
+    }
+
     Ok(())
 }
 
@@ -411,6 +439,15 @@ pub async fn apply_window_settings(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn get_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
     Ok(monitors::monitor_infos(&app))
+}
+
+/// Lets injected diagnostics scripts write into the Rust log (debug builds only).
+#[tauri::command]
+pub async fn debug_log(msg: String) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        log::info!("[webview] {msg}");
+    }
+    Ok(())
 }
 
 #[tauri::command]

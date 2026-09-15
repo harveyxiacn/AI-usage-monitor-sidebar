@@ -16,7 +16,7 @@
   "reset.at": "Resets {when}",
   "reset.unknown": "—",
 
-  "source.api": "api",
+  "source.api": "API",
   "source.local_log": "local log",
   "source.cache": "cache",
 

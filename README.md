@@ -17,6 +17,19 @@ screen and its tail pointing back at the hovered ring.</sub>
 
 ---
 
+## Screenshots
+
+Real captures from CachyOS / GNOME (XWayland), dark theme, liquid-glass surface:
+
+<p align="center">
+  <img src="docs/screenshots/sidebar.png" alt="Edge sidebar with concentric rings" height="320">
+  <img src="docs/screenshots/popover.png" alt="Claude popover with 5-hour and weekly windows" height="320">
+</p>
+<p align="center">
+  <img src="docs/screenshots/dashboard-history.png" alt="Dashboard: token history and provider comparison" width="48%">
+  <img src="docs/screenshots/dashboard-settings.png" alt="Dashboard: settings" width="48%">
+</p>
+
 ## What it is
 
 `AI Usage Sidebar` is a small desktop widget built with **Tauri 2 (Rust)** and
@@ -228,6 +241,19 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 </p>
 
 <sub>上面两张图就是本项目的设计参考：细窄的竖条紧贴屏幕边缘、垂直居中，详情弹层朝屏幕中心方向展开，尖角指回被悬停的那个环。</sub>
+
+## 截图
+
+在 CachyOS / GNOME（XWayland）上的真实截图，深色主题、液态玻璃表面：
+
+<p align="center">
+  <img src="docs/screenshots/sidebar.png" alt="贴边侧栏与同心环" height="320">
+  <img src="docs/screenshots/popover.png" alt="Claude 详情气泡：5 小时与每周额度" height="320">
+</p>
+<p align="center">
+  <img src="docs/screenshots/dashboard-history.png" alt="仪表盘：Token 历史与供应商对比" width="48%">
+  <img src="docs/screenshots/dashboard-settings.png" alt="仪表盘：设置" width="48%">
+</p>
 
 ## 这是什么
 

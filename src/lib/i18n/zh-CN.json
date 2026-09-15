@@ -16,7 +16,7 @@
   "reset.at": "{when} 重置",
   "reset.unknown": "—",
 
-  "source.api": "接口",
+  "source.api": "API",
   "source.local_log": "本地日志",
   "source.cache": "缓存",
 

@@ -25,10 +25,14 @@ body {
   background: transparent;
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 0.8125rem; /* 13px */
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+body {
+  /* base text size; html keeps 1rem = 16px × scale */
+  font-size: 0.8125rem; /* 13px */
 }
 
 /* transparent windows: never scroll, never select, never show a text cursor */

@@ -526,6 +526,17 @@ impl Provider for ClaudeProvider {
                 EXPIRED_MESSAGE,
             );
         }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // The usage endpoint itself is rate-limited; the scheduler backs off
+            // and the last good windows stay on screen meanwhile.
+            return degraded(
+                &self.ctx,
+                CLAUDE_ID,
+                DISPLAY_NAME,
+                ProviderStatus::Error,
+                "Anthropic usage API is rate-limiting requests (HTTP 429); showing the last known values and retrying later",
+            );
+        }
         if !status.is_success() {
             return degraded(
                 &self.ctx,

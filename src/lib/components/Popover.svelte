@@ -160,7 +160,7 @@
     position: relative;
     width: max-content;
     max-width: 22.5rem; /* 360px @ scale 1 */
-    min-width: 17rem;
+    min-width: 19rem; /* ≈ the reference bubble; keeps short labels from producing a cramped card */
   }
 
   .root[data-edge='right'] {

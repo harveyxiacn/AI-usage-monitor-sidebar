@@ -87,6 +87,7 @@ pub fn run() {
             window::apply_window_settings,
             window::get_monitors,
             window::quit_app,
+            window::debug_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

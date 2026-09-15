@@ -27,5 +27,10 @@
     "svelte-check": "^4.6.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
+  },
+  "packageManager": "pnpm@11.26.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/harveyxiacn/AI-usage-monitor-sidebar"
   }
 }
