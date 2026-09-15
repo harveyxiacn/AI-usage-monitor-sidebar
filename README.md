@@ -155,6 +155,8 @@ for the tray icon.
 pnpm install
 pnpm tauri dev     # development, with hot reload
 pnpm tauri build   # release bundles in src-tauri/target/release/bundle/
+# Arch / CachyOS: linuxdeploy's strip step fails on current binutils, so build the
+# AppImage with `NO_STRIP=true APPIMAGE_EXTRACT_AND_RUN=1 pnpm tauri build --bundles appimage`
 ```
 
 Useful environment variables:
@@ -372,6 +374,8 @@ Linux 上使用 GNOME 的用户还需要安装
 pnpm install
 pnpm tauri dev     # 开发模式，带热更新
 pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
+# Arch / CachyOS：linuxdeploy 的 strip 步骤在新版 binutils 上会失败，打 AppImage 请用
+# `NO_STRIP=true APPIMAGE_EXTRACT_AND_RUN=1 pnpm tauri build --bundles appimage`
 ```
 
 常用环境变量：
