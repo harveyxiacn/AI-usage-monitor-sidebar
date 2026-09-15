@@ -46,6 +46,7 @@ pub fn run() {
             window::sidebar_set_expanded,
             window::sidebar_relayout,
             window::popover_show,
+            window::popover_relayout,
             window::popover_hide,
             window::popover_set_pinned,
             window::hover_report,

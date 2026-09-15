@@ -189,9 +189,10 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `sidebar_set_expanded` | `expanded: boolean` | expand to full width / collapse to the thin handle (window resize + reposition). Emits `sidebar-state`. |
 | `sidebar_relayout` | `width: number, height: number` (CSS px the bar content needs) | resize sidebar window to fit content and re-anchor to the edge |
 | `popover_show` | `req: PopoverRequest` | position popover next to the ring and show it; emits `popover-target` to the popover window |
+| `popover_relayout` | `width: number, height: number` (CSS px the popover content needs) | resize the popover window to fit content and re-anchor it next to the ring |
 | `popover_hide` | – | hide popover (unless pinned) |
 | `popover_set_pinned` | `pinned: boolean` | pinned popovers ignore hover-out |
-| `hover_report` | `source: "bar" \| "popover", hovered: boolean` | Rust keeps a hover state machine: when neither bar nor popover is hovered for `autoHideDelayMs` the popover hides and, if `autoHide`, the bar collapses |
+| `hover_report` | `source: "bar" \| "popover", hovered: boolean` | Rust keeps a hover state machine. `bar/true` expands a collapsed bar and cancels timers. When neither bar nor popover is hovered: the popover hides after ~250 ms (unless pinned) and, if `autoHide`, the bar collapses after `autoHideDelayMs`. |
 | `open_dashboard` | `tab?: "overview" \| "history" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` |
 | `apply_window_settings` | – | re-read settings (edge, monitor, vertical position, opacity, autoHide, always-on-top) and reposition windows |
 | `get_monitors` | – | `MonitorInfo[]` |

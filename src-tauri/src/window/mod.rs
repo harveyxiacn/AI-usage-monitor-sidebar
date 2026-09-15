@@ -56,6 +56,12 @@ pub async fn popover_show(app: AppHandle, req: PopoverRequest) -> Result<(), Str
 }
 
 #[tauri::command]
+pub async fn popover_relayout(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let _ = (app, width, height);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn popover_hide(app: AppHandle) -> Result<(), String> {
     let _ = app;
     Ok(())

@@ -60,6 +60,7 @@ export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_s
 export const sidebarRelayout = (width: number, height: number) => invoke<void>('sidebar_relayout', { width, height });
 export const popoverShow = (req: PopoverRequest) => invoke<void>('popover_show', { req });
 export const popoverHide = () => invoke<void>('popover_hide');
+export const popoverRelayout = (width: number, height: number) => invoke<void>('popover_relayout', { width, height });
 export const popoverSetPinned = (pinned: boolean) => invoke<void>('popover_set_pinned', { pinned });
 export const hoverReport = (source: 'bar' | 'popover', hovered: boolean) => invoke<void>('hover_report', { source, hovered });
 export const openDashboard = (tab?: DashboardTab) => invoke<void>('open_dashboard', { tab: tab ?? null });
