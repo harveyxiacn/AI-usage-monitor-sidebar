@@ -148,7 +148,10 @@ const PRICING: PricingEntry[] = [
   { modelPattern: 'gpt-5-codex', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
   { modelPattern: 'gpt-5.1', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
   { modelPattern: 'gpt-5.1-codex', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.1-codex-max', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.1-codex-mini', inputPerM: 0.25, outputPerM: 2.0, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
   { modelPattern: 'gpt-5.2', inputPerM: 1.75, outputPerM: 14.0, cacheWritePerM: 1.75, cacheReadPerM: 0.175 },
+  { modelPattern: 'gpt-5.2-codex', inputPerM: 1.75, outputPerM: 14.0, cacheWritePerM: 1.75, cacheReadPerM: 0.175 },
   { modelPattern: 'gpt-5.3-codex', inputPerM: 1.75, outputPerM: 14.0, cacheWritePerM: 1.75, cacheReadPerM: 0.175 },
   { modelPattern: 'gpt-5.4', inputPerM: 2.5, outputPerM: 15.0, cacheWritePerM: 2.5, cacheReadPerM: 0.25 },
   { modelPattern: 'gpt-5.5', inputPerM: 5.0, outputPerM: 30.0, cacheWritePerM: 5.0, cacheReadPerM: 0.5 },
@@ -159,6 +162,7 @@ const PRICING: PricingEntry[] = [
   { modelPattern: 'gpt-5-mini', inputPerM: 0.25, outputPerM: 2.0, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
   { modelPattern: 'gpt-5-nano', inputPerM: 0.05, outputPerM: 0.4, cacheWritePerM: 0.05, cacheReadPerM: 0.005 },
   { modelPattern: 'codex-mini', inputPerM: 1.5, outputPerM: 6.0, cacheWritePerM: 1.5, cacheReadPerM: 0.375 },
+  { modelPattern: 'codex-mini-latest', inputPerM: 1.5, outputPerM: 6.0, cacheWritePerM: 1.5, cacheReadPerM: 0.375 },
 ];
 
 let pricing: PricingTable = { entries: structuredClone(PRICING), updatedAt: iso(now - 9 * DAY) };
