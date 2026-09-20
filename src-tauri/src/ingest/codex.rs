@@ -77,18 +77,21 @@ struct TokenCountPayload {
 #[serde(default)]
 struct TokenCountInfo {
     total_token_usage: Option<Usage>,
+    last_token_usage: Option<Usage>,
 }
 
 impl Usage {
     /// Codex `input_tokens` **includes** the cached ones; the DB stores
     /// non-cached input for both providers (ARCHITECTURE §2).
     fn to_event_fields(self) -> (i64, i64, i64, i64, i64, i64) {
-        let cache_read = self.cached_input_tokens.max(0);
-        let input = (self.input_tokens - self.cached_input_tokens).max(0);
+        let cache_read = self.cached_input_tokens.clamp(0, self.input_tokens.max(0));
+        let input = self.input_tokens.max(0) - cache_read;
         let total = if self.total_tokens > 0 {
             self.total_tokens
         } else {
-            self.input_tokens.max(0) + self.output_tokens.max(0)
+            self.input_tokens
+                .max(0)
+                .saturating_add(self.output_tokens.max(0))
         };
         (
             input,
@@ -103,16 +106,25 @@ impl Usage {
     fn delta(self, prev: Usage) -> Usage {
         // A shrinking cumulative counter means the thread was reset/compacted;
         // the current value is then itself the delta.
-        if self.total_tokens < prev.total_tokens {
+        if self.total_tokens < prev.total_tokens
+            || self.input_tokens < prev.input_tokens
+            || self.output_tokens < prev.output_tokens
+        {
             return self;
         }
         Usage {
-            input_tokens: self.input_tokens - prev.input_tokens,
-            cached_input_tokens: self.cached_input_tokens - prev.cached_input_tokens,
-            cache_write_input_tokens: self.cache_write_input_tokens - prev.cache_write_input_tokens,
-            output_tokens: self.output_tokens - prev.output_tokens,
-            reasoning_output_tokens: self.reasoning_output_tokens - prev.reasoning_output_tokens,
-            total_tokens: self.total_tokens - prev.total_tokens,
+            input_tokens: self.input_tokens.saturating_sub(prev.input_tokens),
+            cached_input_tokens: self
+                .cached_input_tokens
+                .saturating_sub(prev.cached_input_tokens),
+            cache_write_input_tokens: self
+                .cache_write_input_tokens
+                .saturating_sub(prev.cache_write_input_tokens),
+            output_tokens: self.output_tokens.saturating_sub(prev.output_tokens),
+            reasoning_output_tokens: self
+                .reasoning_output_tokens
+                .saturating_sub(prev.reasoning_output_tokens),
+            total_tokens: self.total_tokens.saturating_sub(prev.total_tokens),
         }
     }
 
@@ -130,7 +142,19 @@ impl Usage {
 /// `token_count` fallback.
 pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec<UsageEvent> {
     // The fallback is only used for files that have no real usage records.
-    let has_usage_record = text.contains("token_usage_record");
+    let has_usage_record = text
+        .lines()
+        .filter(|line| line.contains("token_usage_record"))
+        .any(|line| {
+            serde_json::from_str::<RawLine>(line)
+                .ok()
+                .is_some_and(|raw| {
+                    raw.kind == "token_usage_record"
+                        && serde_json::from_value::<UsageRecord>(raw.payload)
+                            .ok()
+                            .is_some_and(|record| record.usage.is_some())
+                })
+        });
     let mut events = Vec::new();
 
     let mut meta = SessionMeta::default();
@@ -214,17 +238,21 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                 if payload.kind != "token_count" {
                     continue;
                 }
-                let Some(total) = payload.info.and_then(|i| i.total_token_usage) else {
+                let Some(info) = payload.info else {
+                    continue;
+                };
+                let delta = if let Some(total) = info.total_token_usage {
+                    let delta = total.delta(cumulative);
+                    cumulative = total;
+                    delta
+                } else if let Some(last) = info.last_token_usage {
+                    last
+                } else {
                     continue;
                 };
                 if has_usage_record {
-                    // Keep the cumulative counter in sync anyway — harmless and
-                    // makes a later format switch inside one file consistent.
-                    cumulative = total;
                     continue;
                 }
-                let delta = total.delta(cumulative);
-                cumulative = total;
                 if delta.is_empty() || start < from_offset {
                     continue;
                 }
@@ -278,7 +306,7 @@ fn make_event(
 
 /// Parse `path`, emitting only the records appended since `from_offset`.
 pub fn parse_file(path: &Path, from_offset: u64) -> Result<(Vec<UsageEvent>, u64)> {
-    let text = std::fs::read_to_string(path)?;
+    let (text, next) = super::read_from_offset(path, 0)?;
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -286,14 +314,7 @@ pub fn parse_file(path: &Path, from_offset: u64) -> Result<(Vec<UsageEvent>, u64
         .to_string();
     let source = path.display().to_string();
     let events = parse_text(&text, &stem, &source, from_offset);
-    // Never consume a partially written last line.
-    let next = text
-        .as_bytes()
-        .iter()
-        .rposition(|b| *b == b'\n')
-        .map(|i| i as u64 + 1)
-        .unwrap_or(0);
-    Ok((events, next.max(from_offset.min(text.len() as u64))))
+    Ok((events, next))
 }
 
 #[cfg(test)]
@@ -412,5 +433,40 @@ mod tests {
         assert!(e2.is_empty());
         assert_eq!(off2, off);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn incomplete_record_and_partial_utf8_are_retried_after_append() {
+        let dir = crate::commands::test_support::tempdir();
+        let path = dir.join("partial.jsonl");
+        let record = r#"{"type":"token_usage_record","payload":{"response_id":"partial","usage":{"input_tokens":3,"output_tokens":2}}}"#;
+        std::fs::write(&path, format!("{LEGACY}{record}")).unwrap();
+        let (events, offset) = parse_file(&path, 0).unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "unfinished new-format record must not suppress legacy usage"
+        );
+        assert_eq!(offset, LEGACY.len() as u64);
+        std::fs::write(&path, format!("{LEGACY}{record}\n")).unwrap();
+        let (events, offset) = parse_file(&path, offset).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].request_id, "partial");
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&[0xe4, 0xb8]);
+        std::fs::write(&path, bytes).unwrap();
+        assert!(parse_file(&path, offset).unwrap().0.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn record_names_in_message_text_do_not_suppress_legacy_counts() {
+        let text = format!("{LEGACY}{{\"type\":\"response_item\",\"payload\":{{\"text\":\"token_usage_record\"}}}}\n");
+        assert_eq!(parse_text(&text, "legacy", "legacy.jsonl", 0).len(), 2);
+        let last_only = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3}}}}"#;
+        let events = parse_text(last_only, "old", "old.jsonl", 0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].total_tokens, 13);
+        assert_eq!(events[0].input_tokens, 8);
     }
 }

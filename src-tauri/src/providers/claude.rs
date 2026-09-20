@@ -388,20 +388,27 @@ struct CachedProfile {
     rate_limit_tier: Option<String>,
 }
 
-static PROFILE_CACHE: Mutex<Option<(Instant, CachedProfile)>> = Mutex::new(None);
+static PROFILE_CACHE: Mutex<Option<(Instant, u64, CachedProfile)>> = Mutex::new(None);
 
-fn cached_profile() -> Option<CachedProfile> {
+fn token_cache_key(token: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn cached_profile(token: &str) -> Option<CachedProfile> {
     let guard = PROFILE_CACHE.lock();
-    let (at, p) = guard.as_ref()?;
-    if at.elapsed() < PROFILE_TTL {
+    let (at, key, p) = guard.as_ref()?;
+    if *key == token_cache_key(token) && at.elapsed() < PROFILE_TTL {
         Some(p.clone())
     } else {
         None
     }
 }
 
-fn store_profile(p: CachedProfile) {
-    *PROFILE_CACHE.lock() = Some((Instant::now(), p));
+fn store_profile(token: &str, p: CachedProfile) {
+    *PROFILE_CACHE.lock() = Some((Instant::now(), token_cache_key(token), p));
 }
 
 /// Test/diagnostic helper: forget the cached profile.
@@ -421,7 +428,7 @@ impl ClaudeProvider {
     }
 
     async fn fetch_profile(&self, http: &reqwest::Client, token: &str) -> Option<CachedProfile> {
-        if let Some(p) = cached_profile() {
+        if let Some(p) = cached_profile(token) {
             return Some(p);
         }
         let resp = http
@@ -445,7 +452,7 @@ impl ClaudeProvider {
             account,
             rate_limit_tier: profile.organization.and_then(|o| o.rate_limit_tier),
         };
-        store_profile(p.clone());
+        store_profile(token, p.clone());
         Some(p)
     }
 }
@@ -602,6 +609,15 @@ mod tests {
       ],
       "seven_day_breakdown": {"rows": []}
     }"#;
+
+    #[test]
+    fn profile_cache_is_invalidated_after_account_credentials_change() {
+        clear_profile_cache();
+        store_profile("synthetic-account-a", CachedProfile::default());
+        assert!(cached_profile("synthetic-account-a").is_some());
+        assert!(cached_profile("synthetic-account-b").is_none());
+        clear_profile_cache();
+    }
 
     #[test]
     fn maps_the_limits_array() {

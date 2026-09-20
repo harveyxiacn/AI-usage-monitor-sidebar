@@ -30,8 +30,10 @@ On wlroots compositors (Sway, Hyprland) and KDE those are available through the
 it will not. So on Linux `main.rs` sets `GDK_BACKEND=x11` **before GTK
 initialises**, which makes the app an XWayland client where
 `_NET_WM_STATE_ABOVE`, `_NET_WM_STATE_STICKY`, `_NET_WM_STATE_SKIP_TASKBAR` and
-absolute coordinates all work. `AI_USAGE_SIDEBAR_BACKEND=wayland` opts out (and
-the bar will then appear wherever the compositor feels like).
+absolute coordinates all work. `AI_USAGE_SIDEBAR_BACKEND=wayland` opts out,
+including when `GDK_BACKEND=x11` was inherited. A pure Wayland session without
+`DISPLAY` falls back to Wayland instead of failing to start; the compositor
+then chooses the bar's position.
 
 `window::backend_name()` reports what is actually in use and it ends up in
 `AppInfo.backend` in the dashboard's *About* section.
@@ -65,9 +67,13 @@ so Linux builds do not pull it in at all.
 
 Everything is computed in **logical pixels** (CSS px). The OS reports monitor
 geometry in physical pixels; `MonitorRect::from_monitor` divides position and
-size by the monitor's scale factor exactly once, and from then on the numbers
-can be handed to `LogicalPosition` / `LogicalSize` verbatim. The pure functions
-live in `monitors.rs` and are covered by unit tests (`cargo test window::`).
+size by the destination monitor's scale factor. Calculations use its usable
+work area, avoiding reserved taskbars and docks. Before calling the OS, the
+result is multiplied by that same destination scale and submitted as
+`PhysicalPosition` / `PhysicalSize`, rounding only at this final boundary.
+This avoids Tauri converting logical coordinates with the window's previous
+monitor scale when moving between monitors. The pure functions live in
+`monitors.rs` and are covered by unit tests (`cargo test window::`).
 
 **Target monitor** — `settings.monitor` by name, else the primary monitor, else
 the first monitor the OS reports.
@@ -117,6 +123,13 @@ GTK on X11 sometimes keeps the pre-resize origin when a window is moved and
 resized in the same frame, so the origin is written **before and after** the
 resize. The watchdog catches whatever still slips through.
 
+GTK also forces a non-resizable WebKit window to its natural minimum (200 CSS
+px). On Linux, overlays therefore enable GTK resizing with equal minimum and
+maximum size constraints matching the requested physical size. This permits
+the thin collapsed handle while keeping user resizing disabled. The frontend
+retains the last expanded dimensions when measuring the collapsed handle, so
+collapse/expand does not change the bar's vertical center or restore width.
+
 **First reveal** — the sidebar window is created hidden. It is shown when the
 frontend reports its first layout, or after 1.5 s, whichever comes first, so a
 slow frontend can never leave an unpainted rectangle on screen.
@@ -143,6 +156,10 @@ Timers are `tauri::async_runtime::spawn` + `tokio::time::sleep`. There are no
 a task that wakes up with a stale generation returns without doing anything.
 Before acting, a timer re-checks the whole condition (generation, pinned, both
 hover flags), so a pointer that comes back during the delay always wins.
+Changing auto-hide settings also invalidates existing timers and schedules
+the current behavior immediately; disabling auto-hide expands the bar.
+Hiding from the tray clears hover/pin state in both Rust and the frontend.
+Native vibrancy updates are dispatched on the main thread for macOS AppKit.
 
 The popover is shown with `set_focusable(false)` and **never** `set_focus()` — a
 status widget that steals focus from the editor is worse than no widget.

@@ -22,7 +22,7 @@
   import { onMount } from 'svelte';
   import Ring from '$lib/components/Ring.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
-  import { observeSize } from '$lib/actions';
+  import { observeSize, type SizeReport } from '$lib/actions';
   import {
     hoverReport,
     onSidebarState,
@@ -49,10 +49,17 @@
 
   /** platform-owned expand/collapse state; only meaningful when autoHide is on */
   let expanded = $state(true);
+  let expandedSize = $state<SizeReport>({ width: 76, height: 160 });
   /** ring key of the pinned popover, null when nothing is pinned */
   let pinnedKey = $state<string | null>(null);
 
   const collapsed = $derived(s.autoHide && !expanded);
+
+  function reportSize(size: SizeReport) {
+    if (!collapsed) expandedSize = size;
+    // A collapsed handle must not overwrite the size to restore on hover.
+    void sidebarRelayout(expandedSize.width, expandedSize.height);
+  }
 
   /**
    * Colour of the collapsed handle: the worst threshold reached by any ring.
@@ -73,6 +80,7 @@
     let disposed = false;
     void onSidebarState((state) => {
       expanded = state.expanded;
+      if (!state.pinned) pinnedKey = null;
     }).then((u) => (disposed ? u() : (un = u)));
     return () => {
       disposed = true;
@@ -124,7 +132,7 @@
 <div
   class="stage"
   data-edge={s.edge}
-  use:observeSize={(size) => void sidebarRelayout(size.width, size.height)}
+  use:observeSize={reportSize}
   oncontextmenu={(e) => e.preventDefault()}
   onmouseenter={() => void hoverReport('bar', true)}
   onmouseleave={() => void hoverReport('bar', false)}
@@ -135,6 +143,7 @@
     <div
       class="handle"
       style:width={`${Math.max(2, s.collapsedWidth)}px`}
+      style:height={`${expandedSize.height}px`}
       style:background={handleColor}
       onmouseenter={() => void hoverReport('bar', true)}
       role="presentation"
@@ -160,6 +169,7 @@
             role="button"
             tabindex="0"
             aria-label={ringLabel(item)}
+            aria-pressed={pinnedKey === item.key}
             onmouseenter={(e) => onRingEnter(item, e)}
             onclick={(e) => onRingClick(item, e)}
             onkeydown={(e) => {

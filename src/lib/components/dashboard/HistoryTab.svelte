@@ -7,13 +7,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import UsageChart from '$lib/components/UsageChart.svelte';
-  import { getUsageHistory, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
+  import { exportUsageCsv, getUsageHistory, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
+  import { historyCsv, historyRange, localDateInput, type HistoryPreset } from '$lib/history';
   import { formatBucket, formatCost, formatInt, formatTokens } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import type {
     Bucket,
     HistoryResult,
-    HistoryRow,
     IngestStats,
     ProviderId,
     TokenTotals,
@@ -26,23 +26,11 @@
 
   let { themeKey }: Props = $props();
 
-  type Preset = 'today' | '7d' | '30d' | '90d' | 'custom';
-
   const DAY = 86_400_000;
-  const toLocalDateInput = (ms: number) => {
-    const d = new Date(ms);
-    // <input type="date"> wants a *local* yyyy-mm-dd, toISOString would shift it
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
-  const startOfToday = () => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d.getTime();
-  };
-
-  let preset = $state<Preset>('7d');
-  let customFrom = $state(toLocalDateInput(Date.now() - 6 * DAY));
-  let customTo = $state(toLocalDateInput(Date.now()));
+  let preset = $state<HistoryPreset>('7d');
+  let customFrom = $state(localDateInput(Date.now() - 6 * DAY));
+  let customTo = $state(localDateInput(Date.now()));
+  let queryTime = $state(Date.now());
   let bucket = $state<Bucket>('day');
   let provider = $state<ProviderId | ''>('');
   let groupByModel = $state(false);
@@ -55,34 +43,21 @@
   let ingest = $state<IngestStats | null>(null);
   let rescanning = $state(false);
   let copied = $state(false);
+  let exported = $state<string | null>(null);
+  let exporting = $state(false);
+  let actionError = $state<string | null>(null);
+  let requestId = 0;
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
 
   let sortKey = $state<'bucketStart' | 'provider' | 'model' | keyof TokenTotals>('bucketStart');
   let sortDir = $state<1 | -1>(-1);
 
   /** [fromMs, toMs) for the active preset; custom uses whole local days. */
-  const range = $derived.by<{ from: number; to: number }>(() => {
-    const now = Date.now();
-    switch (preset) {
-      case 'today':
-        return { from: startOfToday(), to: now };
-      case '30d':
-        return { from: now - 30 * DAY, to: now };
-      case '90d':
-        return { from: now - 90 * DAY, to: now };
-      case 'custom': {
-        const from = new Date(`${customFrom}T00:00:00`).getTime();
-        const to = new Date(`${customTo}T23:59:59.999`).getTime();
-        return Number.isFinite(from) && Number.isFinite(to) && to > from
-          ? { from, to }
-          : { from: now - 7 * DAY, to: now };
-      }
-      default:
-        return { from: now - 7 * DAY, to: now };
-    }
-  });
+  const range = $derived(historyRange(preset, customFrom, customTo, queryTime));
 
   /** Hour buckets only make sense for short ranges (contract: ≤ 2 days). */
-  const hourAllowed = $derived(range.to - range.from <= 2 * DAY + 1000);
+  const hourAllowed = $derived(range !== null && range.to - range.from <= 2 * DAY + 3_600_000);
   const buckets = $derived<Bucket[]>(
     hourAllowed ? ['hour', 'day', 'week', 'month'] : ['day', 'week', 'month']
   );
@@ -92,8 +67,9 @@
     if (!hourAllowed && bucket === 'hour') bucket = 'day';
   });
 
-  function pickPreset(next: Preset) {
+  function pickPreset(next: HistoryPreset) {
     preset = next;
+    queryTime = Date.now();
     // a sensible default granularity per preset; the user can still override
     if (next === 'today') bucket = 'hour';
     else if (next === '90d') bucket = 'week';
@@ -101,53 +77,69 @@
   }
 
   async function load() {
+    const id = ++requestId;
+    const activeRange = range;
+    if (!activeRange) {
+      result = null;
+      error = null;
+      loading = false;
+      return;
+    }
     loading = true;
+    error = null;
+    result = null;
+    copied = false;
+    exported = null;
     try {
-      result = await getUsageHistory({
-        from: new Date(range.from).toISOString(),
-        to: new Date(range.to).toISOString(),
+      const next = await getUsageHistory({
+        from: new Date(activeRange.from).toISOString(),
+        to: new Date(activeRange.to).toISOString(),
         bucket,
         groupByModel,
         provider: provider === '' ? null : provider,
       });
-      error = null;
+      if (id === requestId && !disposed) result = next;
     } catch (e) {
-      error = String(e);
-      result = null;
+      if (id === requestId && !disposed) error = String(e);
     } finally {
-      loading = false;
+      if (id === requestId && !disposed) loading = false;
     }
   }
 
   // refetch whenever a query input changes
   $effect(() => {
-    void [range.from, range.to, bucket, groupByModel, provider];
+    void [range, bucket, groupByModel, provider];
     void load();
   });
 
   onMount(() => {
     let un: Unlisten | null = null;
-    let disposed = false;
     void onIngestProgress((stats) => {
       ingest = stats;
       // a finished scan may have added events — refresh the view
-      if (!stats.running) void load();
-    }).then((u) => (disposed ? u() : (un = u)));
+      if (!stats.running && !rescanning) queryTime = Date.now();
+    }).then((u) => (disposed ? u() : (un = u))).catch((e) => { actionError = String(e); });
+    const timer = setInterval(() => { if (!document.hidden && !rescanning) queryTime = Date.now(); }, 60_000);
     return () => {
       disposed = true;
+      requestId++;
       un?.();
+      clearInterval(timer);
+      clearTimeout(copiedTimer);
     };
   });
 
   async function rescan() {
+    if (rescanning || ingest?.running) return;
     rescanning = true;
+    actionError = null;
     try {
       ingest = await reingestLogs();
     } catch (e) {
-      error = String(e);
+      actionError = String(e);
     } finally {
       rescanning = false;
-      await load();
+      queryTime = Date.now();
     }
   }
 
@@ -181,53 +173,55 @@
     if (sortKey === key) sortDir = sortDir === 1 ? -1 : 1;
     else {
       sortKey = key;
-      sortDir = key === 'bucketStart' ? -1 : -1;
+      sortDir = key === 'provider' || key === 'model' ? 1 : -1;
     }
   }
 
-  const CSV_COLUMNS: Array<[string, (r: HistoryRow) => string | number]> = [
-    ['bucket_start', (r) => r.bucketStart],
-    ['provider', (r) => r.provider],
-    ['model', (r) => r.model ?? ''],
-    ['input_tokens', (r) => r.inputTokens],
-    ['cache_write_tokens', (r) => r.cacheWriteTokens],
-    ['cache_read_tokens', (r) => r.cacheReadTokens],
-    ['output_tokens', (r) => r.outputTokens],
-    ['reasoning_tokens', (r) => r.reasoningTokens],
-    ['total_tokens', (r) => r.totalTokens],
-    ['requests', (r) => r.requests],
-    ['estimated_cost_usd', (r) => (r.estimatedCostUsd == null ? '' : r.estimatedCostUsd.toFixed(4))],
-  ];
-
-  function csvCell(v: string | number): string {
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }
-
   async function copyCsv() {
-    const header = CSV_COLUMNS.map(([name]) => name).join(',');
-    const body = sortedRows.map((r) => CSV_COLUMNS.map(([, get]) => csvCell(get(r))).join(',')).join('\n');
-    const csv = `${header}\n${body}\n`;
+    const csv = historyCsv(sortedRows);
+    actionError = null;
+    copied = false;
+    let success = false;
     try {
       await navigator.clipboard.writeText(csv);
+      success = true;
     } catch {
       // clipboard API is unavailable in some WebKitGTK builds — fall back to
       // a hidden textarea + execCommand, which still works there.
       const ta = document.createElement('textarea');
+      const focused = document.activeElement;
       ta.value = csv;
       ta.style.position = 'fixed';
       ta.style.opacity = '0';
       document.body.appendChild(ta);
       ta.select();
       try {
-        document.execCommand('copy');
+        success = document.execCommand('copy');
       } catch {
         /* nothing else we can do */
       }
       ta.remove();
+      if (focused instanceof HTMLElement) focused.focus();
     }
-    copied = true;
-    setTimeout(() => (copied = false), 1500);
+    if (success) {
+      copied = true;
+      clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copied = false), 1500);
+    } else actionError = t('history.copyFailed');
+  }
+
+  async function exportCsv() {
+    if (!range || exporting) return;
+    exporting = true;
+    actionError = null;
+    exported = null;
+    try {
+      exported = await exportUsageCsv(historyCsv(sortedRows), `ai-usage-${localDateInput(range.from)}-${localDateInput(range.to - 1)}.csv`);
+    } catch (e) {
+      actionError = String(e);
+    } finally {
+      exporting = false;
+    }
   }
 
   const metricValue = (tt: TokenTotals) =>
@@ -235,7 +229,7 @@
 
   const providerName = (id: ProviderId) => (id === 'claude' ? 'Claude' : 'Codex');
 
-  const PRESETS: Array<[Preset, string]> = [
+  const PRESETS: Array<[HistoryPreset, string]> = [
     ['today', 'history.range.today'],
     ['7d', 'history.range.7d'],
     ['30d', 'history.range.30d'],
@@ -250,7 +244,7 @@
       <span class="ctl-label">{t('history.range')}</span>
       <div class="segmented" role="group" aria-label={t('history.range')}>
         {#each PRESETS as [id, key] (id)}
-          <button class:active={preset === id} onclick={() => pickPreset(id)}>{tDyn(key)}</button>
+          <button class:active={preset === id} aria-pressed={preset === id} onclick={() => pickPreset(id)}>{tDyn(key)}</button>
         {/each}
       </div>
     </div>
@@ -258,9 +252,9 @@
     {#if preset === 'custom'}
       <div class="group">
         <label class="ctl-label" for="from">{t('history.from')}</label>
-        <input id="from" class="field" type="date" bind:value={customFrom} max={customTo} />
+        <input id="from" class="field" type="date" bind:value={customFrom} max={customTo} aria-invalid={!range} aria-describedby={!range ? 'range-error' : undefined} />
         <label class="ctl-label" for="to">{t('history.to')}</label>
-        <input id="to" class="field" type="date" bind:value={customTo} min={customFrom} />
+        <input id="to" class="field" type="date" bind:value={customTo} min={customFrom} aria-invalid={!range} aria-describedby={!range ? 'range-error' : undefined} />
       </div>
     {/if}
 
@@ -291,10 +285,10 @@
       </select>
 
       <div class="segmented" role="group" aria-label={t('history.metric')}>
-        <button class:active={metric === 'tokens'} onclick={() => (metric = 'tokens')}>
+        <button class:active={metric === 'tokens'} aria-pressed={metric === 'tokens'} onclick={() => (metric = 'tokens')}>
           {t('history.metric.tokens')}
         </button>
-        <button class:active={metric === 'cost'} onclick={() => (metric = 'cost')}>
+        <button class:active={metric === 'cost'} aria-pressed={metric === 'cost'} onclick={() => (metric = 'cost')}>
           {t('history.metric.cost')}
         </button>
       </div>
@@ -302,10 +296,22 @@
   </div>
 
   {#if error}
-    <p class="err">{t('common.error', { message: error })}</p>
+    <div class="feedback" role="alert">
+      <p class="err">{t('common.error', { message: error })}</p>
+      <button class="btn" onclick={() => void load()}>{t('common.retry')}</button>
+    </div>
+  {/if}
+  {#if !range}
+    <p id="range-error" class="err" role="alert">{t('history.invalidRange')}</p>
+  {/if}
+  {#if actionError}
+    <p class="err" role="alert">{t('common.error', { message: actionError })}</p>
+  {/if}
+  {#if exported}
+    <p class="muted export-path" role="status">{t('history.exported', { path: exported })}</p>
   {/if}
 
-  <div class="card panel">
+  <div class="card panel" aria-busy={loading}>
     <header class="panel-head">
       <h3>{t('history.chartTitle')}</h3>
       {#if totals}
@@ -316,9 +322,9 @@
         </span>
       {/if}
     </header>
-    {#if loading && !result}
-      <p class="muted">{t('common.loading')}</p>
-    {:else}
+    {#if loading}
+      <p class="muted" role="status">{t('common.loading')}</p>
+    {:else if result}
       <UsageChart {rows} {bucket} {groupByModel} {metric} {themeKey} />
     {/if}
   </div>
@@ -349,14 +355,21 @@
   <div class="card panel">
     <header class="panel-head">
       <h3>{t('history.table.title')}</h3>
-      <button class="btn" onclick={() => void copyCsv()} disabled={sortedRows.length === 0}>
-        {copied ? t('common.copied') : t('common.copy')}
-      </button>
+      <div class="export-actions">
+        <button class="btn" onclick={() => void copyCsv()} disabled={loading || sortedRows.length === 0}>
+          {copied ? t('common.copied') : t('common.copy')}
+        </button>
+        <button class="btn" onclick={() => void exportCsv()} disabled={loading || exporting || sortedRows.length === 0}>
+          {exporting ? t('common.saving') : t('history.exportCsv')}
+        </button>
+      </div>
     </header>
 
-    {#if sortedRows.length === 0}
+    {#if loading}
+      <p class="muted">{t('common.loading')}</p>
+    {:else if result && sortedRows.length === 0}
       <p class="muted">{t('history.noRows')}</p>
-    {:else}
+    {:else if sortedRows.length > 0}
       <div class="table-wrap">
         <table>
           <thead>
@@ -398,8 +411,8 @@
   <div class="card panel ingest">
     <header class="panel-head">
       <h3>{t('history.ingestion')}</h3>
-      <button class="btn" onclick={() => void rescan()} disabled={rescanning}>
-        {rescanning ? t('history.ingestRunning') : t('history.rescan')}
+      <button class="btn" onclick={() => void rescan()} disabled={rescanning || ingest?.running}>
+        {rescanning || ingest?.running ? t('history.ingestRunning') : t('history.rescan')}
       </button>
     </header>
     <p class="muted">
@@ -418,6 +431,12 @@
         {t('history.ingestIdle')}
       {/if}
     </p>
+    {#if ingest && ingest.errors.length > 0}
+      <details class="scan-errors">
+        <summary>{t('history.ingestErrors', { n: ingest.errors.length })}</summary>
+        <ul>{#each ingest.errors as message, i (i)}<li>{message}</li>{/each}</ul>
+      </details>
+    {/if}
   </div>
 </section>
 
@@ -455,6 +474,7 @@
     border-radius: var(--r-control);
     background: var(--surface-2);
     border: 1px solid var(--border);
+    flex-wrap: wrap;
   }
 
   .segmented button {
@@ -504,7 +524,7 @@
 
   .compare {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
     gap: 1rem;
   }
 
@@ -513,6 +533,7 @@
     flex-direction: column;
     gap: 0.625rem;
     padding: 1rem;
+    min-width: 0;
   }
 
   .cmp-head {
@@ -533,7 +554,7 @@
 
   dl {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
     gap: 0.25rem 1rem;
     margin: 0;
     font-size: 0.8125rem;
@@ -560,6 +581,19 @@
     margin: 0;
     font-size: 0.6875rem;
     color: var(--faint);
+  }
+
+  .feedback,
+  .export-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .export-path,
+  .scan-errors {
+    overflow-wrap: anywhere;
   }
 
   .table-wrap {

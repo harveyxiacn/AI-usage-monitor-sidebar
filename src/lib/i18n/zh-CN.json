@@ -1,25 +1,20 @@
 {
   "app.name": "AI 用量侧边栏",
-
   "window.fiveHour": "5 小时限额",
   "window.fiveHourSession": "当前会话",
   "window.weekly": "每周限额",
   "window.scoped": "{kind} · {scope}",
   "window.allModels": "全部模型",
-
   "percent.used": "已用 {p}%",
   "percent.left": "剩余 {p}%",
   "percent.unknown": "—",
-
   "reset.inMin": "{m} 分钟后重置",
   "reset.inHourMin": "{h} 小时 {m} 分后重置",
   "reset.at": "{when} 重置",
   "reset.unknown": "—",
-
   "source.api": "API",
   "source.local_log": "本地日志",
   "source.cache": "缓存",
-
   "status.ok": "已连接",
   "status.not_logged_in": "未登录",
   "status.token_expired": "登录已过期",
@@ -32,13 +27,11 @@
   "status.hint.codex.token_expired": "登录已过期 —— 请运行 `codex login` 刷新令牌。",
   "status.hint.token_expired": "登录已过期 —— 请重新登录以刷新令牌。",
   "status.noWindows": "尚未获取到任何限额窗口。",
-
   "ago.now": "刚刚",
   "ago.seconds": "{n} 秒前",
   "ago.minutes": "{n} 分钟前",
   "ago.hours": "{n} 小时前",
   "ago.days": "{n} 天前",
-
   "popover.title": "{provider} 用量",
   "popover.moreLimits": "更多限额",
   "popover.credits": "额度",
@@ -49,14 +42,11 @@
   "popover.details": "详情 →",
   "popover.loading": "加载中…",
   "popover.empty": "未选择服务商。",
-
   "sidebar.more": "打开仪表盘",
   "sidebar.loading": "加载中…",
-
   "tab.overview": "总览",
   "tab.history": "历史",
   "tab.settings": "设置",
-
   "common.refresh": "刷新",
   "common.refreshAll": "全部刷新",
   "common.refreshing": "刷新中…",
@@ -77,7 +67,6 @@
   "common.copied": "已复制",
   "common.up": "上移",
   "common.down": "下移",
-
   "overview.plan": "套餐",
   "overview.account": "账号",
   "overview.lastFetched": "{ago}更新 · {source}",
@@ -85,7 +74,6 @@
   "overview.noQuotaHistory": "暂无采样",
   "overview.credits": "额度",
   "overview.noProviders": "未启用任何服务商，请在设置中开启。",
-
   "history.range": "时间范围",
   "history.range.today": "今天",
   "history.range.7d": "7 天",
@@ -115,6 +103,7 @@
   "history.reasoning": "推理",
   "history.estCost": "估算费用",
   "history.costNote": "仅为估算 —— 订阅制不按 Token 计费。",
+  "chart.missingPrices": "部分模型没有价格，未知费用不计入图表；图中可能仅显示部分费用估算。",
   "history.table.bucket": "时间段",
   "history.table.model": "模型",
   "history.table.total": "合计",
@@ -130,7 +119,6 @@
   "history.ingestRunning": "正在扫描日志…",
   "history.rescan": "重新扫描日志",
   "history.ingestErrors": "{n} 个错误",
-
   "settings.appearance": "外观",
   "settings.theme": "主题",
   "settings.theme.auto": "跟随系统",
@@ -149,7 +137,6 @@
   "settings.ringMode": "圆环布局",
   "settings.ringMode.primary": "单环",
   "settings.ringMode.all": "每个限额一个",
-
   "settings.ringMode.concentric": "同心环",
   "settings.showScopedRing": "显示按模型的内环（Claude）",
   "settings.surfaceStyle": "表面风格",
@@ -167,7 +154,6 @@
   "settings.monitor": "显示器",
   "settings.monitor.primary": "主显示器",
   "settings.alwaysOnTop": "始终置顶",
-
   "settings.behaviour": "行为",
   "settings.autoHide": "自动隐藏为细条",
   "settings.autoHideDelayMs": "自动隐藏延迟（毫秒）",
@@ -175,7 +161,6 @@
   "settings.refreshIntervalSec": "刷新间隔（秒）",
   "settings.notifications": "接近限额时通知",
   "settings.autostart": "开机自启",
-
   "settings.sizeColour": "尺寸与颜色",
   "settings.sizes": "尺寸",
   "settings.sizes.ringSize": "圆环直径",
@@ -197,7 +182,6 @@
   "settings.sizeHint": "立即生效，侧边栏会自动重新测量。",
   "settings.providers": "服务商",
   "settings.providerEnabled": "在侧边栏显示",
-
   "settings.data": "数据",
   "settings.ingestEnabled": "读取本地会话日志",
   "settings.pricing": "价格（每百万 Token，美元）",
@@ -208,7 +192,6 @@
   "settings.pricing.cacheRead": "缓存读取",
   "settings.pricing.add": "添加一行",
   "settings.pricing.save": "保存价格",
-
   "settings.about": "关于",
   "settings.about.backend": "显示后端",
   "settings.pricing.updated": "{when} 更新",
@@ -219,6 +202,18 @@
   "settings.about.configDir": "配置目录",
   "settings.about.github": "在 GitHub 上查看",
   "settings.about.quit": "退出",
-
-  "chart.noData": "该时间范围内没有用量记录。"
+  "chart.noData": "该时间范围内没有用量记录。",
+  "common.retry": "重试",
+  "common.saving": "正在保存…",
+  "history.invalidRange": "请选择有效日期，结束日期不能早于开始日期。",
+  "history.copyFailed": "无法访问剪贴板，请使用「导出 CSV」保存数据。",
+  "history.exportCsv": "导出 CSV",
+  "history.exported": "CSV 已保存：{path}",
+  "settings.pricing.invalid": "模型前缀必须非空且不重复，价格必须为非负数。",
+  "settings.pricing.unsaved": "价格修改尚未保存",
+  "overview.historyError": "无法加载配额趋势：{message}",
+  "dashboard.preview": "浏览器预览 · 示例数据",
+  "chart.accessible": "用量图表，下方表格提供相同数据。",
+  "settings.warnThreshold": "警告阈值（%）",
+  "settings.criticalThreshold": "严重阈值（%）"
 }

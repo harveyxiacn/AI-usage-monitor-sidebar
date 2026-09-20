@@ -21,7 +21,7 @@
     type ChartDataset,
   } from 'chart.js';
   import { onDestroy } from 'svelte';
-  import { cssVar, PROVIDER_ACCENT, resolveColor, seriesColor } from '$lib/colors';
+  import { cssVar, lighten, PROVIDER_ACCENT, resolveColor } from '$lib/colors';
   import { formatBucket, formatCost, formatTokens } from '$lib/format';
   import { t } from '$lib/i18n/i18n.svelte';
   import type { Bucket, HistoryRow, ProviderId } from '$lib/types';
@@ -41,9 +41,10 @@
   let { rows, bucket, groupByModel, metric, themeKey, height = 260 }: Props = $props();
 
   let canvas = $state<HTMLCanvasElement | null>(null);
-  let chart: Chart<'bar', number[], string> | null = null;
+  let chart: Chart<'bar', (number | null)[], string> | null = null;
 
-  const value = (r: HistoryRow) => (metric === 'cost' ? (r.estimatedCostUsd ?? 0) : r.totalTokens);
+  const value = (r: HistoryRow) => (metric === 'cost' ? r.estimatedCostUsd : r.totalTokens);
+  const missingPrices = $derived(metric === 'cost' && rows.some((row) => row.estimatedCostUsd == null));
   const fmt = (v: number) => (metric === 'cost' ? formatCost(v) : formatTokens(v));
 
   /** series key → legend label; grouping by model prefixes the provider. */
@@ -56,7 +57,7 @@
 
   interface Built {
     labels: string[];
-    datasets: ChartDataset<'bar', number[]>[];
+    datasets: ChartDataset<'bar', (number | null)[]>[];
   }
 
   function build(): Built {
@@ -67,7 +68,7 @@
     const xIndex = new Map(buckets.map((b, i) => [b, i]));
 
     const order: string[] = [];
-    const meta = new Map<string, { label: string; provider: ProviderId; data: number[] }>();
+    const meta = new Map<string, { label: string; provider: ProviderId; data: (number | null)[] }>();
     for (const r of rows) {
       const s = seriesOf(r);
       let m = meta.get(s.key);
@@ -76,16 +77,21 @@
         meta.set(s.key, m);
         order.push(s.key);
       }
-      m.data[xIndex.get(r.bucketStart) ?? 0] += value(r);
+      const index = xIndex.get(r.bucketStart) ?? 0;
+      const amount = value(r);
+      const previous = m.data[index];
+      m.data[index] = amount == null || previous == null ? null : previous + amount;
     }
     // stable series order: claude first, then alphabetical inside a provider
     order.sort((a, b) => a.localeCompare(b));
 
+    const providerIndex: Record<ProviderId, number> = { claude: 0, codex: 0 };
     return {
       labels: buckets.map((b) => formatBucket(b, bucket)),
-      datasets: order.map((key, i) => {
+      datasets: order.map((key) => {
         const m = meta.get(key)!;
-        const color = groupByModel ? seriesColor(i) : PROVIDER_ACCENT[m.provider];
+        const base = resolveColor(PROVIDER_ACCENT[m.provider]);
+        const color = groupByModel ? lighten(base, (providerIndex[m.provider]++ % 5) * 0.09, 0.75) : base;
         return {
           label: m.label,
           data: m.data,
@@ -94,7 +100,7 @@
           borderRadius: 3,
           borderSkipped: false,
           maxBarThickness: 44,
-        } satisfies ChartDataset<'bar', number[]>;
+        } satisfies ChartDataset<'bar', (number | null)[]>;
       }),
     };
   }
@@ -110,13 +116,13 @@
     const strong = cssVar('--text', '#f5f5f7');
     const { labels, datasets } = build();
 
-    chart = new Chart<'bar', number[], string>(canvas, {
+    chart = new Chart<'bar', (number | null)[], string>(canvas, {
       type: 'bar',
       data: { labels, datasets },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 320 },
+        animation: { duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 320 },
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: {
@@ -153,7 +159,7 @@
             borderWidth: 1,
             padding: 10,
             callbacks: {
-              label: (ctx) => ` ${ctx.dataset.label}: ${fmt(Number(ctx.parsed.y))}`,
+              label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y == null ? '—' : fmt(ctx.parsed.y)}`,
             },
           },
         },
@@ -174,15 +180,17 @@
   });
 </script>
 
+{#if missingPrices}<p class="muted cost-note" role="status">{t('chart.missingPrices')}</p>{/if}
 <div class="chart" style:height={`${height / 16}rem`}>
   {#if rows.length === 0}
     <p class="empty">{t('chart.noData')}</p>
   {:else}
-    <canvas bind:this={canvas}></canvas>
+    <canvas bind:this={canvas} aria-label={t('chart.accessible')}></canvas>
   {/if}
 </div>
 
 <style>
+  .cost-note { margin: 0; font-size: 0.75rem; }
   .chart {
     position: relative;
     width: 100%;

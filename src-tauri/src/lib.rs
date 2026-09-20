@@ -2,6 +2,7 @@
 //! Command handler list must stay in sync with docs/ARCHITECTURE.md §5.
 
 pub mod commands;
+pub mod export;
 pub mod model;
 pub mod scheduler;
 pub mod state;
@@ -36,6 +37,7 @@ pub fn run() {
             window::dashboard::focus(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_log::Builder::new().level(log_level()).build())
@@ -75,6 +77,7 @@ pub fn run() {
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,
+            export::export_usage_csv,
             // platform
             window::sidebar_set_expanded,
             window::sidebar_relayout,

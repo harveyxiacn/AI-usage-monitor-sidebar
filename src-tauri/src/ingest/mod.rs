@@ -134,7 +134,7 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
         .modified()
         .ok()
         .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
+        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
     let key = path.display().to_string();
     let previous = db.get_ingest_file(&key)?;
@@ -144,8 +144,9 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
         if prev.size == size && prev.mtime == mtime {
             return Ok(0);
         }
-        // Truncated / rotated / rewritten → start over.
-        if size >= prev.byte_offset && prev.byte_offset >= 0 {
+        // Only a growing file can be an append. A same-size rewrite or a
+        // shrink can still be longer than the last complete line's offset.
+        if size > prev.size && size >= prev.byte_offset && prev.byte_offset >= 0 {
             offset = prev.byte_offset as u64;
         }
     }
@@ -235,5 +236,59 @@ mod tests {
         assert_eq!(stats.events_added, 1);
         assert_eq!(crate::commands::store::usage::count_events(&db).unwrap(), 3);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn same_size_rewrite_and_shrink_above_partial_offset_are_reparsed() {
+        let dir = tempdir();
+        let db = Db::open_in_memory().unwrap();
+        let path = dir.join("rewrite.jsonl");
+        let line = |id: &str| {
+            format!(
+                r#"{{"type":"token_usage_record","payload":{{"response_id":"{id}","usage":{{"input_tokens":5,"output_tokens":1}}}}}}"#
+            )
+        };
+        let first = format!("{}\n", line("r1"));
+        std::fs::write(&path, &first).unwrap();
+        assert_eq!(ingest_one(&db, providers::CODEX_ID, &path).unwrap(), 1);
+        // Force a distinct mtime in bookkeeping; no timing-sensitive sleep.
+        let mut previous = db
+            .get_ingest_file(&path.display().to_string())
+            .unwrap()
+            .unwrap();
+        previous.mtime -= 1;
+        db.upsert_ingest_file(&previous).unwrap();
+        std::fs::write(&path, format!("{}\n", line("r2"))).unwrap();
+        assert_eq!(ingest_one(&db, providers::CODEX_ID, &path).unwrap(), 1);
+
+        std::fs::write(&path, format!("{first}{}", "x".repeat(500))).unwrap();
+        ingest_one(&db, providers::CODEX_ID, &path).unwrap();
+        std::fs::write(&path, format!("{}\n{}", line("r3"), "x".repeat(250))).unwrap();
+        assert_eq!(ingest_one(&db, providers::CODEX_ID, &path).unwrap(), 1);
+        assert_eq!(crate::commands::store::usage::count_events(&db).unwrap(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bookkeeping_preserves_submillisecond_modification_times() {
+        let dir = tempdir();
+        let db = Db::open_in_memory().unwrap();
+        let path = dir.join("fast-rewrite.jsonl");
+        let write = |id: &str, nanos| {
+            std::fs::write(&path, format!(r#"{{"type":"token_usage_record","payload":{{"response_id":"{id}","usage":{{"input_tokens":1}}}}}}
+"#)).unwrap();
+            let modified = std::time::UNIX_EPOCH + std::time::Duration::new(1_789_430_400, nanos);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        };
+        write("first", 100_000);
+        assert_eq!(ingest_one(&db, providers::CODEX_ID, &path).unwrap(), 1);
+        write("other", 900_000);
+        assert_eq!(ingest_one(&db, providers::CODEX_ID, &path).unwrap(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

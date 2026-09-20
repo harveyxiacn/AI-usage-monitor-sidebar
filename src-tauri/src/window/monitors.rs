@@ -1,13 +1,13 @@
 //! Monitor enumeration and the pure geometry maths. [PLATFORM]
 //!
 //! Everything in here works in **logical** pixels (CSS px): the OS reports
-//! monitor position/size in physical pixels, we divide by the monitor's scale
-//! factor once and never think about HiDPI again. Tauri's
-//! `LogicalPosition`/`LogicalSize` take the same unit, so the values computed
-//! here can be handed to `set_position`/`set_size` verbatim.
+//! monitor position/size in physical pixels. Layout uses the target monitor's
+//! scale, then converts back to physical pixels before calling the window API.
+//! Logical window setters would use the window's old DPI while moving between
+//! monitors, which can put an overlay on the wrong screen.
 
 use crate::model::{Edge, MonitorInfo, Settings, VerticalAlign};
-use tauri::{AppHandle, Monitor};
+use tauri::{AppHandle, Monitor, PhysicalPosition, PhysicalSize};
 
 /// A rectangle in logical pixels in the virtual-desktop coordinate space.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +34,19 @@ impl LogicalRect {
     pub fn center_y(&self) -> f64 {
         self.y + self.h / 2.0
     }
+
+    pub fn to_physical(&self, scale: f64) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
+        (
+            PhysicalPosition::new(
+                (self.x * scale).round() as i32,
+                (self.y * scale).round() as i32,
+            ),
+            PhysicalSize::new(
+                (self.w * scale).round() as u32,
+                (self.h * scale).round() as u32,
+            ),
+        )
+    }
 }
 
 /// A monitor reduced to what the placement maths needs.
@@ -47,13 +60,19 @@ pub struct MonitorRect {
 
 impl MonitorRect {
     pub fn from_monitor(m: &Monitor) -> Self {
-        let scale = if m.scale_factor() > 0.0 {
+        let scale = if m.scale_factor().is_finite() && m.scale_factor() > 0.0 {
             m.scale_factor()
         } else {
             1.0
         };
-        let pos = m.position();
-        let size = m.size();
+        // Keep overlays clear of the Dock, menu bar, taskbar and desktop panels.
+        // A compositor that cannot report a work area falls back to full bounds.
+        let work_area = m.work_area();
+        let (pos, size) = if work_area.size.width > 0 && work_area.size.height > 0 {
+            (&work_area.position, &work_area.size)
+        } else {
+            (m.position(), m.size())
+        };
         Self {
             name: m.name().cloned().unwrap_or_else(|| "unknown".to_string()),
             rect: LogicalRect::new(
@@ -179,12 +198,7 @@ pub fn sidebar_rect(
         VerticalAlign::Bottom => m.bottom() - height,
     } + settings.vertical_offset as f64;
 
-    LogicalRect::new(
-        x.round(),
-        clamp_span(y, height, m.y, m.h).round(),
-        width.round(),
-        height.round(),
-    )
+    LogicalRect::new(x, clamp_span(y, height, m.y, m.h), width, height)
 }
 
 /// Where the popover goes, in logical px: adjacent to the sidebar on the side
@@ -215,7 +229,7 @@ pub fn popover_rect(
     let y = sidebar.y + anchor_y - h / 2.0;
     let y = clamp_span(y, h, m.y, m.h);
 
-    LogicalRect::new(x.round(), y.round(), w.round(), h.round())
+    LogicalRect::new(x, y, w, h)
 }
 
 #[cfg(test)]
@@ -376,5 +390,50 @@ mod tests {
         assert_eq!(clamp_span(-50.0, 100.0, 0.0, 1000.0), 0.0);
         assert_eq!(clamp_span(950.0, 100.0, 0.0, 1000.0), 900.0);
         assert_eq!(clamp_span(500.0, 2000.0, 0.0, 1000.0), 0.0);
+    }
+
+    #[test]
+    fn mixed_dpi_placement_uses_the_destination_monitor_scale() {
+        // The secondary display begins at physical x=1920 and is scaled 200%.
+        // Its global logical origin is 960; passing that to a window still at
+        // 100% would wrongly keep it on the primary display.
+        let m = MonitorRect::new("retina", 960.0, 0.0, 1920.0, 1080.0, 2.0);
+        let r = sidebar_rect(&m, &settings(), 76.0, 160.0, true);
+        let (position, size) = r.to_physical(m.scale);
+        assert_eq!(position, PhysicalPosition::new(5608, 920));
+        assert_eq!(size, PhysicalSize::new(152, 320));
+        assert_eq!(position.x + size.width as i32, 5760);
+    }
+
+    #[test]
+    fn fractional_dpi_preserves_the_physical_right_edge() {
+        // Round only after returning to physical pixels. Rounding the logical
+        // position first leaves a visible seam on fractional-scale monitors.
+        let m = MonitorRect::new(
+            "fractional",
+            -1921.0 / 1.25,
+            -100.0,
+            1921.0 / 1.25,
+            864.0,
+            1.25,
+        );
+        let (position, size) =
+            sidebar_rect(&m, &settings(), 76.0, 160.0, true).to_physical(m.scale);
+        assert_eq!(position.x + size.width as i32, 0);
+        assert_eq!(size.width, 95);
+    }
+
+    #[test]
+    fn overlay_bounds_respect_a_work_area_with_panels() {
+        let m = MonitorRect::new("work-area", 48.0, 30.0, 1872.0, 1010.0, 1.0);
+        let mut s = settings();
+        s.edge = Edge::Left;
+        s.vertical_align = VerticalAlign::Top;
+        let bar = sidebar_rect(&m, &s, 76.0, 160.0, true);
+        assert_eq!(bar.x, 48.0);
+        assert_eq!(bar.y, 30.0);
+        let popover = popover_rect(&m, &bar, 340.0, 220.0, 20.0, 10.0);
+        assert_eq!(popover.y, 30.0);
+        assert!(popover.bottom() <= 1040.0);
     }
 }

@@ -48,7 +48,7 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub settings: RwLock<Settings>,
     pub snapshot: RwLock<AppSnapshot>,
-    /// Merged (defaults + user overrides) pricing table.
+    /// Complete user pricing table, or built-in defaults before the first save.
     pub pricing: RwLock<PricingTable>,
     /// `None` only when SQLite could not be opened at all; every DB-backed
     /// command then reports a friendly error instead of panicking.
@@ -58,6 +58,9 @@ pub struct AppState {
     pub provider_ctx: ProviderCtx,
     /// Guards against two ingestion runs at the same time.
     pub ingest_running: Arc<AtomicBool>,
+    /// Serializes scheduled/manual refreshes so stale network responses cannot
+    /// overwrite a newer provider snapshot or race the disk cache writer.
+    pub refresh_lock: tokio::sync::Mutex<()>,
     pub backoff: Mutex<HashMap<String, Backoff>>,
 }
 
@@ -92,6 +95,7 @@ impl AppState {
             http: providers::http_client(&provider_ctx.user_agent),
             provider_ctx,
             ingest_running: Arc::new(AtomicBool::new(false)),
+            refresh_lock: tokio::sync::Mutex::new(()),
             backoff: Mutex::new(HashMap::new()),
         }
     }

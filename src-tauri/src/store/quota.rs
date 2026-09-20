@@ -78,8 +78,7 @@ pub fn insert_quota_samples(
 
 /// Read stored samples in `[from, to]`, oldest first.
 pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSample>> {
-    let from = super::usage::parse_time_ms(&q.from).unwrap_or(i64::MIN / 4);
-    let to = super::usage::parse_time_ms(&q.to).unwrap_or(i64::MAX / 4);
+    let (from, to) = super::usage::query_range(&q.from, &q.to)?;
     let conn = db.lock();
     let sql = "SELECT provider, kind, scope, used_percent, resets_at, plan, ts
                FROM quota_samples

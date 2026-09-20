@@ -35,11 +35,11 @@
   function setSize(key: keyof SizeSettings, raw: number) {
     const value = clampSize(key, raw);
     if (value === s.sizes[key]) return;
-    void settings.patch({ sizes: { ...s.sizes, [key]: value } });
+    void settings.patch({ sizes: { [key]: value } });
   }
 
   function setColor(key: keyof ColorSettings, value: string) {
-    void settings.patch({ colors: { ...s.colors, [key]: value } });
+    void settings.patch({ colors: { [key]: value } });
   }
 
   /** Text input: only commit once it parses, so half-typed hex doesn't flash. */

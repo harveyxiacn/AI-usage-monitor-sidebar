@@ -46,7 +46,7 @@ pub fn load(config_dir: &Path) -> Settings {
 
 /// Shallow merge of a JSON patch onto `base`.
 ///
-/// Objects replace wholesale, **except** `providers`, which is merged per key.
+/// Known setting groups merge per key, including fields inside providers.
 /// Fields that fail to deserialize are logged and skipped. The result is
 /// always clamped.
 pub fn merge(base: &Settings, patch: &Value) -> Settings {
@@ -59,7 +59,10 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
     };
     for (key, value) in patch {
         let mut candidate = current.clone();
-        if key == "providers" || key == "colors" || key == "sizes" {
+        if matches!(
+            key.as_str(),
+            "providers" | "colors" | "sizes" | "thresholds"
+        ) {
             // per-key merge so a patch can toggle one provider / one colour only
             let mut merged = match current.get(key.as_str()) {
                 Some(Value::Object(o)) => o.clone(),
@@ -68,7 +71,28 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
             match value.as_object() {
                 Some(src) => {
                     for (pk, pv) in src {
-                        merged.insert(pk.clone(), pv.clone());
+                        let mut nested = merged.clone();
+                        let value = if key == "providers" {
+                            match (nested.get(pk).and_then(Value::as_object), pv.as_object()) {
+                                (Some(base), Some(patch)) => {
+                                    let mut provider = base.clone();
+                                    provider.extend(patch.clone());
+                                    Value::Object(provider)
+                                }
+                                _ => pv.clone(),
+                            }
+                        } else {
+                            pv.clone()
+                        };
+                        nested.insert(pk.clone(), value);
+                        candidate.insert(key.clone(), Value::Object(nested.clone()));
+                        if serde_json::from_value::<Settings>(Value::Object(candidate.clone()))
+                            .is_ok()
+                        {
+                            merged = nested;
+                        } else {
+                            log::warn!("settings patch: ignoring field `{key}.{pk}`");
+                        }
                     }
                 }
                 None => {
@@ -173,21 +197,34 @@ pub fn save(config_dir: &Path, settings: &Settings) -> Result<()> {
 /// Write `bytes` to `path` via a sibling temp file + rename, so a crash can
 /// never leave a truncated file behind.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir).ok();
+    std::fs::create_dir_all(dir).context("create settings directory")?;
     let tmp = dir.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("tmp"),
-        std::process::id()
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            std::fs::remove_file(&tmp).ok();
-            Err(e).with_context(|| format!("rename into {}", path.display()))
-        }
+    let result = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("create {}", tmp.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("write {}", tmp.display()))?;
+        file.sync_all().context("flush settings file")?;
+        drop(file);
+        std::fs::rename(&tmp, path).with_context(|| format!("rename into {}", path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        std::fs::remove_file(&tmp).ok();
     }
+    result
 }
 
 // ---------- app-level helpers (state + persistence + event) ----------
@@ -200,37 +237,38 @@ use tauri::{AppHandle, Emitter, Manager};
 /// emit `settings-updated`. Returns the effective settings.
 pub fn update(app: &AppHandle, patch: &Value) -> Result<Settings> {
     let state = app.state::<AppState>();
-    let merged = {
-        let current = state.settings.read();
-        merge(&current, patch)
-    };
-    *state.settings.write() = merged.clone();
-    if let Err(e) = save(&state.config_dir, &merged) {
-        // A read-only config dir must not lose the in-memory change.
-        log::error!("could not persist settings: {e:#}");
-    }
-    emit_updated(app, &merged);
-    Ok(merged)
+    persist_patch(&state.settings, &state.config_dir, patch, |merged| {
+        emit_updated(app, merged)
+    })
 }
 
 /// Persist the settings currently held in `state`.
 pub fn save_settings(state: &AppState) -> Result<()> {
-    let snapshot = state.settings.read().clone();
-    save(&state.config_dir, &snapshot)
+    let current = state.settings.read();
+    save(&state.config_dir, &current)
+}
+
+fn persist_patch(
+    settings: &parking_lot::RwLock<Settings>,
+    config_dir: &Path,
+    patch: &Value,
+    notify: impl FnOnce(&Settings),
+) -> Result<Settings> {
+    // Hold one write lock through read/merge/save/notify so concurrent windows
+    // cannot overwrite patches or deliver stale events after newer settings.
+    let mut current = settings.write();
+    let merged = merge(&current, patch);
+    save(config_dir, &merged)?;
+    *current = merged.clone();
+    notify(&merged);
+    Ok(merged)
 }
 
 /// Toggle `autoHide` from outside the command layer (the tray menu).
 pub fn set_auto_hide(app: &AppHandle, auto_hide: bool) {
-    let state = app.state::<AppState>();
-    let updated = {
-        let mut guard = state.settings.write();
-        guard.auto_hide = auto_hide;
-        guard.clone()
-    };
-    if let Err(e) = save(&state.config_dir, &updated) {
+    if let Err(e) = update(app, &serde_json::json!({"autoHide": auto_hide})) {
         log::error!("could not persist settings: {e:#}");
     }
-    emit_updated(app, &updated);
 }
 
 fn emit_updated(app: &AppHandle, settings: &Settings) {
@@ -384,5 +422,78 @@ mod tests {
         assert!(back.auto_hide);
         assert_eq!(back.vertical_offset, -120);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nested_patches_preserve_other_members_and_salvage_valid_values() {
+        let base = Settings::default();
+        let merged = merge(
+            &base,
+            &json!({
+                "providers": {"codex": {"enabled": false}, "claude": "invalid"},
+                "colors": {"claude": "#123456", "codex": 7},
+                "sizes": {"ringSize": 80, "barGap": "invalid"},
+                "thresholds": {"warn": 60}
+            }),
+        );
+        assert!(!merged.providers["codex"].enabled);
+        assert_eq!(
+            merged.providers["codex"].order,
+            base.providers["codex"].order
+        );
+        assert_eq!(merged.providers["claude"], base.providers["claude"]);
+        assert_eq!(merged.colors.claude, "#123456");
+        assert_eq!(merged.colors.codex, base.colors.codex);
+        assert_eq!(merged.sizes.ring_size, 80.0);
+        assert_eq!(merged.sizes.bar_gap, base.sizes.bar_gap);
+        assert_eq!(merged.thresholds.warn, 60.0);
+        assert_eq!(merged.thresholds.critical, base.thresholds.critical);
+    }
+
+    #[test]
+    fn persistence_failure_leaves_live_settings_unchanged() {
+        let dir = tempdir();
+        let impossible_dir = dir.join("plain-file");
+        std::fs::write(&impossible_dir, "file, not a directory").unwrap();
+        let current = parking_lot::RwLock::new(Settings::default());
+        assert!(persist_patch(
+            &current,
+            &impossible_dir,
+            &json!({"autoHide": true}),
+            |_| { panic!("a failed save must not emit an update") }
+        )
+        .is_err());
+        assert!(!current.read().auto_hide);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_patches_are_serialized_and_persisted_together() {
+        let dir = tempdir();
+        let current = parking_lot::RwLock::new(Settings::default());
+        let emitted = parking_lot::Mutex::new(Vec::new());
+        let notify = |settings: &Settings| {
+            assert!(
+                current.try_read().is_none(),
+                "the write lock must cover notification delivery"
+            );
+            emitted.lock().push(settings.clone());
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                persist_patch(&current, &dir, &json!({"autoHide": true}), notify).unwrap()
+            });
+            scope.spawn(|| {
+                persist_patch(&current, &dir, &json!({"theme": "light"}), notify).unwrap()
+            });
+        });
+        let saved = load(&dir);
+        assert!(saved.auto_hide);
+        assert_eq!(saved.theme, Theme::Light);
+        assert_eq!(saved, *current.read());
+        assert_eq!(emitted.lock().len(), 2);
+        assert_eq!(emitted.lock().last(), Some(&saved));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

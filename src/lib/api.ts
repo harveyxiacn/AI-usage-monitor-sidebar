@@ -20,6 +20,7 @@ import type {
   SidebarState,
 } from './types';
 import { mockInvoke, mockListen } from './mock';
+import type { SettingsPatch } from './settings-writer';
 
 export const isTauri = (): boolean =>
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -46,7 +47,7 @@ export async function listen<T>(event: string, handler: (payload: T) => void): P
 export const getSnapshot = () => invoke<AppSnapshot>('get_snapshot');
 export const refreshNow = (provider?: ProviderId) => invoke<AppSnapshot>('refresh_now', { provider: provider ?? null });
 export const getSettings = () => invoke<Settings>('get_settings');
-export const updateSettings = (patch: Partial<Settings>) => invoke<Settings>('update_settings', { patch });
+export const updateSettings = (patch: SettingsPatch) => invoke<Settings>('update_settings', { patch });
 export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('get_usage_history', { query });
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
@@ -54,6 +55,22 @@ export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pri
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');
+
+/** Native save dialog on desktop; a normal file download in browser previews. */
+export async function exportUsageCsv(csv: string, suggestedName: string): Promise<string | null> {
+  if (isTauri()) return invoke<string | null>('export_usage_csv', { csv, suggestedName });
+  const url = URL.createObjectURL(new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = suggestedName;
+  document.body.appendChild(link);
+  try { link.click(); } finally {
+    link.remove();
+    // WebKit consumes the blob asynchronously after the click.
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
+  return suggestedName;
+}
 
 // ---- platform ----
 export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_set_expanded', { expanded });

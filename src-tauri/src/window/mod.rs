@@ -84,9 +84,8 @@ impl Default for Inner {
 #[derive(Default)]
 pub struct PlatformState {
     pub inner: Mutex<Inner>,
-    /// The tray's "Always show sidebar" item, so it can be kept in sync with
-    /// settings changed elsewhere.
-    pub always_show_item: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    /// Tray items are updated in place when language or auto-hide changes.
+    pub tray_items: Mutex<Option<tray::MenuItems>>,
 }
 
 /// Read a copy of the platform state, or `None` before `setup` ran.
@@ -130,6 +129,23 @@ pub fn apply_stacking(win: &WebviewWindow, always_on_top: bool) {
     }
 }
 
+/// GTK treats non-resizable windows as their webview's natural size (200px),
+/// which prevents a narrow sidebar or collapsed handle. Equal min/max hints
+/// allow the requested size while still preventing the user from resizing it.
+pub fn set_overlay_size(win: &WebviewWindow, size: tauri::PhysicalSize<u32>) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        win.set_resizable(true)?;
+        win.set_size_constraints(tauri::WindowSizeConstraints {
+            min_width: Some(tauri::PhysicalUnit::new(size.width as i32).into()),
+            min_height: Some(tauri::PhysicalUnit::new(size.height as i32).into()),
+            max_width: Some(tauri::PhysicalUnit::new(size.width as i32).into()),
+            max_height: Some(tauri::PhysicalUnit::new(size.height as i32).into()),
+        })?;
+    }
+    win.set_size(size)
+}
+
 /// Native translucency for the overlay windows, where the OS provides it.
 ///
 /// * **macOS** — `NSVisualEffectView` behind the webview (HUD material).
@@ -140,28 +156,38 @@ pub fn apply_stacking(win: &WebviewWindow, always_on_top: bool) {
 /// The frontend always paints a translucent surface itself, so a failure here
 /// only costs the background blur, never readability.
 pub fn apply_surface_style(win: &WebviewWindow, style: SurfaceStyle) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
-        let result = match style {
-            SurfaceStyle::Glass => {
-                apply_vibrancy(win, NSVisualEffectMaterial::HudWindow, None, Some(16.0))
+        let native_window = win.clone();
+        // Settings arrive on an async worker. AppKit effect views must be
+        // updated on the main thread; otherwise macOS rejects live changes.
+        if let Err(e) = win.run_on_main_thread(move || {
+            #[cfg(target_os = "macos")]
+            let result = {
+                use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
+                match style {
+                    SurfaceStyle::Glass => apply_vibrancy(
+                        &native_window,
+                        NSVisualEffectMaterial::HudWindow,
+                        None,
+                        Some(16.0),
+                    ),
+                    SurfaceStyle::Solid => clear_vibrancy(&native_window).map(|_| ()),
+                }
+            };
+            #[cfg(target_os = "windows")]
+            let result = {
+                use window_vibrancy::{apply_acrylic, clear_acrylic};
+                match style {
+                    SurfaceStyle::Glass => apply_acrylic(&native_window, Some((0, 0, 0, 10))),
+                    SurfaceStyle::Solid => clear_acrylic(&native_window),
+                }
+            };
+            if let Err(e) = result {
+                log::debug!("native backdrop on `{}`: {e}", native_window.label());
             }
-            SurfaceStyle::Solid => clear_vibrancy(win).map(|_| ()),
-        };
-        if let Err(e) = result {
-            log::debug!("vibrancy on `{}`: {e}", win.label());
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use window_vibrancy::{apply_acrylic, clear_acrylic};
-        let result = match style {
-            SurfaceStyle::Glass => apply_acrylic(win, Some((0, 0, 0, 10))),
-            SurfaceStyle::Solid => clear_acrylic(win),
-        };
-        if let Err(e) = result {
-            log::debug!("acrylic on `{}`: {e}", win.label());
+        }) {
+            log::debug!("scheduling native backdrop on `{}`: {e}", win.label());
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -305,6 +331,7 @@ fn install_close_handlers(app: &AppHandle) {
 /// Re-read the settings and re-apply everything the platform layer owns.
 pub fn apply_settings(app: &AppHandle) {
     let settings = settings_of(app);
+    hover::settings_changed(app);
     sidebar::place(app);
     popover::reposition(app);
     for label in [windows::SIDEBAR, windows::POPOVER] {

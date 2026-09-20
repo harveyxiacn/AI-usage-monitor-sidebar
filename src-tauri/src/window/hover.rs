@@ -57,15 +57,19 @@ enum Source {
 }
 
 /// Start the "pointer left everything" timers. Safe to call when they are
-/// already running: the generation bump in [`report`] retires the old ones.
+/// already running: every call retires the previous generation.
 pub fn schedule_idle_timers(app: &AppHandle) {
-    let Some(state) = window::snapshot(app) else {
+    let Some(generation) = window::with_state(app, |inner| {
+        inner.generation = inner.generation.wrapping_add(1);
+        if inner.pinned || inner.bar_hovered || inner.popover_hovered {
+            None
+        } else {
+            Some(inner.generation)
+        }
+    })
+    .flatten() else {
         return;
     };
-    if state.pinned {
-        return;
-    }
-    let generation = state.generation;
     let settings = window::settings_of(app);
     let auto_hide = settings.auto_hide;
     let collapse_after = settings.auto_hide_delay_ms;
@@ -85,23 +89,64 @@ pub fn schedule_idle_timers(app: &AppHandle) {
         if rest > 0 {
             tokio::time::sleep(Duration::from_millis(rest)).await;
         }
-        if !still_idle(&app, generation) {
+        if !still_idle(&app, generation) || !window::settings_of(&app).auto_hide {
             return;
         }
         sidebar::set_expanded(&app, false);
     });
 }
 
+/// Settings changes must invalidate timers that captured the old auto-hide
+/// flag/delay. Disabling auto-hide also restores the expanded window at once.
+pub fn settings_changed(app: &AppHandle) {
+    let settings = window::settings_of(app);
+    if !settings.auto_hide && window::snapshot(app).is_some_and(|inner| !inner.expanded) {
+        sidebar::set_expanded(app, true);
+    }
+    schedule_idle_timers(app);
+}
+
 /// A timer may only fire while it is the newest one, nothing is pinned and the
 /// pointer is still away from both windows.
 fn still_idle(app: &AppHandle, generation: u64) -> bool {
     match window::snapshot(app) {
-        Some(state) => {
-            state.generation == generation
-                && !state.pinned
-                && !state.bar_hovered
-                && !state.popover_hovered
-        }
+        Some(state) => idle_at_generation(&state, generation),
         None => false,
+    }
+}
+
+fn idle_at_generation(state: &window::Inner, generation: u64) -> bool {
+    state.generation == generation && !state.pinned && !state.bar_hovered && !state.popover_hovered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_timer_cannot_act_after_a_new_generation() {
+        let mut state = window::Inner::default();
+        let scheduled = state.generation;
+        assert!(idle_at_generation(&state, scheduled));
+        state.generation = state.generation.wrapping_add(1);
+        assert!(!idle_at_generation(&state, scheduled));
+        assert!(idle_at_generation(&state, state.generation));
+    }
+
+    #[test]
+    fn pointer_returning_to_either_window_or_pinning_cancels_idle_action() {
+        for (bar, popover, pinned) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let state = window::Inner {
+                bar_hovered: bar,
+                popover_hovered: popover,
+                pinned,
+                ..Default::default()
+            };
+            assert!(!idle_at_generation(&state, state.generation));
+        }
     }
 }

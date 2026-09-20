@@ -26,7 +26,8 @@ pub struct IngestFile {
     pub path: String,
     pub provider: String,
     pub size: i64,
-    /// file mtime in unix milliseconds
+    /// File mtime in unix nanoseconds to detect fast same-size rewrites.
+    /// Older millisecond rows naturally trigger one safe re-scan.
     pub mtime: i64,
     pub byte_offset: i64,
     pub last_ingested_at: i64,

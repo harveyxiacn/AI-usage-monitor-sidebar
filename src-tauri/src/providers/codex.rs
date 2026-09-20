@@ -257,6 +257,7 @@ fn credits_from(c: &Option<Credits>) -> Option<CreditsInfo> {
 struct LogLine {
     #[serde(rename = "type")]
     kind: String,
+    timestamp: Option<String>,
     payload: Option<LogPayload>,
 }
 
@@ -275,6 +276,8 @@ pub struct LogRateLimits {
     pub secondary: Option<LogWindow>,
     pub plan_type: Option<String>,
     pub credits: Option<Credits>,
+    #[serde(skip)]
+    pub observed_at: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -288,7 +291,7 @@ pub struct LogWindow {
 
 impl LogWindow {
     fn to_quota_window(&self) -> QuotaWindow {
-        let secs = self.window_minutes.map(|m| m * 60);
+        let secs = self.window_minutes.map(|m| m.saturating_mul(60));
         QuotaWindow {
             kind: secs
                 .map(WindowKind::from_seconds)
@@ -335,18 +338,21 @@ pub fn newest_session_files(root: &Path, limit: usize) -> Vec<PathBuf> {
 /// Last `event_msg`/`token_count` line carrying `payload.rate_limits` in the
 /// newest session files. Used when the token is expired or the API is down.
 pub fn rate_limits_from_logs(root: &Path) -> Option<LogRateLimits> {
-    for path in newest_session_files(root, FALLBACK_FILES) {
-        if let Some(rl) = rate_limits_in_file(&path) {
-            log::debug!("codex: using rate limits from {}", path.display());
-            return Some(rl);
-        }
-    }
-    None
+    newest_session_files(root, FALLBACK_FILES)
+        .iter()
+        .filter_map(|path| rate_limits_in_file(path))
+        .max_by_key(|limits| observed_ms(limits.observed_at.as_deref()))
+}
+
+fn observed_ms(timestamp: Option<&str>) -> i64 {
+    timestamp
+        .and_then(crate::commands::ingest::claude::parse_ts_ms)
+        .unwrap_or(0)
 }
 
 /// Scan one file for the *last* `token_count` line with rate limits.
 pub fn rate_limits_in_file(path: &Path) -> Option<LogRateLimits> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let (text, _) = crate::commands::ingest::read_from_offset(path, 0).ok()?;
     let mut found = None;
     for line in text.lines() {
         // Cheap pre-filter: JSON parsing every line of a big rollout is slow.
@@ -365,7 +371,23 @@ pub fn rate_limits_in_file(path: &Path) -> Option<LogRateLimits> {
         if payload.kind != "token_count" {
             continue;
         }
-        if let Some(rl) = payload.rate_limits {
+        if let Some(mut rl) = payload.rate_limits {
+            if rl.primary.is_none() && rl.secondary.is_none() {
+                continue;
+            }
+            rl.observed_at = parsed
+                .timestamp
+                .as_deref()
+                .and_then(super::normalize_rfc3339)
+                .or_else(|| {
+                    path.metadata()
+                        .ok()?
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .and_then(|age| rfc3339_from_unix_secs(age.as_secs().try_into().ok()?))
+                });
             found = Some(rl);
         }
     }
@@ -375,7 +397,11 @@ pub fn rate_limits_in_file(path: &Path) -> Option<LogRateLimits> {
 /// Build a degraded quota out of the local session logs, falling back to the
 /// on-disk cache when the logs have nothing either.
 fn from_local_logs(ctx: &ProviderCtx, status: ProviderStatus, message: &str) -> ProviderQuota {
-    let from_log = log_root().and_then(|r| rate_limits_from_logs(&r));
+    let from_log = [log_root(), archived_log_root()]
+        .into_iter()
+        .flatten()
+        .filter_map(|root| rate_limits_from_logs(&root))
+        .max_by_key(|limits| observed_ms(limits.observed_at.as_deref()));
     let Some(rl) = from_log else {
         return degraded(ctx, CODEX_ID, DISPLAY_NAME, status, message);
     };
@@ -383,12 +409,20 @@ fn from_local_logs(ctx: &ProviderCtx, status: ProviderStatus, message: &str) -> 
     if windows.is_empty() {
         return degraded(ctx, CODEX_ID, DISPLAY_NAME, status, message);
     }
+    if let Some(cache) = super::read_cache(ctx, CODEX_ID) {
+        if observed_ms(Some(&cache.fetched_at)) > observed_ms(rl.observed_at.as_deref()) {
+            return degraded(ctx, CODEX_ID, DISPLAY_NAME, status, message);
+        }
+    }
     let mut q = empty_quota(CODEX_ID, DISPLAY_NAME, status);
     q.windows = windows;
     q.plan = rl.plan_type.clone();
     q.plan_label = plan_label(rl.plan_type.as_deref());
     q.credits = credits_from(&rl.credits);
     q.source = DataSource::LocalLog;
+    q.fetched_at = rl
+        .observed_at
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".into());
     q.error = Some(message.to_string());
     q
 }
@@ -718,6 +752,31 @@ mod tests {
 
         assert!(rate_limits_from_logs(&dir).is_some());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_log_age_uses_record_time_and_empty_limits_do_not_erase_it() {
+        let dir = tempdir();
+        let path = dir.join("rollout.jsonl");
+        let record = |timestamp: &str, percent: u32| {
+            format!(
+                r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"primary":{{"used_percent":{percent},"window_minutes":10080}}}}}}}}"#
+            )
+        };
+        std::fs::write(&path, format!("{}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"rate_limits\":{{}}}}}}\n", record("2026-09-15T01:00:00Z", 40))).unwrap();
+        let limits = rate_limits_in_file(&path).unwrap();
+        assert_eq!(limits.observed_at.as_deref(), Some("2026-09-15T01:00:00Z"));
+        assert_eq!(map_log_rate_limits(&limits)[0].used_percent, 40.0);
+        std::fs::write(
+            dir.join("newer.jsonl"),
+            format!("{}\n", record("2026-09-17T02:00:00Z", 60)),
+        )
+        .unwrap();
+        assert_eq!(
+            rate_limits_from_logs(&dir).unwrap().observed_at.as_deref(),
+            Some("2026-09-17T02:00:00Z")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     pub(crate) fn tempdir() -> PathBuf {

@@ -86,8 +86,9 @@ pub async fn set_pricing(
     state: State<'_, AppState>,
     table: PricingTable,
 ) -> Result<PricingTable, String> {
+    let mut current = state.pricing.write();
     let merged = pricing::save(&state.config_dir, &table).map_err(|e| format!("{e:#}"))?;
-    *state.pricing.write() = merged.clone();
+    *current = merged.clone();
     Ok(merged)
 }
 

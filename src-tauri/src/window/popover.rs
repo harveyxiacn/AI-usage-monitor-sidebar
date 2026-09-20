@@ -3,11 +3,11 @@
 
 use crate::model::{events, windows, PopoverRequest};
 use crate::window::{self, monitors, monitors::LogicalRect};
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Where the popover belongs for a given request, or `None` when there is
 /// nothing to anchor to.
-pub fn desired_rect(app: &AppHandle, req: &PopoverRequest) -> Option<LogicalRect> {
+pub fn desired_rect(app: &AppHandle, req: &PopoverRequest) -> Option<(LogicalRect, f64)> {
     let settings = window::settings_of(app);
     let mon = monitors::target_monitor(app, &settings)?;
     let sidebar = super::sidebar::current_rect(app)?;
@@ -17,13 +17,9 @@ pub fn desired_rect(app: &AppHandle, req: &PopoverRequest) -> Option<LogicalRect
     } else {
         sidebar.h / 2.0
     };
-    Some(monitors::popover_rect(
-        &mon,
-        &sidebar,
-        w,
-        h,
-        anchor_y,
-        window::POPOVER_GAP,
+    Some((
+        monitors::popover_rect(&mon, &sidebar, w, h, anchor_y, window::POPOVER_GAP),
+        mon.scale,
     ))
 }
 
@@ -56,17 +52,18 @@ pub fn show(app: &AppHandle, req: PopoverRequest) {
 }
 
 fn apply_rect(app: &AppHandle, win: &tauri::WebviewWindow, req: &PopoverRequest) {
-    let Some(rect) = desired_rect(app, req) else {
+    let Some((rect, scale)) = desired_rect(app, req) else {
         return;
     };
+    let (position, size) = rect.to_physical(scale);
     // See the note in `sidebar::place_sidebar` about move+resize on GTK/X11.
-    if let Err(e) = win.set_position(LogicalPosition::new(rect.x, rect.y)) {
+    if let Err(e) = win.set_position(position) {
         log::warn!("popover set_position failed: {e}");
     }
-    if let Err(e) = win.set_size(LogicalSize::new(rect.w, rect.h)) {
+    if let Err(e) = window::set_overlay_size(win, size) {
         log::warn!("popover set_size failed: {e}");
     }
-    if let Err(e) = win.set_position(LogicalPosition::new(rect.x, rect.y)) {
+    if let Err(e) = win.set_position(position) {
         log::warn!("popover set_position failed: {e}");
     }
     log::debug!(
@@ -117,15 +114,32 @@ pub fn reposition(app: &AppHandle) {
 
 /// `popover_hide`. A pinned popover only hides when `force` is set.
 pub fn hide(app: &AppHandle, force: bool) {
-    let should_hide = window::with_state(app, |inner| {
+    let Some((should_hide, state_changed, expanded)) = window::with_state(app, |inner| {
         if inner.pinned && !force {
-            return false;
+            return (false, false, inner.expanded);
         }
+        let state_changed = force && inner.pinned;
+        if force {
+            inner.pinned = false;
+            inner.generation = inner.generation.wrapping_add(1);
+        }
+        // A hidden webview need not receive mouseleave from the OS.
+        inner.popover_hovered = false;
         let was = inner.popover_visible;
         inner.popover_visible = false;
-        was
-    })
-    .unwrap_or(false);
+        (was, state_changed, inner.expanded)
+    }) else {
+        return;
+    };
+    if state_changed {
+        let _ = app.emit(
+            events::SIDEBAR_STATE,
+            crate::model::SidebarState {
+                expanded,
+                pinned: false,
+            },
+        );
+    }
     if !should_hide {
         return;
     }

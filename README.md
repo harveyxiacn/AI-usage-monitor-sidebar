@@ -57,10 +57,10 @@ quota is left, and when does it reset?*
 | Glass surface | `surfaceStyle: "glass"` uses a real blurred backdrop where the OS has one (macOS vibrancy, Windows acrylic); `"solid"` turns it off |
 | Themes | Dark / light / follow the system |
 | i18n | English and 简体中文 (tray menu included) |
-| History | Incremental ingestion of session logs into SQLite; per-model, per-day/-week/-month totals |
+| History | Incremental ingestion of session logs into SQLite; per-model, per-day/-week/-month totals; native CSV save and clipboard copy |
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
 | Autostart | Optional login item (`--hidden`) |
-| Notifications | Optional warning when a window crosses your threshold |
+| Notifications | Optional warning when a window crosses your editable threshold |
 
 ## Providers
 
@@ -69,13 +69,14 @@ quota is left, and when does it reset?*
 | Claude Code (OAuth) | Pro | 5-hour session **+** weekly (all models) |
 | Claude Code (OAuth) | Max 5× / Max 20× | 5-hour session **+** weekly, plus per-model weekly windows (e.g. Opus) when the API reports them |
 | OpenAI Codex (ChatGPT login) | Plus | 5-hour **+** weekly |
-| OpenAI Codex (ChatGPT login) | Pro / "prolite" | weekly only — these plans have no 5-hour window |
+| OpenAI Codex (ChatGPT login) | Pro / "prolite" | API-reported windows, including weekly-only responses |
 | OpenAI Codex | Team / Business / Enterprise / Edu | whatever the API reports, classified by window length |
 | OpenAI Codex | API-key mode (`auth_mode: "apikey"`) | no quota windows exist; the ring shows "not signed in" |
 
 Window kinds are **detected from the API**, never assumed: a window is classified
 by its `limit_window_seconds` (≤ 6 h → 5-hour, ~7 d → weekly, anything else →
-"other"), because on Codex Pro the *primary* window is the weekly one.
+"other"). A weekly window can be *primary*; plan names never decide which
+windows are present. The table describes observed payloads, not guaranteed plan entitlements.
 
 ## How it reads your data
 
@@ -107,16 +108,20 @@ session logs those CLIs leave on disk.
 > **Privacy.** Your tokens never leave your machine except in the request to
 > Anthropic's and OpenAI's own endpoints — the same ones `claude` and `codex`
 > already talk to. There is no telemetry, no analytics and no third-party
-> service. Prompts and completions are never read; only the token *counters* and
-> model names in the log files are.
+> service. Session JSONL records are parsed locally; only usage counters,
+> model/session identifiers and project paths are retained. Prompt and response
+> text is not stored in the usage database or sent by this app.
 
 ## Install
 
 ### Releases
 
-Grab the installer for your platform from the
-[Releases page](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases):
-`.deb` / `.rpm` / `.AppImage` (Linux), `.dmg` (macOS), `.msi` / `.exe` (Windows).
+Tagged releases will appear on the
+[Releases page](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases).
+Until a release is published, download the `bundles-*` artifacts from a successful
+[CI run](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/workflows/ci.yml)
+(GitHub login required): `.deb` / `.rpm` / `.AppImage` (Linux), `.dmg` (macOS),
+`.msi` / `.exe` (Windows). These builds are unsigned.
 
 ### Build prerequisites
 
@@ -208,7 +213,8 @@ centred, always visible, dark theme).
 - [ ] Blur behind the bar on KWin (`_KDE_NET_WM_BLUR_BEHIND_REGION`)
 - [ ] More providers (Gemini CLI, GitHub Copilot, Cursor)
 - [ ] Menu-bar mode on macOS
-- [ ] Per-project token breakdown and CSV export
+- [x] Native CSV export and clipboard copy
+- [ ] Per-project token breakdown
 - [ ] Notarised macOS builds and a signed Windows installer
 - [ ] Optional burn-rate forecast ("at this rate your weekly window runs out on …")
 
@@ -220,11 +226,20 @@ Before opening a PR:
 
 ```sh
 pnpm check
-cd src-tauri && cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test
+pnpm test
+pnpm exec playwright install chromium
+pnpm test:e2e
+cd src-tauri && cargo fmt --all -- --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked
 ```
 
 Never paste real tokens into an issue; redact `accessToken` / `refresh_token`
 from any log you attach.
+
+See [validation notes](docs/VALIDATION.md) for regression coverage and native
+platform limitations, and [pricing assumptions](docs/ARCHITECTURE.md#9-cost-estimation)
+for the sources and limits of cost estimates. Unknown model prices display `—`;
+mixed totals do not silently omit those costs. The browser preview is marked
+as sample data and never reads desktop credentials.
 
 ## License
 
@@ -279,10 +294,10 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 玻璃质感 | `surfaceStyle: "glass"` 在系统支持时使用原生毛玻璃背景（macOS vibrancy、Windows acrylic）；`"solid"` 关闭 |
 | 主题 | 深色 / 浅色 / 跟随系统 |
 | 多语言 | English 与简体中文（含托盘菜单） |
-| 历史 | 增量解析会话日志入 SQLite，支持按模型、按日/周/月统计 |
+| 历史 | 增量解析会话日志入 SQLite，支持按模型、按日/周/月统计，以及原生 CSV 保存与复制 |
 | 费用估算 | 可选的 API 等价价格估算，界面明确标注仅作横向参考 |
 | 开机自启 | 可选登录项（带 `--hidden` 参数） |
-| 通知 | 额度超过阈值时可选提醒 |
+| 通知 | 额度超过可编辑阈值时可选提醒 |
 
 ## 支持的服务与套餐
 
@@ -291,13 +306,13 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | Claude Code（OAuth） | Pro | 5 小时会话 **+** 每周（全模型） |
 | Claude Code（OAuth） | Max 5× / Max 20× | 5 小时会话 **+** 每周，API 返回时还包括按模型（如 Opus）的每周窗口 |
 | OpenAI Codex（ChatGPT 登录） | Plus | 5 小时 **+** 每周 |
-| OpenAI Codex（ChatGPT 登录） | Pro / prolite | **仅每周**——这两个套餐没有 5 小时窗口 |
+| OpenAI Codex（ChatGPT 登录） | Pro / prolite | 以 API 返回为准，兼容仅返回每周窗口的情况 |
 | OpenAI Codex | Team / Business / Enterprise / Edu | 以 API 返回为准，按窗口时长归类 |
 | OpenAI Codex | API Key 模式（`auth_mode: "apikey"`） | 不存在额度窗口，环显示“未登录” |
 
 窗口类型一律**由 API 返回值判断**，不做假设：按 `limit_window_seconds` 归类
-（≤ 6 小时 → 5 小时窗口，约 7 天 → 每周窗口，其余 → 其他）。因为在 Codex Pro 上，
-*primary* 窗口正好是每周窗口。
+（≤ 6 小时 → 5 小时窗口，约 7 天 → 每周窗口，其余 → 其他）。每周窗口也可能是
+*primary*，程序不按套餐名硬编码窗口数量。上表是已观察到的数据形态，不承诺套餐权益。
 
 ## 数据从哪里来
 
@@ -327,15 +342,17 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 > **隐私说明**：除了发往 Anthropic 与 OpenAI 自家接口（也就是 `claude`、`codex`
 > 本来就会访问的那两个）之外，你的 token 不会离开本机。没有遥测、没有统计上报、
-> 没有任何第三方服务。日志里只读取 token *计数* 与模型名，不读取任何提示词或回复内容。
+> 没有任何第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
+> 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
 
 ## 安装
 
 ### 下载安装包
 
-到 [Releases 页面](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases)
-下载对应平台的包：Linux 的 `.deb` / `.rpm` / `.AppImage`，macOS 的 `.dmg`，
-Windows 的 `.msi` / `.exe`。
+正式版本会发布在 [Releases 页面](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases)。
+发布前可从成功的 [CI 运行](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/workflows/ci.yml)
+下载 `bundles-*` 构建产物（需登录 GitHub）：Linux 的 `.deb` / `.rpm` / `.AppImage`，
+macOS 的 `.dmg`，Windows 的 `.msi` / `.exe`。这些构建尚未签名。
 
 ### 自行构建所需依赖
 
@@ -420,7 +437,8 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 - [ ] KWin 下的背景模糊（`_KDE_NET_WM_BLUR_BEHIND_REGION`）
 - [ ] 接入更多服务（Gemini CLI、GitHub Copilot、Cursor）
 - [ ] macOS 菜单栏模式
-- [ ] 按项目统计 token 与 CSV 导出
+- [x] 原生 CSV 导出与剪贴板复制
+- [ ] 按项目统计 token
 - [ ] 已公证的 macOS 包与已签名的 Windows 安装器
 - [ ] 可选的消耗速率预测（“按此速度，你的每周额度将在 …… 用尽”）
 
@@ -431,10 +449,17 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 
 ```sh
 pnpm check
-cd src-tauri && cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test
+pnpm test
+pnpm exec playwright install chromium
+pnpm test:e2e
+cd src-tauri && cargo fmt --all -- --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked
 ```
 
 请勿在 Issue 中粘贴真实 token；附日志前请把 `accessToken` / `refresh_token` 打码。
+
+回归测试覆盖范围和原生平台限制见[验证说明](docs/VALIDATION.md)；费用来源与估算限制见
+[架构文档](docs/ARCHITECTURE.md#9-cost-estimation)。未知模型价格显示 `—`，汇总不会悄悄忽略未知费用。
+浏览器预览明确标注示例数据，不读取桌面登录凭据。
 
 ## 许可证
 

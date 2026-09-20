@@ -13,7 +13,7 @@
 //! SQLite inside `spawn_blocking`.
 
 use crate::commands::{ingest, providers, store};
-use crate::model::{events, AppSnapshot, IngestStats, ProviderStatus};
+use crate::model::{events, AppSnapshot, DataSource, IngestStats, ProviderStatus};
 use crate::state::AppState;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -72,6 +72,8 @@ pub async fn refresh_now(app: &AppHandle, provider: Option<String>) -> AppSnapsh
 /// Fetch quotas, update the cached snapshot, store samples and emit
 /// `snapshot-updated`. Never fails: failures surface as provider statuses.
 pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: bool) -> AppSnapshot {
+    let state = app.state::<AppState>();
+    let _refresh_guard = state.refresh_lock.lock().await;
     let (ctx, http, settings, previous, db) = {
         let state = app.state::<AppState>();
         let parts = (
@@ -111,12 +113,12 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         let state = app.state::<AppState>();
         let mut backoff = state.backoff.lock();
         for q in &snapshot.providers {
-            if skipped.contains(&q.provider) {
+            if skipped.contains(&q.provider) || only.as_deref().is_some_and(|id| id != q.provider) {
                 continue;
             }
             let entry = backoff.entry(q.provider.clone()).or_default();
             match q.status {
-                ProviderStatus::Error => entry.on_error(now),
+                ProviderStatus::Error => entry.on_error(store::now_ms()),
                 // Nothing to retry faster for: these need the user to act.
                 _ => entry.on_success(),
             }
@@ -126,9 +128,10 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
 
     if let Some(db) = db {
         let to_store = snapshot.clone();
+        let sampled_provider = only.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || {
             for q in &to_store.providers {
-                if q.status == ProviderStatus::Disabled || q.windows.is_empty() {
+                if !should_sample(q, sampled_provider.as_deref(), &skipped) {
                     continue;
                 }
                 let plan = q.plan_label.as_deref().or(q.plan.as_deref());
@@ -146,6 +149,18 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
     }
     snapshot
+}
+
+fn should_sample(
+    q: &crate::model::ProviderQuota,
+    only: Option<&str>,
+    skipped: &HashSet<String>,
+) -> bool {
+    q.status == ProviderStatus::Ok
+        && q.source == DataSource::Api
+        && !q.windows.is_empty()
+        && !skipped.contains(&q.provider)
+        && only.is_none_or(|id| id == q.provider)
 }
 
 // ---------- log ingestion ----------
@@ -264,4 +279,39 @@ fn spawn_log_watcher(dirty: Arc<AtomicI64>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{QuotaWindow, WindowKind};
+
+    #[test]
+    fn quota_history_only_samples_successful_live_refreshes() {
+        let mut quota = providers::empty_quota("codex", "Codex", ProviderStatus::Ok);
+        quota.windows.push(QuotaWindow {
+            kind: WindowKind::SevenDay,
+            label: "Weekly".into(),
+            window_seconds: Some(604800),
+            used_percent: 40.0,
+            resets_at: None,
+            scope: None,
+            is_primary: true,
+        });
+        let empty = HashSet::new();
+        assert!(should_sample(&quota, None, &empty));
+        assert!(!should_sample(&quota, Some("claude"), &empty));
+        assert!(!should_sample(
+            &quota,
+            None,
+            &HashSet::from(["codex".into()])
+        ));
+        quota.source = DataSource::Cache;
+        assert!(!should_sample(&quota, None, &empty));
+        quota.source = DataSource::LocalLog;
+        assert!(!should_sample(&quota, None, &empty));
+        quota.source = DataSource::Api;
+        quota.status = ProviderStatus::Error;
+        assert!(!should_sample(&quota, None, &empty));
+    }
 }

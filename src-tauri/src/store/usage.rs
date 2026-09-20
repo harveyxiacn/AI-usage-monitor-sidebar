@@ -52,7 +52,8 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
             "UPDATE usage_events SET model=?2, ts=?3, input_tokens=?4, cache_write_tokens=?5,
                cache_read_tokens=?6, output_tokens=?7, reasoning_tokens=?8, total_tokens=?9,
                session_id=?10, cwd=?12, source_file=?13
-             WHERE provider=?1 AND request_id=?11 AND total_tokens < ?9",
+             WHERE provider=?1 AND request_id=?11 AND
+               (total_tokens < ?9 OR (total_tokens = ?9 AND reasoning_tokens < ?8))",
         )?;
         for e in events {
             let params = rusqlite::params![
@@ -93,8 +94,7 @@ pub fn count_events(db: &Db) -> Result<i64> {
 /// Bucketing happens in Rust (not SQL) so it can use the machine's local time
 /// zone including DST, and so weeks can start on Monday.
 pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Result<HistoryResult> {
-    let from = parse_time_ms(&q.from).unwrap_or(i64::MIN / 4);
-    let to = parse_time_ms(&q.to).unwrap_or(i64::MAX / 4);
+    let (from, to) = query_range(&q.from, &q.to)?;
 
     // key: (bucket_start_ms, provider, model)
     let mut buckets: BTreeMap<(i64, String, Option<String>), Acc> = BTreeMap::new();
@@ -176,8 +176,9 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
 #[derive(Default)]
 struct Acc {
     totals: TokenTotals,
-    /// true as soon as at least one event had a known price
+    /// A total is only priced if every contributing event has a known price.
     cost_known: bool,
+    cost_missing: bool,
 }
 
 impl Acc {
@@ -193,13 +194,15 @@ impl Acc {
             self.cost_known = true;
             self.totals.estimated_cost_usd =
                 Some(self.totals.estimated_cost_usd.unwrap_or(0.0) + c);
+        } else {
+            self.cost_missing = true;
         }
     }
 
     /// Unknown-price buckets report `null` rather than an understated number.
     fn finish(self) -> TokenTotals {
         let mut t = self.totals;
-        if !self.cost_known {
+        if !self.cost_known || self.cost_missing {
             t.estimated_cost_usd = None;
         }
         t
@@ -271,6 +274,14 @@ pub fn parse_time_ms(s: &str) -> Option<i64> {
         }
     }
     None
+}
+
+/// Invalid filters must not silently turn into a query of all history.
+pub fn query_range(from: &str, to: &str) -> Result<(i64, i64)> {
+    let from = parse_time_ms(from).ok_or_else(|| anyhow::anyhow!("invalid history start time"))?;
+    let to = parse_time_ms(to).ok_or_else(|| anyhow::anyhow!("invalid history end time"))?;
+    anyhow::ensure!(from <= to, "history start time must precede end time");
+    Ok((from, to))
 }
 
 #[cfg(test)]
@@ -420,6 +431,11 @@ mod tests {
         assert_eq!(r.totals.total_tokens, 2_000_000 + 20 + 150 + 10);
         assert_eq!(r.by_provider["claude"].requests, 3);
         assert_eq!(r.by_provider["codex"].requests, 2);
+        assert!(
+            r.by_provider["codex"].estimated_cost_usd.is_none(),
+            "unknown model makes the combined estimate incomplete"
+        );
+        assert!(r.totals.estimated_cost_usd.is_none());
         // two opus-4-5 megatokens of input = 2 × $5
         let claude_cost = r.by_provider["claude"].estimated_cost_usd.unwrap();
         assert!((claude_cost - 10.00001).abs() < 0.001, "got {claude_cost}");
@@ -498,5 +514,15 @@ mod tests {
         let r =
             query_history(&db, &query("2026-09-14", "2026-09-20", Bucket::Day), &table).unwrap();
         assert_eq!(r.totals.output_tokens, 281);
+    }
+
+    #[test]
+    fn malformed_or_reversed_ranges_fail_without_querying_all_history() {
+        let db = Db::open_in_memory().unwrap();
+        let table = pricing::default_table();
+        assert!(query_history(&db, &query("bad", "2026-09-20", Bucket::Day), &table).is_err());
+        assert!(
+            query_history(&db, &query("2026-09-20", "2026-09-01", Bucket::Day), &table).is_err()
+        );
     }
 }
