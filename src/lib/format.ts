@@ -106,6 +106,15 @@ export function formatForecast(
   return line && { text: t(line.key, line.params), tone: line.tone };
 }
 
+/** "2 h 05 m" / "45 min" / "38 s" — an elapsed span, not a countdown. */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < MINUTE) return t('duration.s', { s: Math.round(ms / 1000) });
+  const totalMin = Math.round(ms / MINUTE);
+  if (totalMin < 60) return t('duration.m', { m: totalMin });
+  return t('duration.hm', { h: Math.floor(totalMin / 60), m: pad2(totalMin % 60) });
+}
+
 /** "12 s ago" / "12 秒前" */
 export function formatAgo(iso: string | null, now: number = Date.now()): string {
   if (!iso) return t('reset.unknown');

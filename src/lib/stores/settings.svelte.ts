@@ -80,6 +80,7 @@ export const defaultSettings: Settings = {
   },
   ingestEnabled: true,
   pricingUrl: '',
+  monthlyBudgetUsd: 0,
   autostart: false,
   opacity: 1,
   scale: 1,

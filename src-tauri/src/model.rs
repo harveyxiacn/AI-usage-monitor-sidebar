@@ -432,6 +432,8 @@ pub struct Settings {
     /// Opt-in https URL of a pricing table to refresh from (empty = off; the
     /// app makes no third-party request while it is empty).
     pub pricing_url: String,
+    /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
+    pub monthly_budget_usd: f64,
     pub autostart: bool,
     pub opacity: f64,
     pub scale: f64,
@@ -488,6 +490,7 @@ impl Default for Settings {
             providers,
             ingest_enabled: true,
             pricing_url: String::new(),
+            monthly_budget_usd: 0.0,
             autostart: false,
             opacity: 1.0,
             scale: 1.0,
@@ -572,6 +575,95 @@ pub struct HistoryResult {
     /// price for that exact model (ARCHITECTURE §9).
     #[serde(default)]
     pub cost_approximate: bool,
+}
+
+/// Activity calendar / punch card over one time range. See §5.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarQuery {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Same semantics as `HistoryQuery::project`.
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// One local calendar day with activity. Days without events are omitted.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarDay {
+    /// Local `YYYY-MM-DD`.
+    pub date: String,
+    #[serde(flatten)]
+    pub totals: TokenTotals,
+}
+
+/// One weekday × hour-of-day cell of the punch card (local time).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarSlot {
+    /// 0 = Monday … 6 = Sunday.
+    pub weekday: u8,
+    /// 0..=23 local hour.
+    pub hour: u8,
+    #[serde(flatten)]
+    pub totals: TokenTotals,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarResult {
+    pub days: Vec<CalendarDay>,
+    pub slots: Vec<CalendarSlot>,
+    pub totals: TokenTotals,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionQuery {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Same semantics as `HistoryQuery::project`.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Server-side cap on the returned rows (default 200, clamped to 1..=1000).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Counters and identifiers only — never prompt or response text.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRow {
+    /// Provider session id; an empty string groups events that carry none.
+    pub session_id: String,
+    pub provider: String,
+    /// Exact cwd of the session's last event in range; empty = unassigned.
+    pub project: String,
+    /// RFC 3339 with the local offset, first/last event **inside the range**.
+    pub first_ts: String,
+    pub last_ts: String,
+    pub duration_ms: i64,
+    /// Distinct model names used, sorted.
+    pub models: Vec<String>,
+    #[serde(flatten)]
+    pub totals: TokenTotals,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionsResult {
+    /// Top sessions by total tokens, at most `limit` of them.
+    pub rows: Vec<SessionRow>,
+    /// Sessions in range before the cap was applied.
+    pub total_sessions: i64,
+    /// Totals over every session in range, not only the returned ones.
+    pub totals: TokenTotals,
+    pub truncated: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -520,6 +520,17 @@
         aria-label={t('settings.pricingUrl')}
       />
     </Field>
+    <Field label={t('settings.monthlyBudgetUsd')} hint={t('settings.monthlyBudgetHint')}>
+      <input
+        class="field num"
+        type="number"
+        min="0"
+        max="1000000"
+        step="1"
+        value={s.monthlyBudgetUsd}
+        onchange={(e) => void settings.patch({ monthlyBudgetUsd: Math.min(1_000_000, Math.max(0, e.currentTarget.valueAsNumber || 0)) })}
+      />
+    </Field>
 
     <Field label={t('history.rescan')}>
       <button class="btn" disabled={rescanning} onclick={() => void rescan()}>

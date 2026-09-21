@@ -91,6 +91,8 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::get_usage_history,
+            commands::get_usage_calendar,
+            commands::get_usage_sessions,
             commands::get_quota_history,
             commands::get_pricing,
             commands::set_pricing,

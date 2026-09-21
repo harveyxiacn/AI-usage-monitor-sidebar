@@ -155,6 +155,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only |
 | `pricingUrl` | `""` | optional https URL of a price list, refreshed at most daily. Empty = no third-party request is ever made |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
+| `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |

@@ -24,6 +24,16 @@ export const PROVIDER_ACCENT: Record<ProviderId, string> = {
   codex: 'var(--accent-codex)',
 };
 
+/**
+ * "How much" hue — one sequential violet, deliberately neither provider accent
+ * nor the focus blue. Step 3 of the ramp in `UsageHeatmap.svelte`, reused as
+ * the single line colour of the budget burn-up so the two read as one system.
+ */
+export const HEAT_ACCENT: Record<'dark' | 'light', string> = {
+  dark: '#7e6bea',
+  light: '#7a5fd6',
+};
+
 /** Categorical palette for "group by model" series (stable by index). */
 export const SERIES_COLORS = [
   'var(--accent-claude)',

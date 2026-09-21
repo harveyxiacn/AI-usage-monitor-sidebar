@@ -8,6 +8,10 @@ import type {
   AppInfo,
   AppSnapshot,
   Bucket,
+  CalendarDay,
+  CalendarQuery,
+  CalendarResult,
+  CalendarSlot,
   HistoryQuery,
   HistoryResult,
   HistoryRow,
@@ -19,9 +23,13 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  SessionQuery,
+  SessionRow,
+  SessionsResult,
   Settings,
   TokenTotals,
 } from './types';
+import { localDateInput } from './history';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
 
 const now = Date.now();
@@ -115,6 +123,7 @@ export const mockSettings: Settings = {
   },
   ingestEnabled: true,
   pricingUrl: '',
+  monthlyBudgetUsd: 0,
   autostart: false,
   opacity: 1,
   scale: 1,
@@ -207,6 +216,8 @@ interface MockEvent {
   provider: ProviderId;
   model: string;
   project: string | null;
+  /** provider session id; "" reproduces events that carry none */
+  session: string;
   inputTokens: number;
   cacheWriteTokens: number;
   cacheReadTokens: number;
@@ -275,6 +286,9 @@ const events: MockEvent[] = (() => {
             provider,
             model: models[m],
             project: PROJECTS[(dayBack + hour + m) % PROJECTS.length] || null,
+            // one session per provider and half-day; every 17th is left
+            // without an id so the "no session" group stays exercised
+            session: dayBack % 17 === 3 ? '' : `${provider}-${89 - dayBack}-${hour < 15 ? 'am' : 'pm'}`,
             inputTokens: input,
             cacheWriteTokens: cacheWrite,
             cacheReadTokens: cacheRead,
@@ -464,6 +478,143 @@ function runHistory(q: HistoryQuery): HistoryResult {
   };
 }
 
+/** Estimated cost of a single synthetic event, or null for an unpriced model. */
+function eventCost(e: MockEvent): number | null {
+  return costOf(e.model, {
+    ...emptyTotals(),
+    inputTokens: e.inputTokens,
+    cacheWriteTokens: e.cacheWriteTokens,
+    cacheReadTokens: e.cacheReadTokens,
+    outputTokens: e.outputTokens,
+  });
+}
+
+/** Add `cost` into a running estimate, keeping "unknown" sticky (contract §9). */
+function addCost(previous: number | null | undefined, cost: number | null): number | null {
+  return previous == null || cost == null ? null : previous + cost;
+}
+
+/** Local day + weekday/hour aggregation, mirroring `store::query_calendar`. */
+function runCalendar(q: CalendarQuery): CalendarResult {
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const days = new Map<string, CalendarDay>();
+  const slots = new Map<string, CalendarSlot>();
+  const dayCost = new Map<string, number | null>();
+  const slotCost = new Map<string, number | null>();
+  const totals = emptyTotals();
+  let totalCost: number | null = 0;
+
+  for (const e of events) {
+    if (e.ts < from || e.ts >= to) continue;
+    if (q.provider && e.provider !== q.provider) continue;
+    if (q.project != null && (e.project ?? '') !== q.project) continue;
+
+    const cost = eventCost(e);
+    const date = localDateInput(e.ts);
+    let day = days.get(date);
+    if (!day) {
+      day = { ...emptyTotals(), date };
+      days.set(date, day);
+      dayCost.set(date, 0);
+    }
+    addInto(day, e);
+    dayCost.set(date, addCost(dayCost.get(date), cost));
+
+    const local = new Date(e.ts);
+    // Monday is weekday 0, like the Rust side and the week buckets
+    const weekday = (local.getDay() + 6) % 7;
+    const hour = local.getHours();
+    const key = `${weekday}:${hour}`;
+    let slot = slots.get(key);
+    if (!slot) {
+      slot = { ...emptyTotals(), weekday, hour };
+      slots.set(key, slot);
+      slotCost.set(key, 0);
+    }
+    addInto(slot, e);
+    slotCost.set(key, addCost(slotCost.get(key), cost));
+
+    addInto(totals, e);
+    totalCost = addCost(totalCost, cost);
+  }
+
+  for (const [date, day] of days) day.estimatedCostUsd = dayCost.get(date) ?? null;
+  for (const [key, slot] of slots) slot.estimatedCostUsd = slotCost.get(key) ?? null;
+  totals.estimatedCostUsd = totalCost;
+  return {
+    days: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    slots: [...slots.values()].sort((a, b) => a.weekday - b.weekday || a.hour - b.hour),
+    totals,
+  };
+}
+
+/** Per-session aggregation with the same cap/sort as `store::query_sessions`. */
+function runSessions(q: SessionQuery): SessionsResult {
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const limit = Math.min(1000, Math.max(1, Math.trunc(q.limit ?? 200) || 200));
+  const rows = new Map<string, SessionRow>();
+  const rowCost = new Map<string, number | null>();
+  const models = new Map<string, Set<string>>();
+  const totals = emptyTotals();
+  let totalCost: number | null = 0;
+
+  for (const e of [...events].sort((a, b) => a.ts - b.ts)) {
+    if (e.ts < from || e.ts >= to) continue;
+    if (q.provider && e.provider !== q.provider) continue;
+    const project = e.project ?? '';
+    if (q.project != null && project !== q.project) continue;
+
+    const key = `${e.provider}\u0000${e.session}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = {
+        ...emptyTotals(),
+        sessionId: e.session,
+        provider: e.provider,
+        project,
+        firstTs: iso(e.ts),
+        lastTs: iso(e.ts),
+        durationMs: 0,
+        models: [],
+      };
+      rows.set(key, row);
+      rowCost.set(key, 0);
+      models.set(key, new Set());
+    }
+    // events arrive in `ts` order, so the last one owns the session's cwd
+    row.project = project;
+    row.lastTs = iso(e.ts);
+    row.durationMs = e.ts - Date.parse(row.firstTs);
+    models.get(key)!.add(e.model);
+    addInto(row, e);
+    const cost = eventCost(e);
+    rowCost.set(key, addCost(rowCost.get(key), cost));
+    addInto(totals, e);
+    totalCost = addCost(totalCost, cost);
+  }
+
+  for (const [key, row] of rows) {
+    row.estimatedCostUsd = rowCost.get(key) ?? null;
+    row.models = [...models.get(key)!].sort((a, b) => a.localeCompare(b));
+  }
+  totals.estimatedCostUsd = totalCost;
+  const list = [...rows.values()].sort(
+    (a, b) =>
+      b.totalTokens - a.totalTokens ||
+      b.lastTs.localeCompare(a.lastTs) ||
+      a.provider.localeCompare(b.provider) ||
+      a.sessionId.localeCompare(b.sessionId)
+  );
+  return {
+    rows: list.slice(0, limit),
+    totalSessions: list.length,
+    totals,
+    truncated: list.length > limit,
+  };
+}
+
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */
 function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
   const from = Date.parse(q.from);
@@ -492,11 +643,11 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
 // ------------------------------------------------------------- event bus ----
 
 /**
- * `?settings=<url-encoded JSON patch>` seeds the mock settings for this page
- * load. The sidebar route has no UI of its own to change settings with, so
- * this is how the e2e suite renders the bar in a given configuration.
+ * Browser-preview hook: `?settings=<url-encoded JSON patch>` starts the mock
+ * backend from a patched state, so a preview link (or an e2e test) can open the
+ * dashboard with, say, a monthly budget already configured.
  */
-function seededSettings(): Settings {
+export function seededSettings(): Settings {
   const base = structuredClone(mockSettings);
   if (typeof window === 'undefined') return base;
   const raw = new URLSearchParams(window.location.search).get('settings');
@@ -595,6 +746,10 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     }
     case 'get_usage_history':
       return runHistory(args?.query as HistoryQuery) as T;
+    case 'get_usage_calendar':
+      return runCalendar(args?.query as CalendarQuery) as T;
+    case 'get_usage_sessions':
+      return runSessions(args?.query as SessionQuery) as T;
     case 'get_quota_history':
       return runQuotaHistory(args?.query as QuotaHistoryQuery) as T;
     case 'get_pricing':

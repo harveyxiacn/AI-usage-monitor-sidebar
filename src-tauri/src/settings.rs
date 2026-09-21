@@ -164,6 +164,8 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.refresh_interval_sec = s.refresh_interval_sec.max(15);
     s.collapsed_width = s.collapsed_width.clamp(2, 24);
     s.auto_hide_delay_ms = s.auto_hide_delay_ms.min(600_000);
+    // 0 = budget line off; the cap keeps a typo out of the chart's y-axis.
+    s.monthly_budget_usd = clamp_f64(s.monthly_budget_usd, 0.0, 1_000_000.0, 0.0);
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);
@@ -625,6 +627,32 @@ mod tests {
         let low = merge(&base, &json!({"opacity": 2.0, "scale": 0.1}));
         assert_eq!(low.opacity, 1.0);
         assert_eq!(low.scale, 0.75);
+    }
+
+    #[test]
+    fn the_monthly_budget_is_optional_non_negative_and_capped() {
+        let base = Settings::default();
+        assert_eq!(base.monthly_budget_usd, 0.0, "no budget by default");
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": 250})).monthly_budget_usd,
+            250.0
+        );
+        // a typo must not blow the chart's axis out or go negative
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": -5})).monthly_budget_usd,
+            0.0
+        );
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": 1e12})).monthly_budget_usd,
+            1_000_000.0
+        );
+        // a settings.json written before the field existed still loads
+        let dir = tempdir();
+        std::fs::write(settings_path(&dir), r#"{"edge":"left"}"#).unwrap();
+        let old = load(&dir);
+        assert_eq!(old.edge, Edge::Left);
+        assert_eq!(old.monthly_budget_usd, 0.0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

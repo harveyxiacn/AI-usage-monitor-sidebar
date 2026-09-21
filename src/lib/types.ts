@@ -221,6 +221,8 @@ export interface Settings {
   ingestEnabled: boolean;
   /** Opt-in https URL of a pricing table; empty = no third-party request is ever made */
   pricingUrl: string;
+  /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
+  monthlyBudgetUsd: number;
   autostart: boolean;
   /** 0.3 .. 1 */
   opacity: number;
@@ -282,6 +284,71 @@ export interface HistoryResult {
   projects: string[];
   /** At least one cost came from an approximate family match (§9). */
   costApproximate: boolean;
+}
+
+export interface CalendarQuery {
+  /** RFC 3339 */
+  from: string;
+  to: string;
+  provider: ProviderId | null;
+  /** Same semantics as `HistoryQuery.project`. */
+  project?: string | null;
+}
+
+/** One local calendar day with activity; days without events are omitted. */
+export interface CalendarDay extends TokenTotals {
+  /** Local `YYYY-MM-DD` */
+  date: string;
+}
+
+/** One weekday × hour-of-day cell of the punch card, in local time. */
+export interface CalendarSlot extends TokenTotals {
+  /** 0 = Monday … 6 = Sunday */
+  weekday: number;
+  /** 0..23 local hour */
+  hour: number;
+}
+
+export interface CalendarResult {
+  days: CalendarDay[];
+  slots: CalendarSlot[];
+  totals: TokenTotals;
+}
+
+export interface SessionQuery {
+  /** RFC 3339 */
+  from: string;
+  to: string;
+  provider: ProviderId | null;
+  /** Same semantics as `HistoryQuery.project`. */
+  project?: string | null;
+  /** Server-side cap on the returned rows (default 200, clamped to 1..1000). */
+  limit?: number | null;
+}
+
+/** Counters and identifiers only — never prompt or response text. */
+export interface SessionRow extends TokenTotals {
+  /** Provider session id; "" groups the events that carry none. */
+  sessionId: string;
+  provider: ProviderId;
+  /** Exact cwd of the session's last event in range; "" = unassigned. */
+  project: string;
+  /** RFC 3339 local, first/last event *inside* the range */
+  firstTs: string;
+  lastTs: string;
+  durationMs: number;
+  /** Distinct model names used, sorted */
+  models: string[];
+}
+
+export interface SessionsResult {
+  /** Top sessions by total tokens, at most `limit` of them. */
+  rows: SessionRow[];
+  /** Sessions in range before the cap was applied. */
+  totalSessions: number;
+  /** Totals over every session in range, not only the returned ones. */
+  totals: TokenTotals;
+  truncated: boolean;
 }
 
 export interface QuotaHistoryQuery {

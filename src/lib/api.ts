@@ -5,6 +5,8 @@
 import type {
   AppInfo,
   AppSnapshot,
+  CalendarQuery,
+  CalendarResult,
   DashboardTab,
   HistoryQuery,
   HistoryResult,
@@ -16,6 +18,8 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  SessionQuery,
+  SessionsResult,
   Settings,
   SidebarState,
 } from './types';
@@ -49,6 +53,8 @@ export const refreshNow = (provider?: ProviderId) => invoke<AppSnapshot>('refres
 export const getSettings = () => invoke<Settings>('get_settings');
 export const updateSettings = (patch: SettingsPatch) => invoke<Settings>('update_settings', { patch });
 export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('get_usage_history', { query });
+export const getUsageCalendar = (query: CalendarQuery) => invoke<CalendarResult>('get_usage_calendar', { query });
+export const getUsageSessions = (query: SessionQuery) => invoke<SessionsResult>('get_usage_sessions', { query });
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });
