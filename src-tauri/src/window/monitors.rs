@@ -177,12 +177,27 @@ pub fn clamp_span(pos: f64, len: f64, min: f64, span: f64) -> f64 {
     }
 }
 
+/// Start of a `len`-long bar inside `min..min+span` for `align`, before
+/// `vertical_offset` is added. `Top` is the start of the span (the top of a
+/// left/right edge, the left of a top/bottom one) and `Bottom` its end.
+pub fn align_start(align: VerticalAlign, min: f64, span: f64, len: f64) -> f64 {
+    match align {
+        VerticalAlign::Top => min,
+        VerticalAlign::Center => min + (span - len) / 2.0,
+        VerticalAlign::Bottom => min + span - len,
+    }
+}
+
 /// Where the sidebar window goes, in logical px.
 ///
-/// * width  — `expanded ? content_w : settings.collapsed_width`
-/// * x      — flush against `settings.edge`
-/// * height — the content height, never taller than the monitor
-/// * y      — per `settings.vertical_align`, then `+ vertical_offset`, clamped
+/// Along the docked edge the bar is sized to its content and positioned by
+/// `vertical_align` + `vertical_offset` (see [`align_start`]); across the edge
+/// it is flush with it and `collapsed_width` px thick while collapsed:
+///
+/// * left/right — width = `expanded ? content_w : collapsed_width`, the
+///   content height, positioned vertically;
+/// * top/bottom — height = `expanded ? content_h : collapsed_width`, the
+///   content width, positioned horizontally.
 pub fn sidebar_rect(
     mon: &MonitorRect,
     settings: &Settings,
@@ -191,42 +206,64 @@ pub fn sidebar_rect(
     expanded: bool,
 ) -> LogicalRect {
     let m = mon.rect;
-    let width = if expanded {
-        content_w
-    } else {
-        settings.collapsed_width as f64
-    };
+    let thickness = settings.collapsed_width as f64;
+    let offset = settings.vertical_offset as f64;
+
+    if settings.edge.is_horizontal() {
+        let height = if expanded { content_h } else { thickness };
+        let height = height.max(1.0).min(m.h);
+        let width = content_w.max(1.0).min(m.w);
+        let y = match settings.edge {
+            Edge::Top => m.y,
+            _ => m.bottom() - height,
+        };
+        let x = align_start(settings.vertical_align, m.x, m.w, width) + offset;
+        return LogicalRect::new(clamp_span(x, width, m.x, m.w), y, width, height);
+    }
+
+    let width = if expanded { content_w } else { thickness };
     let width = width.max(1.0).min(m.w);
     let height = content_h.max(1.0).min(m.h);
-
     let x = match settings.edge {
         Edge::Right => m.right() - width,
-        Edge::Left => m.x,
+        _ => m.x,
     };
-    let y = match settings.vertical_align {
-        VerticalAlign::Top => m.y,
-        VerticalAlign::Center => m.y + (m.h - height) / 2.0,
-        VerticalAlign::Bottom => m.bottom() - height,
-    } + settings.vertical_offset as f64;
+    let y = align_start(settings.vertical_align, m.y, m.h, height) + offset;
 
     LogicalRect::new(x, clamp_span(y, height, m.y, m.h), width, height)
 }
 
 /// Where the popover goes, in logical px: adjacent to the sidebar on the side
-/// that faces the centre of the screen, vertically centred on the hovered ring.
+/// that faces the centre of the screen (left of a right-edge bar, below a
+/// top-edge one, …) and centred on the hovered ring along the bar's own axis.
 ///
-/// `anchor_y` is the ring centre in CSS px **relative to the sidebar window**.
+/// `anchor` is the ring centre in CSS px **relative to the sidebar window**,
+/// measured along the bar's axis: y for a left/right bar, x for a top/bottom
+/// one (`PopoverRequest.anchorY` / `anchorX`).
 pub fn popover_rect(
     mon: &MonitorRect,
     sidebar: &LogicalRect,
     content_w: f64,
     content_h: f64,
-    anchor_y: f64,
+    anchor: f64,
     gap: f64,
+    edge: Edge,
 ) -> LogicalRect {
     let m = mon.rect;
     let w = content_w.max(1.0).min(m.w);
     let h = content_h.max(1.0).min(m.h);
+
+    if edge.is_horizontal() {
+        // The side facing the screen centre: a bar on the lower half opens up.
+        let open_up = sidebar.center_y() >= m.center_y();
+        let y = if open_up {
+            sidebar.y - gap - h
+        } else {
+            sidebar.bottom() + gap
+        };
+        let x = sidebar.x + anchor - w / 2.0;
+        return LogicalRect::new(clamp_span(x, w, m.x, m.w), clamp_span(y, h, m.y, m.h), w, h);
+    }
 
     // The side facing the screen centre: a bar on the right half opens left.
     let open_left = sidebar.center_x() >= m.center_x();
@@ -237,7 +274,7 @@ pub fn popover_rect(
     };
     let x = clamp_span(x, w, m.x, m.w);
 
-    let y = sidebar.y + anchor_y - h / 2.0;
+    let y = sidebar.y + anchor - h / 2.0;
     let y = clamp_span(y, h, m.y, m.h);
 
     LogicalRect::new(x, y, w, h)
@@ -289,11 +326,97 @@ mod tests {
     }
 
     #[test]
+    fn top_edge_is_a_horizontal_strip_centred_on_x() {
+        let mut s = settings();
+        s.edge = Edge::Top;
+        let r = sidebar_rect(&mon(), &s, 320.0, 76.0, true);
+        assert_eq!(
+            r,
+            LogicalRect::new((2560.0 - 320.0) / 2.0, 0.0, 320.0, 76.0),
+            "sized to the content, flush with the top edge"
+        );
+    }
+
+    #[test]
+    fn bottom_edge_sits_on_the_work_area_floor() {
+        let mut s = settings();
+        s.edge = Edge::Bottom;
+        let r = sidebar_rect(&mon(), &s, 320.0, 76.0, true);
+        assert_eq!(r.y, 1440.0 - 76.0);
+        assert_eq!(r.bottom(), 1440.0);
+        assert_eq!(r.x, (2560.0 - 320.0) / 2.0);
+    }
+
+    #[test]
+    fn a_collapsed_horizontal_bar_is_a_thin_sliver_on_its_edge() {
+        let mut s = settings();
+        s.collapsed_width = 6;
+        for (edge, y) in [(Edge::Top, 0.0), (Edge::Bottom, 1440.0 - 6.0)] {
+            s.edge = edge;
+            let r = sidebar_rect(&mon(), &s, 320.0, 76.0, false);
+            assert_eq!(r.h, 6.0, "collapsedWidth is the handle's thickness");
+            assert_eq!(r.w, 320.0, "collapsing only changes the thickness");
+            assert_eq!(r.y, y, "the handle stays flush with {edge:?}");
+        }
+    }
+
+    #[test]
+    fn align_and_offset_run_along_a_horizontal_edge() {
+        let mut s = settings();
+        s.edge = Edge::Top;
+        s.vertical_align = VerticalAlign::Top;
+        assert_eq!(sidebar_rect(&mon(), &s, 320.0, 76.0, true).x, 0.0, "start");
+        s.vertical_align = VerticalAlign::Bottom;
+        assert_eq!(
+            sidebar_rect(&mon(), &s, 320.0, 76.0, true).x,
+            2560.0 - 320.0,
+            "end"
+        );
+        s.vertical_align = VerticalAlign::Center;
+        s.vertical_offset = 100;
+        assert_eq!(
+            sidebar_rect(&mon(), &s, 320.0, 76.0, true).x,
+            (2560.0 - 320.0) / 2.0 + 100.0,
+            "positive offset moves towards the end of the edge"
+        );
+        s.vertical_offset = 100_000;
+        assert_eq!(
+            sidebar_rect(&mon(), &s, 320.0, 76.0, true).x,
+            2560.0 - 320.0
+        );
+        s.vertical_offset = -100_000;
+        assert_eq!(sidebar_rect(&mon(), &s, 320.0, 76.0, true).x, 0.0);
+    }
+
+    #[test]
+    fn a_horizontal_bar_wider_than_the_monitor_is_capped() {
+        let mut s = settings();
+        s.edge = Edge::Bottom;
+        let r = sidebar_rect(&mon(), &s, 9000.0, 76.0, true);
+        assert_eq!(r.w, 2560.0);
+        assert_eq!(r.x, 0.0);
+    }
+
+    #[test]
     fn secondary_monitor_offset_is_respected() {
         let m = MonitorRect::new("HDMI-1", 2560.0, -200.0, 1920.0, 1080.0, 1.0);
         let r = sidebar_rect(&m, &settings(), 76.0, 160.0, true);
         assert_eq!(r.x, 2560.0 + 1920.0 - 76.0);
         assert_eq!(r.y, -200.0 + (1080.0 - 160.0) / 2.0);
+    }
+
+    #[test]
+    fn a_horizontal_bar_on_a_negative_origin_monitor_stays_on_it() {
+        // Portrait screen left of and above the primary one.
+        let m = MonitorRect::new("DP-2", -1080.0, -300.0, 1080.0, 1920.0, 1.0);
+        let mut s = settings();
+        for (edge, y) in [(Edge::Top, -300.0), (Edge::Bottom, -300.0 + 1920.0 - 76.0)] {
+            s.edge = edge;
+            let r = sidebar_rect(&m, &s, 320.0, 76.0, true);
+            assert_eq!(r.y, y);
+            assert_eq!(r.x, -1080.0 + (1080.0 - 320.0) / 2.0);
+            assert!(r.x >= m.rect.x && r.right() <= m.rect.right());
+        }
     }
 
     #[test]
@@ -335,7 +458,7 @@ mod tests {
     fn popover_opens_left_of_a_right_edge_bar() {
         let m = mon();
         let sb = sidebar_rect(&m, &settings(), 76.0, 300.0, true);
-        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0);
+        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, Edge::Right);
         assert_eq!(p.x, sb.x - 10.0 - 340.0);
         // ring centre (sb.y + 40) == popover centre
         assert_eq!(p.y + 220.0 / 2.0, sb.y + 40.0);
@@ -347,8 +470,25 @@ mod tests {
         let mut s = settings();
         s.edge = Edge::Left;
         let sb = sidebar_rect(&m, &s, 76.0, 300.0, true);
-        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0);
+        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, s.edge);
         assert_eq!(p.x, sb.right() + 10.0);
+    }
+
+    #[test]
+    fn popover_opens_below_a_top_edge_bar_and_above_a_bottom_one() {
+        let m = mon();
+        let mut s = settings();
+        for edge in [Edge::Top, Edge::Bottom] {
+            s.edge = edge;
+            let sb = sidebar_rect(&m, &s, 320.0, 76.0, true);
+            let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, edge);
+            match edge {
+                Edge::Top => assert_eq!(p.y, sb.bottom() + 10.0),
+                _ => assert_eq!(p.y, sb.y - 10.0 - 220.0),
+            }
+            // ring centre (sb.x + 40) == popover centre along x
+            assert_eq!(p.x + 340.0 / 2.0, sb.x + 40.0);
+        }
     }
 
     #[test]
@@ -356,19 +496,41 @@ mod tests {
         let m = mon();
         let sb = sidebar_rect(&m, &settings(), 76.0, 1400.0, true);
         // ring near the very top of a tall bar
-        let top = popover_rect(&m, &sb, 340.0, 220.0, 5.0, 10.0);
+        let top = popover_rect(&m, &sb, 340.0, 220.0, 5.0, 10.0, Edge::Right);
         assert_eq!(top.y, 0.0);
         // ring near the very bottom
-        let bottom = popover_rect(&m, &sb, 340.0, 220.0, 1395.0, 10.0);
+        let bottom = popover_rect(&m, &sb, 340.0, 220.0, 1395.0, 10.0, Edge::Right);
         assert_eq!(bottom.y, 1440.0 - 220.0);
+    }
+
+    #[test]
+    fn popover_of_a_horizontal_bar_is_clamped_horizontally() {
+        let m = mon();
+        let mut s = settings();
+        s.edge = Edge::Top;
+        let sb = sidebar_rect(&m, &s, 2560.0, 76.0, true);
+        let left = popover_rect(&m, &sb, 340.0, 220.0, 5.0, 10.0, s.edge);
+        assert_eq!(left.x, 0.0);
+        let right = popover_rect(&m, &sb, 340.0, 220.0, 2555.0, 10.0, s.edge);
+        assert_eq!(right.x, 2560.0 - 340.0);
     }
 
     #[test]
     fn popover_wider_than_the_gap_stays_on_screen() {
         let m = MonitorRect::new("small", 0.0, 0.0, 400.0, 600.0, 1.0);
         let sb = sidebar_rect(&m, &settings(), 76.0, 200.0, true);
-        let p = popover_rect(&m, &sb, 380.0, 220.0, 100.0, 10.0);
+        let p = popover_rect(&m, &sb, 380.0, 220.0, 100.0, 10.0, Edge::Right);
         assert!(p.x >= 0.0 && p.right() <= 400.0);
+    }
+
+    #[test]
+    fn popover_taller_than_the_gap_of_a_horizontal_bar_stays_on_screen() {
+        let m = MonitorRect::new("small", 0.0, 0.0, 600.0, 400.0, 1.0);
+        let mut s = settings();
+        s.edge = Edge::Bottom;
+        let sb = sidebar_rect(&m, &s, 320.0, 76.0, true);
+        let p = popover_rect(&m, &sb, 340.0, 380.0, 100.0, 10.0, s.edge);
+        assert!(p.y >= 0.0 && p.bottom() <= 400.0);
     }
 
     #[test]
@@ -377,9 +539,14 @@ mod tests {
         let mut s = settings();
         s.collapsed_width = 6;
         let sb = sidebar_rect(&m, &s, 76.0, 300.0, false);
-        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0);
+        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, s.edge);
         // The bubble hugs the 6 px handle, not the expanded width.
         assert_eq!(p.x, 2560.0 - 6.0 - 10.0 - 340.0);
+
+        s.edge = Edge::Bottom;
+        let sb = sidebar_rect(&m, &s, 320.0, 76.0, false);
+        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, s.edge);
+        assert_eq!(p.y, 1440.0 - 6.0 - 10.0 - 220.0);
     }
 
     #[test]
@@ -391,9 +558,19 @@ mod tests {
         s.edge = Edge::Left;
         let sb = sidebar_rect(&m, &s, 76.0, 300.0, true);
         assert_eq!(sb.x, 2560.0);
-        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0);
+        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, s.edge);
         assert_eq!(p.x, 2560.0 + 76.0 + 10.0);
         assert!(p.x >= m.rect.x && p.right() <= m.rect.right());
+
+        // Same for a top-edge bar on a monitor that starts above the origin:
+        // the bubble opens downwards, into that monitor.
+        let m = MonitorRect::new("HDMI-2", 2560.0, -1080.0, 1920.0, 1080.0, 1.0);
+        s.edge = Edge::Top;
+        let sb = sidebar_rect(&m, &s, 320.0, 76.0, true);
+        assert_eq!(sb.y, -1080.0);
+        let p = popover_rect(&m, &sb, 340.0, 220.0, 40.0, 10.0, s.edge);
+        assert_eq!(p.y, -1080.0 + 76.0 + 10.0);
+        assert!(p.y >= m.rect.y && p.bottom() <= m.rect.bottom());
     }
 
     #[test]
@@ -443,8 +620,31 @@ mod tests {
         let bar = sidebar_rect(&m, &s, 76.0, 160.0, true);
         assert_eq!(bar.x, 48.0);
         assert_eq!(bar.y, 30.0);
-        let popover = popover_rect(&m, &bar, 340.0, 220.0, 20.0, 10.0);
+        let popover = popover_rect(&m, &bar, 340.0, 220.0, 20.0, 10.0, s.edge);
         assert_eq!(popover.y, 30.0);
         assert!(popover.bottom() <= 1040.0);
+
+        // A top-edge bar starts below the panel, not at the screen top.
+        s.edge = Edge::Top;
+        let bar = sidebar_rect(&m, &s, 320.0, 76.0, true);
+        assert_eq!(bar.y, 30.0);
+        assert_eq!(bar.x, 48.0);
+        let popover = popover_rect(&m, &bar, 340.0, 220.0, 20.0, 10.0, s.edge);
+        assert_eq!(popover.y, 30.0 + 76.0 + 10.0);
+        assert!(popover.x >= 48.0 && popover.right() <= 1920.0);
+    }
+
+    #[test]
+    fn a_horizontal_bar_on_a_mixed_dpi_monitor_converts_with_its_own_scale() {
+        // 2x display whose global logical origin is 960; a bottom-edge bar
+        // must land on its physical bottom row, not the primary monitor's.
+        let m = MonitorRect::new("retina", 960.0, 0.0, 1920.0, 1080.0, 2.0);
+        let mut s = settings();
+        s.edge = Edge::Bottom;
+        let r = sidebar_rect(&m, &s, 320.0, 76.0, true);
+        let (position, size) = r.to_physical(m.scale);
+        assert_eq!(position, PhysicalPosition::new(3520, 2008));
+        assert_eq!(size, PhysicalSize::new(640, 152));
+        assert_eq!(position.y + size.height as i32, 2160);
     }
 }

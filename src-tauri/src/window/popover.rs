@@ -12,13 +12,30 @@ pub fn desired_rect(app: &AppHandle, req: &PopoverRequest) -> Option<(LogicalRec
     let mon = monitors::target_monitor(app, &settings)?;
     let sidebar = super::sidebar::current_rect(app)?;
     let (w, h) = window::snapshot(app)?.popover_content;
-    let anchor_y = if req.anchor_y.is_finite() {
-        req.anchor_y
+    // The anchor runs along the bar's own axis: `anchorX` for a horizontal bar
+    // (older frontends never send it), `anchorY` for a vertical one. Anything
+    // missing or not finite falls back to the middle of the bar.
+    let anchor = if settings.edge.is_horizontal() {
+        req.anchor_x.filter(|x| x.is_finite())
     } else {
-        sidebar.h / 2.0
+        Some(req.anchor_y).filter(|y| y.is_finite())
     };
+    let along = if settings.edge.is_horizontal() {
+        sidebar.w
+    } else {
+        sidebar.h
+    };
+    let anchor = anchor.unwrap_or(along / 2.0);
     Some((
-        monitors::popover_rect(&mon, &sidebar, w, h, anchor_y, window::POPOVER_GAP),
+        monitors::popover_rect(
+            &mon,
+            &sidebar,
+            w,
+            h,
+            anchor,
+            window::POPOVER_GAP,
+            settings.edge,
+        ),
         mon.scale,
     ))
 }

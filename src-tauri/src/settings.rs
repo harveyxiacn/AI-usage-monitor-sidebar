@@ -345,6 +345,23 @@ mod tests {
     }
 
     #[test]
+    fn the_new_horizontal_edges_load_and_old_files_keep_their_meaning() {
+        let base = Settings::default();
+        for (value, edge) in [("top", Edge::Top), ("bottom", Edge::Bottom)] {
+            let merged = merge(&base, &json!({"edge": value, "verticalOffset": -120}));
+            assert_eq!(merged.edge, edge);
+            // The two position fields keep their wire names on every edge; on a
+            // horizontal one they describe the position along the x axis.
+            assert_eq!(merged.vertical_offset, -120);
+            assert_eq!(merged.vertical_align, base.vertical_align);
+        }
+        // A settings.json written before top/bottom existed is untouched.
+        let old = merge(&base, &json!({"edge": "left", "verticalAlign": "bottom"}));
+        assert_eq!(old.edge, Edge::Left);
+        assert_eq!(old.vertical_align, crate::model::VerticalAlign::Bottom);
+    }
+
+    #[test]
     fn invalid_fields_are_ignored_not_fatal() {
         let base = Settings::default();
         let merged = merge(

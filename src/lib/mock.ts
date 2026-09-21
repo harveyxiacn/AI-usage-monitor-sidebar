@@ -427,7 +427,24 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
 
 // ------------------------------------------------------------- event bus ----
 
-let settings = structuredClone(mockSettings);
+/**
+ * Preview/e2e override: `?settings={"edge":"top"}` starts the mock backend
+ * with those fields patched onto `mockSettings`, which is the only way to see
+ * a sidebar variant that has no control in its own window.
+ */
+function initialSettings(): Settings {
+  const base = structuredClone(mockSettings);
+  if (typeof location === 'undefined') return base;
+  const raw = new URLSearchParams(location.search).get('settings');
+  if (!raw) return base;
+  try {
+    return mergeSettings(base, JSON.parse(raw) as SettingsPatch);
+  } catch {
+    return base;
+  }
+}
+
+let settings = initialSettings();
 let snapshot = structuredClone(mockSnapshot);
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 

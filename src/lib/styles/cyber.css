@@ -194,6 +194,58 @@ html[data-surface='cyber'] .stage[data-edge='left'] .pill.surface {
     center;
 }
 
+/* Docked to the top: the two *bottom* corners face the screen and are cut. */
+html[data-surface='cyber'] .stage[data-edge='top'] .pill.surface {
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut))
+  );
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(315deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 0% 100%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 100% 100%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-position:
+    bottom left,
+    bottom right,
+    center,
+    center,
+    center,
+    center;
+}
+
+/* Docked to the bottom: the two *top* corners are the ones that are cut. */
+html[data-surface='cyber'] .stage[data-edge='bottom'] .pill.surface {
+  clip-path: polygon(
+    var(--cut) 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    0 100%,
+    0 var(--cut)
+  );
+  background-image:
+    linear-gradient(135deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(225deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 0% 0%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 100% 0%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-position:
+    top left,
+    top right,
+    center,
+    center,
+    center,
+    center;
+}
+
 /* ---- rings ------------------------------------------------------------ */
 
 /* tracks become tick marks; butt caps read as instrument segments */

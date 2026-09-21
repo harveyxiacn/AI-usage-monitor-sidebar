@@ -41,8 +41,8 @@ quota is left, and when does it reset?*
 
 | | |
 |---|---|
-| Edge docking | Left or right edge, top / centre / bottom, with a pixel offset, on any monitor |
-| Drag to move | Drag the bar anywhere: it snaps to the nearer screen edge of the monitor you drop it on and remembers the height |
+| Edge docking | Any of the four screen edges, positioned along it (start / centre / end) with a pixel offset, on any monitor. Top and bottom turn the bar into a horizontal strip |
+| Drag to move | Drag the bar anywhere: it snaps to the nearest screen edge of the monitor you drop it on and remembers its position along that edge |
 | Auto-hide | The bar collapses to a thin handle when you move the pointer away and expands on hover |
 | Pinning | Click a ring to pin the popover open while you read it; click again to close it. A pinned popover closes by itself 8 s after the pointer left |
 | Always on top | Re-asserted after every map on X11, visible on all workspaces |
@@ -284,8 +284,8 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 | | |
 |---|---|
-| 边缘吸附 | 左/右边缘，顶部/居中/底部，可设像素偏移，可指定显示器 |
-| 拖拽移动 | 直接拖动侧栏：松手后吸附到所在显示器较近的左/右边缘，并记住高度位置 |
+| 边缘吸附 | 四条屏幕边缘任选，沿边缘对齐（起始/居中/末端）并可设像素偏移，可指定显示器；贴靠顶部或底部时侧栏会变成横条 |
+| 拖拽移动 | 直接拖动侧栏：松手后吸附到所在显示器最近的一条边缘，并记住沿该边缘的位置 |
 | 自动隐藏 | 鼠标离开后收起为细条，悬停时自动展开 |
 | 固定弹层 | 点击环可固定弹层，方便慢慢看；再次点击立即关闭。固定的弹层在鼠标离开 8 秒后也会自动关闭 |
 | 始终置顶 | X11 下每次映射后重新置顶，并在所有工作区可见 |

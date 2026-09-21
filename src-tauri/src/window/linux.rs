@@ -251,15 +251,35 @@ fn target_gdk_monitor(display: &gdk::Display, wanted: Option<&str>) -> Option<gd
 
 /// Layer-shell margins are **monitor-local** logical pixels, never global
 /// desktop coordinates, so this also works on negative-origin and mixed-DPI
-/// layouts. Returns the margin on the configured edge and the top margin.
-fn margins(monitor: LogicalRect, rect: LogicalRect, edge: Edge) -> (i32, i32) {
-    let horizontal = match edge {
-        Edge::Left => rect.x - monitor.x,
-        Edge::Right => monitor.right() - rect.right(),
-    };
+/// layouts.
+///
+/// The surface is anchored to the docked edge plus the start of the edge it
+/// runs along (left/right → also top; top/bottom → also left), so only two of
+/// the four margins can ever be non-zero: the distance from the docked edge
+/// and the distance along it. Returns `(left, right, top, bottom)`.
+fn margins(monitor: LogicalRect, rect: LogicalRect, edge: Edge) -> (i32, i32, i32, i32) {
+    let px = |v: f64| v.max(0.0).round() as i32;
+    let (left, top) = (px(rect.x - monitor.x), px(rect.y - monitor.y));
+    let (right, bottom) = (
+        px(monitor.right() - rect.right()),
+        px(monitor.bottom() - rect.bottom()),
+    );
+    match edge {
+        Edge::Left => (left, 0, top, 0),
+        Edge::Right => (0, right, top, 0),
+        Edge::Top => (left, 0, top, 0),
+        Edge::Bottom => (left, 0, 0, bottom),
+    }
+}
+
+/// Which layer-shell anchors a docked edge needs: the edge itself plus the
+/// start of the axis the bar runs along.
+fn anchors(edge: Edge) -> (bool, bool, bool, bool) {
     (
-        horizontal.max(0.0).round() as i32,
-        (rect.y - monitor.y).max(0.0).round() as i32,
+        edge != Edge::Right,  // left
+        edge == Edge::Right,  // right
+        edge != Edge::Bottom, // top
+        edge == Edge::Bottom, // bottom
     )
 }
 
@@ -295,8 +315,9 @@ pub fn place(win: &WebviewWindow, rect: LogicalRect) -> bool {
             area.width().into(),
             area.height().into(),
         );
-        let (horizontal, top) = margins(bounds, rect, settings.edge);
-        let left = settings.edge == Edge::Left;
+        let (margin_left, margin_right, margin_top, margin_bottom) =
+            margins(bounds, rect, settings.edge);
+        let (anchor_left, anchor_right, anchor_top, anchor_bottom) = anchors(settings.edge);
         let pointer = native.upcast_ref::<gtk::Window>().to_glib_none().0;
         let monitor_pointer = monitor.to_glib_none().0;
         // SAFETY: live GtkWindow / GdkMonitor pointers, GTK main thread, and
@@ -315,14 +336,14 @@ pub fn place(win: &WebviewWindow, rect: LogicalRect) -> bool {
                     LAYER_BOTTOM
                 },
             );
-            (api.set_anchor)(pointer, EDGE_LEFT, i32::from(left));
-            (api.set_anchor)(pointer, EDGE_RIGHT, i32::from(!left));
-            (api.set_anchor)(pointer, EDGE_TOP, 1);
-            (api.set_anchor)(pointer, EDGE_BOTTOM, 0);
-            (api.set_margin)(pointer, EDGE_LEFT, if left { horizontal } else { 0 });
-            (api.set_margin)(pointer, EDGE_RIGHT, if left { 0 } else { horizontal });
-            (api.set_margin)(pointer, EDGE_TOP, top);
-            (api.set_margin)(pointer, EDGE_BOTTOM, 0);
+            (api.set_anchor)(pointer, EDGE_LEFT, i32::from(anchor_left));
+            (api.set_anchor)(pointer, EDGE_RIGHT, i32::from(anchor_right));
+            (api.set_anchor)(pointer, EDGE_TOP, i32::from(anchor_top));
+            (api.set_anchor)(pointer, EDGE_BOTTOM, i32::from(anchor_bottom));
+            (api.set_margin)(pointer, EDGE_LEFT, margin_left);
+            (api.set_margin)(pointer, EDGE_RIGHT, margin_right);
+            (api.set_margin)(pointer, EDGE_TOP, margin_top);
+            (api.set_margin)(pointer, EDGE_BOTTOM, margin_bottom);
         }
         // The documented gtk-layer-shell resize sequence: a size request plus
         // a deliberately too small `resize()` lets the surface shrink again.
@@ -442,17 +463,38 @@ mod tests {
     fn anchors_are_output_local_on_mixed_dpi_desktops() {
         let monitor = MonitorRect::new("secondary", -1280.0, 24.0, 1280.0, 696.0, 2.0);
         let bar = LogicalRect::new(-76.0, 282.0, 76.0, 180.0);
-        assert_eq!(margins(monitor.rect, bar, Edge::Right), (0, 258));
+        assert_eq!(margins(monitor.rect, bar, Edge::Right), (0, 0, 258, 0));
         let popover = LogicalRect::new(-426.0, 240.0, 340.0, 220.0);
-        assert_eq!(margins(monitor.rect, popover, Edge::Right), (86, 216));
+        assert_eq!(margins(monitor.rect, popover, Edge::Right), (0, 86, 216, 0));
         assert_eq!(
             margins(
                 monitor.rect,
                 LogicalRect::new(-1194.0, 24.0, 340.0, 220.0),
                 Edge::Left
             ),
-            (86, 0)
+            (86, 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn horizontal_edges_anchor_along_x() {
+        let monitor = MonitorRect::new("secondary", -1280.0, 24.0, 1280.0, 696.0, 2.0);
+        // A bottom-docked bar, 320 px wide, 76 px tall, centred horizontally.
+        let bar = LogicalRect::new(-800.0, 644.0, 320.0, 76.0);
+        assert_eq!(margins(monitor.rect, bar, Edge::Bottom), (480, 0, 0, 0));
+        assert_eq!(anchors(Edge::Bottom), (true, false, false, true));
+        // Its popover, 10 px above it.
+        let popover = LogicalRect::new(-810.0, 414.0, 340.0, 220.0);
+        assert_eq!(
+            margins(monitor.rect, popover, Edge::Bottom),
+            (470, 0, 0, 86)
+        );
+
+        let top_bar = LogicalRect::new(-800.0, 24.0, 320.0, 76.0);
+        assert_eq!(margins(monitor.rect, top_bar, Edge::Top), (480, 0, 0, 0));
+        assert_eq!(anchors(Edge::Top), (true, false, true, false));
+        assert_eq!(anchors(Edge::Left), (true, false, true, false));
+        assert_eq!(anchors(Edge::Right), (false, true, true, false));
     }
 
     #[test]
@@ -461,9 +503,15 @@ mod tests {
         // margin: layer-shell would interpret it as an offset off-screen.
         let monitor = MonitorRect::new("main", 0.0, 0.0, 1920.0, 1080.0, 1.0);
         let off = LogicalRect::new(-40.0, -40.0, 100.0, 100.0);
-        assert_eq!(margins(monitor.rect, off, Edge::Left), (0, 0));
+        assert_eq!(margins(monitor.rect, off, Edge::Left), (0, 0, 0, 0));
+        assert_eq!(margins(monitor.rect, off, Edge::Top), (0, 0, 0, 0));
         let past_right = LogicalRect::new(1900.0, 0.0, 100.0, 100.0);
-        assert_eq!(margins(monitor.rect, past_right, Edge::Right), (0, 0));
+        assert_eq!(margins(monitor.rect, past_right, Edge::Right), (0, 0, 0, 0));
+        let past_bottom = LogicalRect::new(0.0, 1060.0, 100.0, 100.0);
+        assert_eq!(
+            margins(monitor.rect, past_bottom, Edge::Bottom),
+            (0, 0, 0, 0)
+        );
     }
 
     #[test]

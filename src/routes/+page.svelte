@@ -15,10 +15,18 @@
   * Hovering the bar reports `hover_report('bar', true|false)`; Rust owns the
     expand/collapse + popover-hide timers.
   * Dragging the pill (past a 5px threshold) streams `sidebar_drag`; Rust moves
-    the window and snaps it to the nearer edge of the drop monitor on release.
-  * Hovering a ring asks for the popover with the ring's centre y in CSS px
+    the window and snaps it to the nearest edge of the drop monitor on release.
+  * Hovering a ring asks for the popover with the ring's centre in CSS px
     relative to *this* window — which is the viewport, so
-    `rect.top + rect.height / 2` is already the right number.
+    `rect.top + rect.height / 2` (and `rect.left + rect.width / 2`) is already
+    the right number. Both are sent; Rust picks the one along the bar's axis.
+
+  Orientation
+  -----------
+  `settings.edge` decides it: `left`/`right` stack the rings in a column (the
+  original pill), `top`/`bottom` lay them out in a row. Only the stage's
+  `data-edge` attribute drives the CSS — the flush side loses its border and
+  its two corners there, and the "⋯" button moves next to the rings.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -58,6 +66,8 @@
   let pinnedKey = $state<string | null>(null);
 
   const collapsed = $derived(s.autoHide && !expanded);
+  /** top/bottom edges: the bar is a horizontal strip, rings laid out in a row */
+  const horizontal = $derived(s.edge === 'top' || s.edge === 'bottom');
 
   function reportSize(size: SizeReport) {
     if (!collapsed) expandedSize = size;
@@ -112,16 +122,20 @@
     void hoverReport('bar', hovered);
   }
 
-  function anchorOf(el: HTMLElement): number {
+  /** Ring centre in CSS px relative to this window (= the viewport). */
+  function anchorOf(el: HTMLElement): { x: number; y: number } {
     const r = el.getBoundingClientRect();
-    return Math.round(r.top + r.height / 2);
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   }
 
   function requestPopover(item: RingItem, el: HTMLElement) {
+    const anchor = anchorOf(el);
     void popoverShow({
       provider: item.provider,
       ringIndex: item.index,
-      anchorY: anchorOf(el),
+      // Both axes travel; the platform layer uses the one along the bar.
+      anchorY: anchor.y,
+      anchorX: anchor.x,
       windowKind: item.labelWindow?.kind ?? null,
     });
   }
@@ -167,10 +181,12 @@
 >
   {#if collapsed}
     <!-- auto-hidden: only a thin coloured sliver is left on the screen edge -->
+    <!-- `collapsedWidth` is the sliver's thickness: its width on a left/right
+         edge, its height on a top/bottom one -->
     <div
       class="handle"
-      style:width={`${Math.max(2, s.collapsedWidth)}px`}
-      style:height={`${expandedSize.height}px`}
+      style:width={horizontal ? `${expandedSize.width}px` : `${Math.max(2, s.collapsedWidth)}px`}
+      style:height={horizontal ? `${Math.max(2, s.collapsedWidth)}px` : `${expandedSize.height}px`}
       style:background={handleColor}
       onmouseenter={() => void hoverReport('bar', true)}
       role="presentation"
@@ -259,6 +275,17 @@
     cursor: grabbing;
   }
 
+  /* A top/bottom bar is the same pill turned 90°: the rings run in a row and
+     the 4px-roomier padding follows to the horizontal axis. */
+  .stage[data-edge='top'] .pill,
+  .stage[data-edge='bottom'] .pill {
+    flex-direction: row;
+    min-width: 0;
+    min-height: calc(var(--ring-size) + 2 * var(--bar-padding));
+    padding: var(--bar-padding) calc(var(--bar-padding) + 0.25rem);
+  }
+
+  /* The docked side is flush with the screen: no rounding, no border there. */
   .stage[data-edge='right'] .pill {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
@@ -271,6 +298,18 @@
     border-left: none;
   }
 
+  .stage[data-edge='top'] .pill {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    border-top: none;
+  }
+
+  .stage[data-edge='bottom'] .pill {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom: none;
+  }
+
   .slot {
     display: block;
     line-height: 0;
@@ -280,6 +319,12 @@
     display: grid;
     place-items: center;
     min-height: 3.5rem;
+  }
+
+  .stage[data-edge='top'] .slot.empty,
+  .stage[data-edge='bottom'] .slot.empty {
+    min-width: 3.5rem;
+    min-height: 0;
   }
 
   .slot.pinned :global(.ring) {
@@ -303,10 +348,27 @@
     color: var(--text);
   }
 
+  /* In a row the dots sit beside the last ring instead of under it; the
+     negative margin keeps them tucked against the group either way. */
+  .stage[data-edge='top'] .dots,
+  .stage[data-edge='bottom'] .dots {
+    width: auto;
+    align-self: center;
+    margin-top: 0;
+    margin-left: -0.375rem;
+  }
+
   .handle {
     height: 8.75rem;
     border-radius: 999px;
     opacity: 0.85;
     transition: background var(--dur-ring) var(--ease-out);
+  }
+
+  /* The inline width/height above win; this only keeps the fallback sane. */
+  .stage[data-edge='top'] .handle,
+  .stage[data-edge='bottom'] .handle {
+    width: 8.75rem;
+    height: auto;
   }
 </style>

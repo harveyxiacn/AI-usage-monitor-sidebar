@@ -207,7 +207,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 |---|---|---|
 | `sidebar_set_expanded` | `expanded: boolean` | expand to full width / collapse to the thin handle (window resize + reposition). Emits `sidebar-state`. |
 | `sidebar_relayout` | `width: number, height: number` (CSS px the bar content needs) | resize sidebar window to fit content and re-anchor to the edge |
-| `sidebar_drag` | `phase: 'start'\|'move'\|'end'\|'cancel', dx: number, dy: number` (CSS px the pointer travelled since `start`, screen space) | the bar follows the pointer; on `end` it snaps to the nearer edge of the monitor it was dropped on and the result is persisted as `edge` / `monitor` / `verticalOffset` (emits `settings-updated`). `cancel` puts it back. |
+| `sidebar_drag` | `phase: 'start'\|'move'\|'end'\|'cancel', dx: number, dy: number` (CSS px the pointer travelled since `start`, screen space) | the bar follows the pointer; on `end` it snaps to the nearest of the four edges of the monitor it was dropped on (distances normalised by the monitor's half extent, so the zones meet at its diagonals, with a small hysteresis in favour of the current edge for corner drops) and the result is persisted as `edge` / `monitor` / `verticalOffset` (emits `settings-updated`). `cancel` puts it back. |
 | `popover_show` | `req: PopoverRequest` | position popover next to the ring and show it; emits `popover-target` to the popover window |
 | `popover_relayout` | `width: number, height: number` (CSS px the popover content needs) | resize the popover window to fit content and re-anchor it next to the ring |
 | `popover_hide` | – | hide the popover now and unpin it (second click on the pinned ring). Hover-out hides an unpinned popover after 250 ms and a pinned one after 8 s. |
@@ -243,6 +243,14 @@ on top, so on Linux the app forces `GDK_BACKEND=x11` (XWayland) unless
 follow-up.
 
 ## 7. Settings (`settings.json` in the app config dir)
+
+`edge` is `left | right | top | bottom`: left/right dock the bar as a vertical
+pill, top/bottom as a horizontal strip. `verticalAlign` and `verticalOffset`
+describe the position **along** that edge whatever its orientation — `top`
+means the start of the edge (its left end on a top/bottom edge), `bottom` the
+end, and a positive offset moves towards the end. The two field names are kept
+as they are so existing `settings.json` files stay valid; the settings tab
+relabels the controls ("Horizontal align / offset") on a horizontal edge.
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
