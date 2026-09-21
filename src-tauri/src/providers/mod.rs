@@ -197,6 +197,7 @@ pub fn empty_quota(provider: &str, display_name: &str, status: ProviderStatus) -
         status,
         error: None,
         credits: None,
+        extras: Vec::new(),
     }
 }
 
@@ -217,6 +218,7 @@ pub fn degraded(
         q.plan_label = cached.plan_label;
         q.account = cached.account;
         q.credits = cached.credits;
+        q.extras = cached.extras;
         q.source = DataSource::Cache;
         // `fetchedAt` of the *data*, not of this attempt, so the UI can age it.
         q.fetched_at = cached.fetched_at;

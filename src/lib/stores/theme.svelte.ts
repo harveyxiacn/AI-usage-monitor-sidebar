@@ -87,6 +87,10 @@ export function applyTheme(s: Settings): void {
 
   root.dataset.theme = theme;
   root.dataset.surface = s.surfaceStyle;
+  // Always stamped, also for glass/solid: cyber.css keys every preset on
+  // `[data-surface='cyber']` anyway, and keeping the attribute in place means
+  // switching *to* cyber needs no second paint.
+  root.dataset.cyber = s.cyberAccent;
   const scale = clamp(s.scale, 0.75, 1.5);
   const alpha = clamp(s.opacity, 0.3, 1);
   root.style.setProperty('--ui-scale', String(scale));

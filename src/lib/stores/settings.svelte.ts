@@ -59,6 +59,7 @@ export const defaultSettings: Settings = {
   language: 'auto',
   theme: 'dark',
   surfaceStyle: 'glass',
+  cyberAccent: 'neon',
   edge: 'right',
   verticalAlign: 'center',
   verticalOffset: 0,
@@ -85,6 +86,7 @@ export const defaultSettings: Settings = {
   sizes: structuredClone(defaultSizes),
   notifications: false,
   forecastNotifications: true,
+  hideAccountEmail: false,
   alwaysOnTop: true,
 };
 

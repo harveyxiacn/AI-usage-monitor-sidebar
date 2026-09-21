@@ -112,6 +112,60 @@ pub struct CreditsInfo {
     pub balance: Option<String>,
 }
 
+/// How loudly the UI should render a `QuotaExtra`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtraSeverity {
+    #[default]
+    Info,
+    Warn,
+    Critical,
+}
+
+/// One provider-neutral fact that is not a rate-limit window: a credit
+/// balance, a spend limit that was hit, models the plan cannot use right now…
+///
+/// `kind` is a stable machine id; the frontend looks up `extras.<kind>` for the
+/// label, so the backend never ships English prose. `value` / `detail` are
+/// already-formatted numbers or names.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaExtra {
+    pub kind: String,
+    /// None = the label alone carries the meaning (a flag).
+    pub value: Option<String>,
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub severity: ExtraSeverity,
+}
+
+impl QuotaExtra {
+    /// Flag-style extra: label only.
+    pub fn flag(kind: &str, severity: ExtraSeverity) -> Self {
+        QuotaExtra {
+            kind: kind.to_string(),
+            value: None,
+            detail: None,
+            severity,
+        }
+    }
+
+    /// Extra with a display value ("2", "gpt-5.3-codex", …).
+    pub fn value(kind: &str, value: impl Into<String>, severity: ExtraSeverity) -> Self {
+        QuotaExtra {
+            kind: kind.to_string(),
+            value: Some(value.into()),
+            detail: None,
+            severity,
+        }
+    }
+
+    pub fn with_detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuota {
@@ -128,6 +182,10 @@ pub struct ProviderQuota {
     pub status: ProviderStatus,
     pub error: Option<String>,
     pub credits: Option<CreditsInfo>,
+    /// Provider-neutral extras (credits, spend limits, unavailable models …).
+    /// `default` so a cache file written by an older build still deserializes.
+    #[serde(default)]
+    pub extras: Vec<QuotaExtra>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -200,6 +258,22 @@ pub enum SurfaceStyle {
     Solid,
     /// Dark sci-fi HUD painted entirely by the frontend; no native backdrop.
     Cyber,
+}
+
+/// Neon pair the `cyber` surface is painted with. Ignored by the other styles.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CyberAccent {
+    /// cyan → magenta (the original HUD)
+    Neon,
+    /// phosphor green → lime
+    Matrix,
+    /// amber → orange, like an amber CRT
+    Amber,
+    /// ice blue → near-white
+    Ice,
+    /// purple → hot pink
+    Synthwave,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -321,6 +395,8 @@ pub struct Settings {
     pub language: String,
     pub theme: Theme,
     pub surface_style: SurfaceStyle,
+    /// Only meaningful while `surface_style` is `cyber`.
+    pub cyber_accent: CyberAccent,
     pub edge: Edge,
     /// Position along the docked edge (see [`VerticalAlign`]).
     pub vertical_align: VerticalAlign,
@@ -351,6 +427,8 @@ pub struct Settings {
     pub notifications: bool,
     /// Warn when a window is on pace to run out before it resets.
     pub forecast_notifications: bool,
+    /// Mask account e-mails everywhere they render (screen sharing).
+    pub hide_account_email: bool,
     pub always_on_top: bool,
 }
 
@@ -378,6 +456,7 @@ impl Default for Settings {
             language: "auto".into(),
             theme: Theme::Dark,
             surface_style: SurfaceStyle::Glass,
+            cyber_accent: CyberAccent::Neon,
             edge: Edge::Right,
             vertical_align: VerticalAlign::Center,
             vertical_offset: 0,
@@ -404,6 +483,7 @@ impl Default for Settings {
             sizes: SizeSettings::default(),
             notifications: false,
             forecast_notifications: true,
+            hide_account_email: false,
             always_on_top: true,
         }
     }

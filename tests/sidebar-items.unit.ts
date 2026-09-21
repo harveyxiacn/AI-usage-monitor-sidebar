@@ -44,6 +44,7 @@ function quota(provider: 'claude' | 'codex', windows: QuotaWindow[]): ProviderQu
     planLabel: null,
     account: null,
     windows,
+    extras: [],
     fetchedAt: new Date(0).toISOString(),
     source: 'api',
     status: 'ok',

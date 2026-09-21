@@ -138,6 +138,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `language` | `"auto"`, `"en"`, `"zh-CN"` | UI and tray language |
 | `theme` | `"dark"`, `"light"`, `"auto"` | |
 | `surfaceStyle` | `"glass"`, `"solid"`, `"cyber"` | liquid glass (blurred backdrop where the OS has one), opaque, or a neon sci-fi HUD |
+| `cyberAccent` | `"neon"`, `"matrix"`, `"amber"`, `"ice"`, `"synthwave"` | neon pair the `cyber` HUD is painted with; ignored by the other surfaces |
 | `edge` | `"right"`, `"left"`, `"top"`, `"bottom"` | screen edge (also set by dragging). `top`/`bottom` make the bar a horizontal strip |
 | `verticalAlign` | `"center"`, `"top"`, `"bottom"` | position **along** the edge: `top` = its start (left end of a top/bottom edge), `bottom` = its end |
 | `verticalOffset` | `0` (px, positive = towards the end of the edge: down on left/right, right on top/bottom) | also set by dragging |
@@ -153,6 +154,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
+| `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
 | `alwaysOnTop` | `true` | |
 | `opacity` | `1` (0.3 – 1) | |

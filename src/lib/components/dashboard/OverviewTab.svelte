@@ -6,11 +6,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
+  import QuotaExtras from '$lib/components/QuotaExtras.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
   import { getQuotaHistory } from '$lib/api';
   import { formatAgo, windowLabel } from '$lib/format';
   import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { accountEmail } from '$lib/privacy';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -117,6 +119,7 @@
         {@const accent = accentFor(q.provider, 0)}
         {@const hint = statusHint(q)}
         {@const credits = creditsLine(q)}
+        {@const email = accountEmail(q.account?.email, s.hideAccountEmail)}
         <article class="card provider">
           <header class="head">
             <span class="logo" style:color={accent}>
@@ -125,7 +128,7 @@
             <div class="who">
               <span class="name">{q.displayName}</span>
               <span class="sub">
-                {q.planLabel ?? q.plan ?? '—'}{q.account?.email ? ` · ${q.account.email}` : ''}
+                {q.planLabel ?? q.plan ?? '—'}{email ? ` · ${email}` : ''}
               </span>
             </div>
             <span class="dot" data-status={q.status} title={tDyn(`status.${q.status}`)}></span>
@@ -177,6 +180,8 @@
               {/each}
             </div>
           {/if}
+
+          <QuotaExtras extras={q.extras} context="dashboard" />
 
           <footer class="foot">
             {#if credits}

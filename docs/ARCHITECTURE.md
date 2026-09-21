@@ -177,6 +177,17 @@ Key semantics:
   disabled`. Any status other than `ok` still returns the last known windows
   (from cache or local logs) if available, with `source` telling where they
   came from.
+* `ProviderQuota.extras` is an optional, provider-neutral list of facts that
+  are not rate-limit windows (credits, a spend limit that was hit, models the
+  plan cannot use right now). Each item is
+  `{kind, value: string|null, detail: string|null, severity: info|warn|critical}`.
+  `kind` is a stable machine id (`reset_credits`, `spend_limit_reached`,
+  `model_unavailable`, `rate_limit_reached`, `overage_limit_reached`,
+  `approx_local_messages`, `approx_cloud_messages`, `extra_usage`, …); the
+  frontend renders `extras.<kind>` as the label and falls back to the raw id,
+  so a new kind needs no frontend change. The backend never puts English prose
+  in `value`/`detail`, and never repeats what `credits` already says. Absent in
+  older cache files, so it deserializes as an empty list.
 * Times/timestamps in the DB are unix **milliseconds** (INTEGER).
 * `HistoryQuery.project` is optional: null/absent selects all projects, an
   empty string selects events whose `cwd` is null or empty, and any other
@@ -305,6 +316,20 @@ value wins when a patch carries both spellings). Writing both was chosen over
 dropping the flat keys because it costs two lines and keeps hand-written
 settings files, older builds and downgrades working; nothing in the UI reads
 the flat fields any more.
+
+`cyberAccent="neon"` and `hideAccountEmail=false` complete the defaults.
+
+`cyberAccent` (`neon` | `matrix` | `amber` | `ice` | `synthwave`) picks the
+neon pair the `cyber` surface is painted with. `applyTheme` stamps it on
+`<html>` as `data-cyber`; `src/lib/styles/cyber.css` keys the pair, the plate
+tint and the text tokens off it, and everything else in that file is written
+in terms of `--cy-a` / `--cy-b`. The other surface styles ignore it.
+
+`hideAccountEmail` (default false) is a privacy switch for screenshots and
+screen sharing: every place that renders an account address — card text,
+`title` attributes, exports — goes through `accountEmail()` in
+`src/lib/privacy.ts`, which masks it as `h•••@g•••.com`. The backend keeps
+sending the real address; only the rendering changes.
 
 ### Colours and sizes
 

@@ -23,6 +23,7 @@
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import type {
     AppInfo,
+    CyberAccent,
     Edge,
     Language,
     MonitorInfo,
@@ -199,6 +200,7 @@
   /** "Sidebar items" rows, in the order they are declared in the contract. */
   const SIDEBAR_ITEM_KEYS = Object.keys(defaultSidebarItems) as (keyof SidebarItems)[];
   const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
+  const CYBER_ACCENTS: CyberAccent[] = ['neon', 'matrix', 'amber', 'ice', 'synthwave'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
 </script>
 
@@ -269,6 +271,15 @@
         {#each SURFACE_STYLES as v (v)}<option value={v}>{tDyn(`settings.surfaceStyle.${v}`)}</option>{/each}
       </select>
     </Field>
+
+    <!-- the accent pair only paints the cyber HUD, so it only exists there -->
+    {#if s.surfaceStyle === 'cyber'}
+      <Field label={t('settings.cyberAccent')}>
+        <select aria-label={t('settings.cyberAccent')} class="field" value={s.cyberAccent} onchange={(e) => void settings.patch({ cyberAccent: e.currentTarget.value as CyberAccent })}>
+          {#each CYBER_ACCENTS as v (v)}<option value={v}>{tDyn(`settings.cyberAccent.${v}`)}</option>{/each}
+        </select>
+      </Field>
+    {/if}
   </article>
 
   <article class="card group">
@@ -402,6 +413,13 @@
         disabled={!s.notifications}
         label={t('settings.forecastNotifications')}
         onchange={(v) => void settings.patch({ forecastNotifications: v })}
+      />
+    </Field>
+    <Field label={t('settings.hideAccountEmail')} hint={t('settings.hideAccountEmail.hint')}>
+      <Toggle
+        checked={s.hideAccountEmail}
+        label={t('settings.hideAccountEmail')}
+        onchange={(v) => void settings.patch({ hideAccountEmail: v })}
       />
     </Field>
 

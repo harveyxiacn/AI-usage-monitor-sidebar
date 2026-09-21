@@ -45,6 +45,7 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: null,
+      extras: [],
       // Forecasts mirror what src-tauri/src/forecast.rs would derive from the
       // sample history below: the 5-hour window burns fast enough to run out
       // before it resets, the weekly ones only drift upwards, and "Weekly ·
@@ -70,6 +71,10 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: { hasCredits: false, unlimited: false, balance: '0' },
+      extras: [
+        { kind: 'reset_credits', value: '2', detail: '0', severity: 'info' },
+        { kind: 'model_unavailable', value: '1', detail: 'gpt-5.3-codex-spark', severity: 'warn' },
+      ],
       windows: [
         { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true,
           forecast: { projectedPercentAtReset: 33.5, exhaustsAt: null, ratePercentPerHour: 6, confidence: 'medium' } },
@@ -87,6 +92,7 @@ export const mockSettings: Settings = {
   language: 'auto',
   theme: 'dark',
   surfaceStyle: 'glass',
+  cyberAccent: 'neon',
   edge: 'right',
   verticalAlign: 'center',
   verticalOffset: 0,
@@ -113,6 +119,7 @@ export const mockSettings: Settings = {
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
+  hideAccountEmail: false,
   alwaysOnTop: true,
 };
 
