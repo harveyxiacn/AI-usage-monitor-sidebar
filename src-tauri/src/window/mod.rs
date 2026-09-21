@@ -282,6 +282,8 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     if let Err(e) = linux::initialize(app) {
         log::info!("native layer-shell docking not used: {e:#}");
     }
+    #[cfg(target_os = "linux")]
+    linux::mark_as_dock(app);
 
     let settings = settings_of(app);
     log::info!(
