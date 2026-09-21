@@ -1,15 +1,15 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 #
-# TODO before submitting: replace both REPLACE_WITH_SHA256 values with the
-# real digests of the release assets, e.g. in PowerShell
+# The InstallerSha256 values are the digests of the published release assets
+# for this PackageVersion. To recompute them, e.g. in PowerShell
 #
-#   (Get-FileHash .\AI.Usage.Sidebar_0.1.1_x64-setup.exe -Algorithm SHA256).Hash
-#   (Get-FileHash .\AI.Usage.Sidebar_0.1.1_x64_en-US.msi -Algorithm SHA256).Hash
+#   (Get-FileHash .\AI.Usage.Sidebar_0.2.0_x64-setup.exe -Algorithm SHA256).Hash
+#   (Get-FileHash .\AI.Usage.Sidebar_0.2.0_x64_en-US.msi -Algorithm SHA256).Hash
 #
 # `wingetcreate update harveyxiacn.AIUsageSidebar --urls <exe> <msi> --version <v>`
 # does the same automatically for later releases.
 PackageIdentifier: harveyxiacn.AIUsageSidebar
-PackageVersion: 0.1.1
+PackageVersion: 0.2.0
 MinimumOSVersion: 10.0.17763.0
 # The builds are unsigned, so SmartScreen warns on first run. Say so rather
 # than pretending otherwise; see packaging/README.md.
@@ -19,8 +19,8 @@ Installers:
   - Architecture: x64
     InstallerType: nullsoft
     Scope: user
-    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v0.1.1/AI.Usage.Sidebar_0.1.1_x64-setup.exe
-    InstallerSha256: REPLACE_WITH_SHA256_OF_THE_SETUP_EXE
+    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v0.2.0/AI.Usage.Sidebar_0.2.0_x64-setup.exe
+    InstallerSha256: 3D9BF2032665F0726281710F83FEDBA5C0E133AA558ABAB655D64814EFBB210E
     InstallerSwitches:
       Silent: /S
       SilentWithProgress: /S
@@ -30,8 +30,8 @@ Installers:
     InstallerType: wix
     Scope: machine
     InstallerLocale: en-US
-    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v0.1.1/AI.Usage.Sidebar_0.1.1_x64_en-US.msi
-    InstallerSha256: REPLACE_WITH_SHA256_OF_THE_MSI
+    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v0.2.0/AI.Usage.Sidebar_0.2.0_x64_en-US.msi
+    InstallerSha256: 3D29AF9A1B62F0D44935EBF08FA4EB606F87C81CC583FA729FB33A4F955C7D92
     UpgradeBehavior: install
 ManifestType: installer
 ManifestVersion: 1.6.0

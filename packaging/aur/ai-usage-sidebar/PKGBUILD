@@ -12,7 +12,7 @@
 # `makepkg --printsrcinfo > .SRCINFO`.
 
 pkgname=ai-usage-sidebar
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Always-on-top edge sidebar showing Claude Code / Codex rate-limit quotas and token usage history'
 arch=('x86_64' 'aarch64')
@@ -26,8 +26,7 @@ optdepends=(
 )
 conflicts=("$pkgname-bin")
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# TODO before publishing: `updpkgsums` fills this in. SKIP means "not verified".
-sha256sums=('SKIP')
+sha256sums=('dd903b15702c34f8884bda1d287b316ece7c8ad359799f46f1702350c4fc32d0')
 
 _srcdir="AI-usage-monitor-sidebar-$pkgver"
 

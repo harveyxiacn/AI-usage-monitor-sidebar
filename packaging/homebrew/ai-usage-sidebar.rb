@@ -1,22 +1,20 @@
 # Homebrew cask for the unsigned, un-notarised macOS builds.
 #
-# TODO before publishing: replace both REPLACE_WITH_SHA256 values. Get them
-# with, for the release you are packaging:
-#
-#   shasum -a 256 AI.Usage.Sidebar_0.1.1_aarch64.dmg
-#   shasum -a 256 AI.Usage.Sidebar_0.1.1_x64.dmg
+# The sha256 values are those of the published release assets for `version`
+# (GitHub reports them as the asset `digest`; `shasum -a 256 <file>.dmg` gives
+# the same). They must be refreshed together with `version`.
 #
 # `brew bump-cask-pr` rewrites version and sha256 for later releases.
 cask "ai-usage-sidebar" do
-  version "0.1.1"
+  version "0.2.0"
 
   on_arm do
-    sha256 "REPLACE_WITH_SHA256_OF_THE_AARCH64_DMG"
+    sha256 "fb14d1f538a01396b62e5f88d9635e494a09ebf2263e8e180c0b0007d3d45afd"
     url "https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v#{version}/AI.Usage.Sidebar_#{version}_aarch64.dmg",
         verified: "github.com/harveyxiacn/AI-usage-monitor-sidebar/"
   end
   on_intel do
-    sha256 "REPLACE_WITH_SHA256_OF_THE_X64_DMG"
+    sha256 "771431d8d9c4a69cb7c881a68a10349feec5218c0903f9a057a8baba9bd566a5"
     url "https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v#{version}/AI.Usage.Sidebar_#{version}_x64.dmg",
         verified: "github.com/harveyxiacn/AI-usage-monitor-sidebar/"
   end
