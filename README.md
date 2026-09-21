@@ -57,19 +57,34 @@ quota is left, and when does it reset?*
 
 ## Providers
 
-| Provider | Plan | Rate-limit windows shown |
-|---|---|---|
-| Claude Code (OAuth) | Pro | 5-hour session **+** weekly (all models) |
-| Claude Code (OAuth) | Max 5× / Max 20× | 5-hour session **+** weekly, plus per-model weekly windows (e.g. Opus) when the API reports them |
-| OpenAI Codex (ChatGPT login) | Plus | 5-hour **+** weekly |
-| OpenAI Codex (ChatGPT login) | Pro / "prolite" | API-reported windows, including weekly-only responses |
-| OpenAI Codex | Team / Business / Enterprise / Edu | whatever the API reports, classified by window length |
-| OpenAI Codex | API-key mode (`auth_mode: "apikey"`) | no quota windows exist; the ring shows "not signed in" |
+| Provider | Verification | Plan | Rate-limit windows shown |
+|---|---|---|---|
+| Claude Code (OAuth) | verified against a live account | Pro | 5-hour session **+** weekly (all models) |
+| Claude Code (OAuth) | verified against a live account | Max 5× / Max 20× | 5-hour session **+** weekly, plus per-model weekly windows (e.g. Opus) when the API reports them |
+| OpenAI Codex (ChatGPT login) | verified against a live account | Plus | 5-hour **+** weekly |
+| OpenAI Codex (ChatGPT login) | verified against a live account | Pro / "prolite" | API-reported windows, including weekly-only responses |
+| OpenAI Codex | verified against a live account | Team / Business / Enterprise / Edu | whatever the API reports, classified by window length |
+| OpenAI Codex | verified against a live account | API-key mode (`auth_mode: "apikey"`) | no quota windows exist; the ring shows "not signed in" |
+| GitHub Copilot | **experimental — never tested against a live account** | Pro / Pro+ / Business / Enterprise | monthly premium-request pool; chat and completions are unmetered on paid plans |
+| GitHub Copilot | **experimental — never tested against a live account** | Free | monthly chat **+** completions counts (there is no premium pool to meter) |
+| GitHub Copilot | **experimental — never tested against a live account** | organisation-managed seat | GitHub reports no per-seat quota; the popover says so instead of showing 0 % |
 
 Window kinds are **detected from the API**, never assumed: a window is classified
 by its `limit_window_seconds` (≤ 6 h → 5-hour, ~7 d → weekly, anything else →
 "other"). A weekly window can be *primary*; plan names never decide which
 windows are present. The table describes observed payloads, not guaranteed plan entitlements.
+
+**About "experimental".** The Claude and Codex providers were built by
+inspecting real responses from real accounts. The Copilot provider was built
+only from other projects' published source code and GitHub's own Copilot SDK
+documentation — the author has no Copilot subscription and could never run it
+against one. It is therefore **off by default** unless Copilot credentials are
+already on your disk, it is badged *Experimental* in Settings → Providers, and
+its numbers may be wrong or stop working without notice. Every claim behind it,
+with links to the source lines it came from, is in
+[docs/PROVIDERS.md](docs/PROVIDERS.md) — which also records why **Gemini CLI**
+and **Cursor** were researched and *not* implemented. Corrections from someone
+with a live Copilot account are very welcome.
 
 ## How it reads your data
 
@@ -83,6 +98,7 @@ session logs those CLIs leave on disk.
 |---|---|
 | Claude | `~/.claude/.credentials.json` (Linux, Windows) · macOS Keychain item `Claude Code-credentials` · override the directory with `CLAUDE_CONFIG_DIR` |
 | Codex | `~/.codex/auth.json` · override the directory with `CODEX_HOME` |
+| GitHub Copilot | `~/.config/github-copilot/apps.json` (older `hosts.json`), written by the Copilot editor plugins · `%LOCALAPPDATA%\github-copilot\` on Windows · `$XDG_CONFIG_HOME` is honoured. The GitHub CLI's token is deliberately **not** used. |
 
 **Endpoints**
 
@@ -90,6 +106,7 @@ session logs those CLIs leave on disk.
 |---|---|
 | Claude | `GET https://api.anthropic.com/api/oauth/usage` (and `/api/oauth/profile` for the plan label), `Authorization: Bearer …`, `anthropic-beta: oauth-2025-04-20` |
 | Codex | `GET https://chatgpt.com/backend-api/wham/usage`, `Authorization: Bearer …`, `ChatGPT-Account-Id: …` |
+| GitHub Copilot | `GET https://api.github.com/copilot_internal/user`, `Authorization: token …`, `X-Github-Api-Version: 2025-04-01` — the call the Copilot editor extensions make |
 
 **Local logs (token history, and a fallback when you are offline)**
 
@@ -97,10 +114,12 @@ session logs those CLIs leave on disk.
 |---|---|
 | Claude | `~/.claude/projects/**/*.jsonl` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, `~/.codex/archived_sessions/**` |
+| GitHub Copilot | none — no Copilot client is known to log token counts, so Copilot has no token history |
 
 > **Privacy.** Your tokens never leave your machine except in the request to
-> Anthropic's and OpenAI's own endpoints — the same ones `claude` and `codex`
-> already talk to. There is no telemetry, no analytics and no third-party
+> Anthropic's, OpenAI's and GitHub's own endpoints — the same ones `claude`,
+> `codex` and the Copilot editor extensions already talk to, and only for a
+> provider you have switched on. There is no telemetry, no analytics and no third-party
 > service. Session JSONL records are parsed locally; only usage counters,
 > model/session identifiers and project paths are retained. Prompt and response
 > text is not stored in the usage database or sent by this app.
@@ -215,7 +234,9 @@ centred, always visible, dark theme).
 
 - [ ] `wlr-layer-shell` support for KDE / Hyprland / Sway (true native Wayland)
 - [ ] Blur behind the bar on KWin (`_KDE_NET_WM_BLUR_BEHIND_REGION`)
-- [ ] More providers (Gemini CLI, GitHub Copilot, Cursor)
+- [x] GitHub Copilot (experimental, unverified — see [docs/PROVIDERS.md](docs/PROVIDERS.md))
+- [ ] Gemini CLI — blocked on its move to OS-keychain credential storage ([why](docs/PROVIDERS.md))
+- [ ] ~~Cursor~~ — not planned: ToS and endpoint stability ([why](docs/PROVIDERS.md))
 - [ ] Menu-bar mode on macOS
 - [x] Native CSV export and clipboard copy
 - [ ] Per-project token breakdown
@@ -300,18 +321,29 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 ## 支持的服务与套餐
 
-| 服务 | 套餐 | 显示的限额窗口 |
-|---|---|---|
-| Claude Code（OAuth） | Pro | 5 小时会话 **+** 每周（全模型） |
-| Claude Code（OAuth） | Max 5× / Max 20× | 5 小时会话 **+** 每周，API 返回时还包括按模型（如 Opus）的每周窗口 |
-| OpenAI Codex（ChatGPT 登录） | Plus | 5 小时 **+** 每周 |
-| OpenAI Codex（ChatGPT 登录） | Pro / prolite | 以 API 返回为准，兼容仅返回每周窗口的情况 |
-| OpenAI Codex | Team / Business / Enterprise / Edu | 以 API 返回为准，按窗口时长归类 |
-| OpenAI Codex | API Key 模式（`auth_mode: "apikey"`） | 不存在额度窗口，环显示“未登录” |
+| 服务 | 验证情况 | 套餐 | 显示的限额窗口 |
+|---|---|---|---|
+| Claude Code（OAuth） | 已在真实账号上验证 | Pro | 5 小时会话 **+** 每周（全模型） |
+| Claude Code（OAuth） | 已在真实账号上验证 | Max 5× / Max 20× | 5 小时会话 **+** 每周，API 返回时还包括按模型（如 Opus）的每周窗口 |
+| OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Plus | 5 小时 **+** 每周 |
+| OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Pro / prolite | 以 API 返回为准，兼容仅返回每周窗口的情况 |
+| OpenAI Codex | 已在真实账号上验证 | Team / Business / Enterprise / Edu | 以 API 返回为准，按窗口时长归类 |
+| OpenAI Codex | 已在真实账号上验证 | API Key 模式（`auth_mode: "apikey"`） | 不存在额度窗口，环显示“未登录” |
+| GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Pro / Pro+ / Business / Enterprise | 每月 premium 请求额度池；付费套餐的 chat 与补全不计量 |
+| GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Free | 每月 chat **+** 代码补全次数（免费套餐没有 premium 额度池） |
+| GitHub Copilot | **实验性 —— 从未在真实账号上验证** | 组织分配的席位 | GitHub 不返回该席位的个人额度，弹窗会如实说明，而不是显示 0% |
 
 窗口类型一律**由 API 返回值判断**，不做假设：按 `limit_window_seconds` 归类
 （≤ 6 小时 → 5 小时窗口，约 7 天 → 每周窗口，其余 → 其他）。每周窗口也可能是
 *primary*，程序不按套餐名硬编码窗口数量。上表是已观察到的数据形态，不承诺套餐权益。
+
+**关于“实验性”**：Claude 与 Codex 两个服务商是对着真实账号的真实响应写出来的；
+GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自家 Copilot SDK 的
+文档实现——作者没有 Copilot 订阅，无法在真实账号上跑通任何一条路径。因此它
+**默认关闭**（除非本机已存在 Copilot 凭据），在「设置 → 服务商」中标注为
+*实验性*，其数值可能有误，也可能随时失效。所有结论及其源码出处链接都记录在
+[docs/PROVIDERS.md](docs/PROVIDERS.md)，其中也说明了 **Gemini CLI** 与
+**Cursor** 为什么调研后*没有*实现。欢迎有 Copilot 账号的朋友帮忙纠正。
 
 ## 数据从哪里来
 
@@ -324,6 +356,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 |---|---|
 | Claude | `~/.claude/.credentials.json`（Linux、Windows）· macOS 钥匙串条目 `Claude Code-credentials` · 可用 `CLAUDE_CONFIG_DIR` 覆盖目录 |
 | Codex | `~/.codex/auth.json` · 可用 `CODEX_HOME` 覆盖目录 |
+| GitHub Copilot | `~/.config/github-copilot/apps.json`（旧版为 `hosts.json`），由 Copilot 编辑器插件写入 · Windows 为 `%LOCALAPPDATA%\github-copilot\` · 支持 `$XDG_CONFIG_HOME`。**不会**使用 GitHub CLI 的令牌。 |
 
 **接口**
 
@@ -331,6 +364,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 |---|---|
 | Claude | `GET https://api.anthropic.com/api/oauth/usage`（套餐名另取 `/api/oauth/profile`），请求头 `Authorization: Bearer …`、`anthropic-beta: oauth-2025-04-20` |
 | Codex | `GET https://chatgpt.com/backend-api/wham/usage`，请求头 `Authorization: Bearer …`、`ChatGPT-Account-Id: …` |
+| GitHub Copilot | `GET https://api.github.com/copilot_internal/user`，请求头 `Authorization: token …`、`X-Github-Api-Version: 2025-04-01` —— 与 Copilot 编辑器插件所调用的一致 |
 
 **本地日志（token 历史；离线时也作为额度兜底）**
 
@@ -338,9 +372,11 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 |---|---|
 | Claude | `~/.claude/projects/**/*.jsonl` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`、`~/.codex/archived_sessions/**` |
+| GitHub Copilot | 无 —— 目前没有任何 Copilot 客户端会把 token 计数写到本地，因此 Copilot 没有 token 历史 |
 
-> **隐私说明**：除了发往 Anthropic 与 OpenAI 自家接口（也就是 `claude`、`codex`
-> 本来就会访问的那两个）之外，你的 token 不会离开本机。没有遥测、没有统计上报、
+> **隐私说明**：除了发往 Anthropic、OpenAI 与 GitHub 自家接口（也就是 `claude`、
+> `codex` 和 Copilot 编辑器插件本来就会访问的那几个，且仅限你已启用的服务商）之外，
+> 你的 token 不会离开本机。没有遥测、没有统计上报、
 > 没有任何第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
 > 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
 
@@ -443,7 +479,9 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 
 - [ ] 支持 `wlr-layer-shell`（KDE / Hyprland / Sway 的原生 Wayland）
 - [ ] KWin 下的背景模糊（`_KDE_NET_WM_BLUR_BEHIND_REGION`）
-- [ ] 接入更多服务（Gemini CLI、GitHub Copilot、Cursor）
+- [x] GitHub Copilot（实验性，未在真实账号上验证，详见 [docs/PROVIDERS.md](docs/PROVIDERS.md)）
+- [ ] Gemini CLI —— 其凭据已迁入系统钥匙串，暂时受阻（[原因](docs/PROVIDERS.md)）
+- [ ] ~~Cursor~~ —— 不计划支持：服务条款与接口稳定性（[原因](docs/PROVIDERS.md)）
 - [ ] macOS 菜单栏模式
 - [x] 原生 CSV 导出与剪贴板复制
 - [ ] 按项目统计 token

@@ -113,6 +113,11 @@ login of its own.
 - Claude Code: the user runs `claude` and signs in (`/login`).
 - Codex: the user runs `codex login` (ChatGPT sign-in). API-key mode has no
   quota windows, so the ring shows "not signed in" — that is expected.
+- GitHub Copilot: **experimental and unverified** (see `docs/PROVIDERS.md`). It
+  reads the token the Copilot editor plugins leave in
+  `~/.config/github-copilot/apps.json` and is switched off unless that file
+  already holds a github.com token. Do not enable it for a user without saying
+  it was never tested against a live account.
 - Non-default locations are honoured through `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
 
 A ring in an error state has its message in the popover and in the log.
@@ -148,7 +153,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `percentMode` | `"used"`, `"remaining"` | |
 | `showPercentLabel` | `true` | |
 | `refreshIntervalSec` | `60` | quota polling period |
-| `providers` | `{"claude":{"enabled":true,"order":0},"codex":{"enabled":true,"order":1}}` | hide or reorder a provider |
+| `providers` | `{"claude":{"enabled":true,"order":0},"codex":{"enabled":true,"order":1},"copilot":{"enabled":false,"order":2}}` | hide or reorder a provider (`copilot` starts enabled only when its credentials exist) |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `autostart` | `false`, `true` | start at login |

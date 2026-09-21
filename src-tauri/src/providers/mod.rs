@@ -6,6 +6,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 
 use crate::model::{
     AppSnapshot, DataSource, ProviderInfo, ProviderQuota, ProviderStatus, QuotaWindow, Settings,
@@ -17,6 +18,30 @@ use std::time::Duration;
 
 pub const CLAUDE_ID: &str = "claude";
 pub const CODEX_ID: &str = "codex";
+pub const COPILOT_ID: &str = "copilot";
+
+/// Every provider id the app knows, in default display order.
+///
+/// Single source of truth for the settings layer: `Settings::default()` seeds
+/// one `ProviderSettings` entry per id and `settings::clamp` back-fills them
+/// into an older `settings.json`, so adding a provider to `all_providers`
+/// means adding it here and nowhere else.
+pub const DEFAULT_PROVIDER_ORDER: &[&str] = &[CLAUDE_ID, CODEX_ID, COPILOT_ID];
+
+/// Whether a provider is switched on the first time its settings entry is
+/// created (an existing entry always wins — the user's choice is never
+/// overwritten).
+///
+/// The two verified providers are always on. An *experimental* one is only on
+/// when its credentials are already on disk: nobody should get a ring for a
+/// quota source that was never tested against a live account unless they use
+/// the tool in question.
+pub fn enabled_by_default(id: &str) -> bool {
+    match id {
+        COPILOT_ID => copilot::has_credentials(),
+        _ => true,
+    }
+}
 
 /// Everything a provider needs that is not the HTTP client.
 #[derive(Clone, Debug)]
@@ -56,6 +81,13 @@ pub trait Provider: Send + Sync {
     /// Stable id used in settings, the DB and the UI (`"claude"`, `"codex"`).
     fn id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
+    /// `true` when the quota source was never verified against a live account.
+    /// Such a provider is left out of the snapshot entirely while it is
+    /// switched off, so nobody gets a "disabled" card for a tool they do not
+    /// use; it is still listed by `get_providers` so it can be switched on.
+    fn experimental(&self) -> bool {
+        false
+    }
     /// Cheap, offline description (credential/log paths, login state, plan).
     fn info(&self) -> ProviderInfo;
     /// Fetch live quota. Never fails: transport problems are reported through
@@ -68,6 +100,7 @@ pub fn all_providers(ctx: &ProviderCtx) -> Vec<Box<dyn Provider>> {
     vec![
         Box::new(claude::ClaudeProvider::new(ctx.clone())),
         Box::new(codex::CodexProvider::new(ctx.clone())),
+        Box::new(copilot::CopilotProvider::new(ctx.clone())),
     ]
 }
 
@@ -234,13 +267,15 @@ pub fn disabled_quota(provider: &str, display_name: &str) -> ProviderQuota {
     empty_quota(provider, display_name, ProviderStatus::Disabled)
 }
 
-/// `true` when the settings do not explicitly disable `id`.
+/// `true` when the settings do not explicitly disable `id`. A provider with no
+/// entry at all falls back to the registry default, so an experimental one is
+/// not silently switched on by a settings file written before it existed.
 pub fn is_enabled(settings: &Settings, id: &str) -> bool {
     settings
         .providers
         .get(id)
         .map(|p| p.enabled)
-        .unwrap_or(true)
+        .unwrap_or_else(|| enabled_by_default(id))
 }
 
 /// Providers in the user's configured display order.
@@ -261,6 +296,7 @@ pub fn ordered_providers(ctx: &ProviderCtx, settings: &Settings) -> Vec<Box<dyn 
 pub fn snapshot_from_cache(ctx: &ProviderCtx, settings: &Settings) -> AppSnapshot {
     let providers = ordered_providers(ctx, settings)
         .iter()
+        .filter(|p| !p.experimental() || is_enabled(settings, p.id()))
         .map(|p| {
             if !is_enabled(settings, p.id()) {
                 return disabled_quota(p.id(), p.display_name());
@@ -298,6 +334,11 @@ pub async fn fetch_snapshot(
     let mut out = Vec::new();
     for p in ordered_providers(ctx, settings) {
         let id = p.id();
+        // An experimental provider the user has not opted into is absent from
+        // the snapshot, not present-but-disabled: no ring, no "disabled" card.
+        if p.experimental() && !is_enabled(settings, id) {
+            continue;
+        }
         let prev = previous
             .providers
             .iter()
@@ -362,6 +403,68 @@ mod tests {
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
         }
+    }
+
+    /// The registry has to stay the single list: every provider that can be
+    /// constructed needs a settings entry, or the UI has no toggle for it.
+    #[test]
+    fn every_registered_provider_is_in_the_default_order() {
+        let ids: Vec<&str> = all_providers(&ProviderCtx::default())
+            .iter()
+            .map(|p| p.id())
+            .collect();
+        assert_eq!(ids, DEFAULT_PROVIDER_ORDER.to_vec());
+        assert!(
+            all_providers(&ProviderCtx::default())
+                .iter()
+                .filter(|p| p.experimental())
+                .all(|p| !enabled_by_default(p.id()) || copilot::has_credentials()),
+            "an unverified provider may only default to on when its credentials exist"
+        );
+    }
+
+    /// An experimental provider the user has not opted into must not reach the
+    /// sidebar or the overview at all — not even as a "disabled" entry.
+    #[test]
+    fn an_opted_out_experimental_provider_is_absent_from_the_snapshot() {
+        let ctx = ProviderCtx::default();
+        let mut settings = Settings::default();
+        settings.providers.insert(
+            COPILOT_ID.to_string(),
+            crate::model::ProviderSettings {
+                enabled: false,
+                order: 2,
+            },
+        );
+        let snapshot = snapshot_from_cache(&ctx, &settings);
+        assert!(snapshot.providers.iter().all(|q| q.provider != COPILOT_ID));
+
+        // Switched on, it is present again (as an error: nothing is cached).
+        settings.providers.insert(
+            COPILOT_ID.to_string(),
+            crate::model::ProviderSettings {
+                enabled: true,
+                order: 2,
+            },
+        );
+        let snapshot = snapshot_from_cache(&ctx, &settings);
+        assert!(snapshot.providers.iter().any(|q| q.provider == COPILOT_ID));
+
+        // A *verified* provider that is switched off still shows as disabled,
+        // exactly as before this change.
+        settings.providers.insert(
+            CODEX_ID.to_string(),
+            crate::model::ProviderSettings {
+                enabled: false,
+                order: 1,
+            },
+        );
+        let codex = snapshot_from_cache(&ctx, &settings)
+            .providers
+            .into_iter()
+            .find(|q| q.provider == CODEX_ID)
+            .expect("codex keeps its card when switched off");
+        assert_eq!(codex.status, ProviderStatus::Disabled);
     }
 
     #[test]

@@ -88,6 +88,7 @@ export interface ColorSettings {
   /** provider accents; the concentric ramp (-1/-2/-3) is derived by lightening */
   claude: string;
   codex: string;
+  copilot: string;
   warn: string;
   critical: string;
   /** tint of the glass / solid surface, alpha comes from `opacity` */
@@ -225,6 +226,8 @@ export interface ProviderInfo {
   credentialPath: string | null;
   logPath: string | null;
   planLabel: string | null;
+  /** quota source implemented from published source, never verified live */
+  experimental: boolean;
 }
 
 export interface PricingEntry {

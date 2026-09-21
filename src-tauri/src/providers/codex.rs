@@ -516,6 +516,7 @@ impl Provider for CodexProvider {
             credential_path: credentials_path().map(|p| p.display().to_string()),
             log_path: log_root().map(|p| p.display().to_string()),
             plan_label: claims.and_then(|c| plan_label(c.plan_type.as_deref())),
+            experimental: false,
         }
     }
 

@@ -162,18 +162,24 @@ pub fn clamp(mut s: Settings) -> Settings {
     let dc = ColorSettings::default();
     s.colors.claude = hex_or(&s.colors.claude, &dc.claude);
     s.colors.codex = hex_or(&s.colors.codex, &dc.codex);
+    s.colors.copilot = hex_or(&s.colors.copilot, &dc.copilot);
     s.colors.warn = hex_or(&s.colors.warn, &dc.warn);
     s.colors.critical = hex_or(&s.colors.critical, &dc.critical);
     s.colors.surface = hex_or(&s.colors.surface, "");
     s.colors.text = hex_or(&s.colors.text, "");
 
-    // Every known provider must have an entry so the UI can render a toggle.
-    for (id, order) in [("claude", 0), ("codex", 1)] {
+    // Every known provider must have an entry so the UI can render a toggle;
+    // the registry is the source of truth, so an older settings.json gains the
+    // entry for a provider that did not exist when it was written.
+    for (order, id) in crate::commands::providers::DEFAULT_PROVIDER_ORDER
+        .iter()
+        .enumerate()
+    {
         s.providers
-            .entry(id.to_string())
-            .or_insert(ProviderSettings {
-                enabled: true,
-                order,
+            .entry((*id).to_string())
+            .or_insert_with(|| ProviderSettings {
+                enabled: crate::commands::providers::enabled_by_default(id),
+                order: order as i32,
             });
     }
     s
@@ -353,7 +359,33 @@ mod tests {
         );
         assert_eq!(merged.edge, base.edge, "the bad enum value is dropped");
         assert_eq!(merged.ring_mode, RingMode::All, "good fields still apply");
-        assert_eq!(merged.providers.len(), 2);
+        assert_eq!(
+            merged.providers.len(),
+            crate::commands::providers::DEFAULT_PROVIDER_ORDER.len(),
+            "every registered provider keeps an entry"
+        );
+    }
+
+    #[test]
+    fn an_experimental_provider_is_seeded_switched_off_without_credentials() {
+        // The machine running the tests has no ~/.config/github-copilot, so
+        // the registry default is "off" — an unverified quota source must
+        // never appear on its own. (A machine that *does* have Copilot signed
+        // in would legitimately seed it on; assert the invariant instead.)
+        use crate::commands::providers;
+        let seeded = clamp(Settings::default());
+        let copilot = &seeded.providers[providers::COPILOT_ID];
+        assert_eq!(copilot.enabled, providers::enabled_by_default("copilot"));
+        assert!(providers::enabled_by_default("claude"));
+        assert!(providers::enabled_by_default("codex"));
+
+        // An explicit choice always wins over the registry default.
+        let on = merge(
+            &Settings::default(),
+            &json!({"providers": {"copilot": {"enabled": true}}}),
+        );
+        assert!(on.providers["copilot"].enabled);
+        assert!(providers::is_enabled(&on, "copilot"));
     }
 
     #[test]

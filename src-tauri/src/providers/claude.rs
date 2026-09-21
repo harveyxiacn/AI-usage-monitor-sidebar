@@ -523,6 +523,7 @@ impl Provider for ClaudeProvider {
             plan_label: creds.as_ref().and_then(|c| {
                 plan_label(c.subscription_type.as_deref(), c.rate_limit_tier.as_deref())
             }),
+            experimental: false,
         }
     }
 
