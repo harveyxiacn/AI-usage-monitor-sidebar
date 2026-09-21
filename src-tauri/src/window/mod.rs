@@ -40,6 +40,11 @@ pub const POPOVER_GAP: f64 = 10.0;
 pub const REVEAL_FALLBACK_MS: u64 = 1_500;
 /// How long after the pointer left both windows the popover disappears.
 pub const POPOVER_HIDE_DELAY_MS: u64 = 250;
+/// A pinned popover survives hover-out, but not forever: this long after the
+/// pointer left both windows it closes as well.
+pub const PINNED_POPOVER_HIDE_DELAY_MS: u64 = 8_000;
+/// Period of the pointer check that catches a `mouseleave` the webview lost.
+pub const POINTER_CHECK_MS: u64 = 400;
 /// Period of the geometry watchdog (monitor hot-plug, WM moved us, …).
 pub const GEOMETRY_CHECK_SEC: u64 = 5;
 /// Tolerance of the geometry watchdog, logical px.
@@ -314,6 +319,7 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     install_close_handlers(app);
     sidebar::place(app);
     sidebar::start_watchdogs(app);
+    hover::start_pointer_check(app);
 
     if let Err(e) = tray::build(app) {
         log::error!("tray icon could not be created: {e:#}");
@@ -506,7 +512,9 @@ pub async fn popover_relayout(app: AppHandle, width: f64, height: f64) -> Result
 
 #[tauri::command]
 pub async fn popover_hide(app: AppHandle) -> Result<(), String> {
-    popover::hide(&app, false);
+    // An explicit request (second click on the pinned ring) also unpins; only
+    // the hover timers respect a pin.
+    popover::hide(&app, true);
     Ok(())
 }
 

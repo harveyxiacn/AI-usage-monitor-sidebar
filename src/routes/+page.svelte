@@ -29,6 +29,7 @@
     hoverReport,
     onSidebarState,
     openDashboard,
+    popoverHide,
     popoverSetPinned,
     popoverShow,
     sidebarDrag,
@@ -134,9 +135,15 @@
     const el = ev.currentTarget as HTMLElement;
     const nextPinned = pinnedKey !== item.key;
     pinnedKey = nextPinned ? item.key : null;
-    void popoverSetPinned(nextPinned);
-    // re-target so a click on a *different* ring moves the pinned popover
-    if (nextPinned) requestPopover(item, el);
+    // re-target so a click on a *different* ring moves the pinned popover;
+    // a second click on the pinned ring dismisses the popover right away
+    // (hovering the ring again brings it back)
+    if (nextPinned) {
+      void popoverSetPinned(true);
+      requestPopover(item, el);
+    } else {
+      void popoverHide();
+    }
   }
 
   /** Screen-reader label: every arc of the group, outer → inner. */

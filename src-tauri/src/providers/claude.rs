@@ -193,6 +193,7 @@ pub struct UsageResponse {
     pub seven_day: Option<LegacyWindow>,
     pub seven_day_opus: Option<LegacyWindow>,
     pub seven_day_sonnet: Option<LegacyWindow>,
+    #[serde(deserialize_with = "super::null_default")]
     pub limits: Vec<LimitEntry>,
     pub extra_usage: Option<ExtraUsage>,
 }
@@ -209,6 +210,7 @@ pub struct LegacyWindow {
 #[serde(default)]
 pub struct LimitEntry {
     /// `session` | `weekly_all` | `weekly_scoped` | …
+    #[serde(deserialize_with = "super::null_default")]
     pub kind: String,
     pub group: Option<String>,
     /// already 0..100
@@ -233,6 +235,7 @@ pub struct ScopeModel {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct ExtraUsage {
+    #[serde(deserialize_with = "super::null_default")]
     pub is_enabled: bool,
     pub monthly_limit: Option<f64>,
     pub used_credits: Option<f64>,
@@ -252,7 +255,9 @@ pub struct ProfileAccount {
     pub email: Option<String>,
     pub display_name: Option<String>,
     pub full_name: Option<String>,
+    #[serde(deserialize_with = "super::null_default")]
     pub has_claude_max: bool,
+    #[serde(deserialize_with = "super::null_default")]
     pub has_claude_pro: bool,
 }
 

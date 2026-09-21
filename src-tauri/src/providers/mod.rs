@@ -337,6 +337,17 @@ pub fn provider_infos(ctx: &ProviderCtx, settings: &Settings) -> Vec<ProviderInf
         .collect()
 }
 
+/// Serde helper for undocumented provider APIs: an explicit `null` reads as the
+/// type's default. `#[serde(default)]` alone only covers an *absent* field, so
+/// without this one `"list": null` discards the entire response.
+pub(crate) fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

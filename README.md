@@ -44,7 +44,7 @@ quota is left, and when does it reset?*
 | Edge docking | Left or right edge, top / centre / bottom, with a pixel offset, on any monitor |
 | Drag to move | Drag the bar anywhere: it snaps to the nearer screen edge of the monitor you drop it on and remembers the height |
 | Auto-hide | The bar collapses to a thin handle when you move the pointer away and expands on hover |
-| Pinning | Click a ring to pin the popover open while you read it |
+| Pinning | Click a ring to pin the popover open while you read it; click again to close it. A pinned popover closes by itself 8 s after the pointer left |
 | Always on top | Re-asserted after every map on X11, visible on all workspaces |
 | Glass surface | `surfaceStyle: "glass"` uses a real blurred backdrop where the OS has one (macOS vibrancy, Windows acrylic); `"solid"` turns it off |
 | Themes | Dark / light / follow the system |
@@ -280,7 +280,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 边缘吸附 | 左/右边缘，顶部/居中/底部，可设像素偏移，可指定显示器 |
 | 拖拽移动 | 直接拖动侧栏：松手后吸附到所在显示器较近的左/右边缘，并记住高度位置 |
 | 自动隐藏 | 鼠标离开后收起为细条，悬停时自动展开 |
-| 固定弹层 | 点击环可固定弹层，方便慢慢看 |
+| 固定弹层 | 点击环可固定弹层，方便慢慢看；再次点击立即关闭。固定的弹层在鼠标离开 8 秒后也会自动关闭 |
 | 始终置顶 | X11 下每次映射后重新置顶，并在所有工作区可见 |
 | 玻璃质感 | `surfaceStyle: "glass"` 在系统支持时使用原生毛玻璃背景（macOS vibrancy、Windows acrylic）；`"solid"` 关闭 |
 | 主题 | 深色 / 浅色 / 跟随系统 |

@@ -124,6 +124,40 @@ pub fn parse_jwt_claims(token: &str) -> Option<JwtClaims> {
 }
 
 // ---------- API response shapes ----------
+//
+// The endpoint is undocumented and drifts: fields come and go, and an empty
+// list or flag is as often an explicit `null` as it is absent. `serde(default)`
+// only covers *absent*, so everything that is not an `Option` goes through
+// `null_default`, and one odd field can never discard the whole response.
+
+use super::null_default;
+
+/// Integers occasionally arrive as floats (`604800.0`); a value that is not a
+/// number at all reads as missing instead of failing the response.
+fn lenient_int<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: TryFrom<i64>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)))
+        .and_then(|n| T::try_from(n).ok()))
+}
+
+/// `balance` has been seen as a string; tolerate a bare number as well.
+fn string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(serde_json::Value::String(s)) => Some(s),
+            Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+            _ => None,
+        },
+    )
+}
 
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -131,6 +165,7 @@ pub struct UsageResponse {
     pub plan_type: Option<String>,
     pub email: Option<String>,
     pub rate_limit: Option<RateLimit>,
+    #[serde(deserialize_with = "null_default")]
     pub additional_rate_limits: Vec<AdditionalRateLimit>,
     pub credits: Option<Credits>,
 }
@@ -146,9 +181,12 @@ pub struct RateLimit {
 #[serde(default)]
 pub struct Window {
     pub used_percent: Option<f64>,
+    #[serde(deserialize_with = "lenient_int")]
     pub limit_window_seconds: Option<u64>,
     /// unix seconds
+    #[serde(deserialize_with = "lenient_int")]
     pub reset_at: Option<i64>,
+    #[serde(deserialize_with = "lenient_int")]
     pub reset_after_seconds: Option<i64>,
 }
 
@@ -163,8 +201,11 @@ pub struct AdditionalRateLimit {
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct Credits {
+    #[serde(deserialize_with = "null_default")]
     pub has_credits: bool,
+    #[serde(deserialize_with = "null_default")]
     pub unlimited: bool,
+    #[serde(deserialize_with = "string_or_number")]
     pub balance: Option<String>,
 }
 
@@ -539,9 +580,24 @@ impl Provider for CodexProvider {
                 &format!("Codex usage API returned HTTP {}", status.as_u16()),
             );
         }
-        let usage: UsageResponse = match resp.json().await {
+        // Read the body first: `Response::json` reports a schema mismatch as
+        // an opaque "error decoding response body" without naming the field.
+        let body = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("codex usage body could not be read: {e}");
+                return from_local_logs(
+                    &self.ctx,
+                    ProviderStatus::Error,
+                    &format!("Could not read the Codex usage response: {e}"),
+                );
+            }
+        };
+        let usage: UsageResponse = match serde_json::from_slice(&body) {
             Ok(u) => u,
             Err(e) => {
+                // serde's message carries the field/position, never a value.
+                log::warn!("codex usage response has an unexpected shape: {e}");
                 return from_local_logs(
                     &self.ctx,
                     ProviderStatus::Error,
@@ -592,6 +648,43 @@ mod tests {
       "rate_limit":{"primary_window":{"used_percent":12.5,"limit_window_seconds":18000,"reset_at":1789456410},
                     "secondary_window":{"used_percent":44,"limit_window_seconds":604800,"reset_at":1790043210}}
     }"#;
+
+    /// 2026-09: the endpoint began sending explicit nulls where it used to
+    /// omit fields, which failed the whole response ("error decoding response
+    /// body") and blanked the ring.
+    #[test]
+    fn explicit_nulls_and_drifting_types_do_not_discard_the_response() {
+        let usage: UsageResponse = serde_json::from_str(
+            r#"{
+              "plan_type": "prolite",
+              "rate_limit": {
+                "allowed": true,
+                "primary_window": {
+                  "used_percent": 4,
+                  "limit_window_seconds": 604800.0,
+                  "reset_after_seconds": 597660,
+                  "reset_at": "soon"
+                },
+                "secondary_window": null
+              },
+              "code_review_rate_limit": null,
+              "additional_rate_limits": null,
+              "model_usage": {"some-model": {"available": true}},
+              "credits": {"has_credits": null, "unlimited": false, "balance": 0},
+              "promo": null
+            }"#,
+        )
+        .unwrap();
+        assert!(usage.additional_rate_limits.is_empty());
+        assert_eq!(
+            usage.credits.as_ref().unwrap().balance.as_deref(),
+            Some("0")
+        );
+        let windows = map_windows(&usage);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].kind, WindowKind::SevenDay);
+        assert_eq!(windows[0].used_percent, 4.0);
+    }
 
     #[test]
     fn prolite_weekly_is_primary_and_scoped_windows_never_are() {
