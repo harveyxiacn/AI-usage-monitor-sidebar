@@ -114,12 +114,12 @@ session logs those CLIs leave on disk.
 
 ### Releases
 
-Tagged releases will appear on the
-[Releases page](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases).
-Until a release is published, download the `bundles-*` artifacts from a successful
-[CI run](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/workflows/ci.yml)
-(GitHub login required): `.deb` / `.rpm` / `.AppImage` (Linux), `.dmg` (macOS),
-`.msi` / `.exe` (Windows). These builds are unsigned.
+Download the installer for your platform from the
+[latest release](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/latest):
+`.deb` / `.rpm` / `.AppImage` (Linux x86_64), `.dmg` (macOS, Apple Silicon and
+Intel), `-setup.exe` / `.msi` (Windows x64). These builds are unsigned: macOS
+needs `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`,
+Windows shows a SmartScreen warning.
 
 ### Build prerequisites
 
@@ -351,10 +351,10 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 ### 下载安装包
 
-正式版本会发布在 [Releases 页面](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases)。
-发布前可从成功的 [CI 运行](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/workflows/ci.yml)
-下载 `bundles-*` 构建产物（需登录 GitHub）：Linux 的 `.deb` / `.rpm` / `.AppImage`，
-macOS 的 `.dmg`，Windows 的 `.msi` / `.exe`。这些构建尚未签名。
+从[最新发布](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/latest)下载对应平台的安装包：
+Linux x86_64 的 `.deb` / `.rpm` / `.AppImage`，macOS 的 `.dmg`（Apple Silicon 与 Intel 各一个），
+Windows x64 的 `-setup.exe` / `.msi`。这些构建尚未签名：macOS 需执行
+`xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`，Windows 会出现 SmartScreen 提示。
 
 ### 自行构建所需依赖
 

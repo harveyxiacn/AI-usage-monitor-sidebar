@@ -9,6 +9,7 @@ Name={{name}}
 Terminal=false
 Type=Application
 StartupNotify=true
+StartupWMClass=ai-usage-sidebar
 {{#if mime_type}}
 MimeType={{mime_type}}
 {{/if}}
