@@ -243,6 +243,8 @@
   "settings.behaviour": "行为",
   "settings.autoHide": "自动隐藏为细条",
   "settings.autoHideDelayMs": "自动隐藏延迟（毫秒）",
+  "settings.popoverTimeoutSec": "详情弹层自动收回（秒）",
+  "settings.popoverTimeoutSec.hint": "侧栏和弹层上连续这么多秒没有鼠标活动就自动收回；固定的弹层为 6 倍时间。0 表示从不。",
   "settings.collapsedWidth": "细条宽度（px）",
   "settings.refreshIntervalSec": "刷新间隔（秒）",
   "settings.refreshIntervalSec.hint": "Claude 的轮询间隔不会短于 2 分钟。",

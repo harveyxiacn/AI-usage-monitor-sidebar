@@ -388,6 +388,19 @@
       />
     </Field>
 
+    <Field label={t('settings.popoverTimeoutSec')} hint={t('settings.popoverTimeoutSec.hint')}>
+      <input
+        class="field num"
+        type="number"
+        min="0"
+        max="600"
+        step="1"
+        value={s.popoverTimeoutSec}
+        onchange={(e) => void settings.patch({ popoverTimeoutSec: Math.min(600, Math.max(0, Math.round(num(e)))) })}
+        aria-label={t('settings.popoverTimeoutSec')}
+      />
+    </Field>
+
     <Field label={t('settings.collapsedWidth')}>
       <input
         class="field num"

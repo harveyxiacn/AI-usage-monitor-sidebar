@@ -32,7 +32,7 @@
   import { onMount } from 'svelte';
   import Ring from '$lib/components/Ring.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
-  import { dragHandle, observeSize, type DragPhase, type SizeReport } from '$lib/actions';
+  import { dragHandle, HEARTBEAT_MS, observeSize, throttle, type DragPhase, type SizeReport } from '$lib/actions';
   import {
     hoverReport,
     onSidebarState,
@@ -118,6 +118,9 @@
   }
 
   /** Ring centre in CSS px relative to this window (= the viewport). */
+  /** "still here" while the pointer moves over the bar, see HEARTBEAT_MS */
+  const heartbeat = throttle(() => void hoverReport('bar', true), HEARTBEAT_MS);
+
   function anchorOf(el: HTMLElement): { x: number; y: number } {
     const r = el.getBoundingClientRect();
     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
@@ -172,6 +175,7 @@
   oncontextmenu={(e) => e.preventDefault()}
   onmouseenter={() => reportHover(true)}
   onmouseleave={() => reportHover(false)}
+  onmousemove={heartbeat}
   role="presentation"
 >
   {#if collapsed}

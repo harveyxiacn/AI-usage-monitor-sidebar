@@ -45,6 +45,9 @@ pub const POPOVER_HIDE_DELAY_MS: u64 = 250;
 pub const PINNED_POPOVER_HIDE_DELAY_MS: u64 = 8_000;
 /// Period of the pointer check that catches a `mouseleave` the webview lost.
 pub const POINTER_CHECK_MS: u64 = 400;
+/// A pinned popover gets this many times `popoverTimeoutSec` before the
+/// inactivity failsafe closes it.
+pub const PINNED_TIMEOUT_FACTOR: u64 = 6;
 /// Period of the geometry watchdog (monitor hot-plug, WM moved us, …).
 pub const GEOMETRY_CHECK_SEC: u64 = 5;
 /// Tolerance of the geometry watchdog, logical px.
@@ -73,6 +76,8 @@ pub struct Inner {
     /// Bumped on every hover event; pending timers with an older generation
     /// are stale and do nothing when they wake up.
     pub generation: u64,
+    /// Last sign of life from the pointer (hover report, heartbeat, show, pin).
+    pub last_activity: std::time::Instant,
     /// Where the bar was when the current drag began; `None` when idle.
     pub drag_origin: Option<monitors::LogicalRect>,
 }
@@ -90,6 +95,7 @@ impl Default for Inner {
             popover_visible: false,
             revealed: false,
             generation: 0,
+            last_activity: std::time::Instant::now(),
             drag_origin: None,
         }
     }

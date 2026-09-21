@@ -34,6 +34,7 @@ pub fn report(app: &AppHandle, source: &str, hovered: bool) {
             Source::Bar => inner.bar_hovered = hovered,
             Source::Popover => inner.popover_hovered = hovered,
         }
+        inner.last_activity = std::time::Instant::now();
         // Any hover transition invalidates the timers that are in flight.
         inner.generation = inner.generation.wrapping_add(1);
         (!inner.bar_hovered && !inner.popover_hovered, inner.expanded)
@@ -41,6 +42,14 @@ pub fn report(app: &AppHandle, source: &str, hovered: bool) {
         return;
     };
 
+    log::debug!(
+        "hover {}: {hovered} (idle={idle})",
+        if source == Source::Bar {
+            "bar"
+        } else {
+            "popover"
+        }
+    );
     if hovered {
         if source == Source::Bar && !expanded {
             sidebar::set_expanded(app, true);
@@ -127,6 +136,24 @@ pub fn start_pointer_check(app: &AppHandle) {
             let Some(state) = window::snapshot(&app) else {
                 continue;
             };
+            if inactivity_expired(&state, window::settings_of(&app).popover_timeout_sec) {
+                // The failsafe that does not depend on `mouseleave` at all: a
+                // pointer that is really over the bar or the popover keeps
+                // sending heartbeats, so silence means it is gone (or asleep).
+                log::debug!(
+                    "popover idle for {:?} (pinned={}), closing it",
+                    state.last_activity.elapsed(),
+                    state.pinned
+                );
+                window::with_state(&app, |inner| {
+                    inner.bar_hovered = false;
+                    inner.popover_hovered = false;
+                });
+                popover::hide(&app, true);
+                schedule_idle_timers(&app);
+                last = None;
+                continue;
+            }
             if !state.popover_visible
                 || state.drag_origin.is_some()
                 || !(state.bar_hovered || state.popover_hovered)
@@ -152,6 +179,20 @@ pub fn start_pointer_check(app: &AppHandle) {
             schedule_idle_timers(&app);
         }
     });
+}
+
+/// Whether the popover has outlived `popoverTimeoutSec` (×6 while pinned)
+/// without any pointer activity. 0 disables the failsafe; a drag is activity.
+fn inactivity_expired(state: &window::Inner, timeout_sec: u64) -> bool {
+    if timeout_sec == 0 || !state.popover_visible || state.drag_origin.is_some() {
+        return false;
+    }
+    let factor = if state.pinned {
+        window::PINNED_TIMEOUT_FACTOR
+    } else {
+        1
+    };
+    state.last_activity.elapsed() >= Duration::from_secs(timeout_sec * factor)
 }
 
 /// `None` when the OS cannot tell. Everything is physical px straight from
@@ -254,6 +295,35 @@ mod tests {
             ..Default::default()
         };
         assert!(away_at_generation(&pinned, pinned.generation));
+    }
+
+    #[test]
+    fn a_silent_popover_times_out_and_a_pinned_one_gets_six_times_as_long() {
+        let ago = |secs| std::time::Instant::now() - Duration::from_secs(secs);
+        let shown = |pinned, secs| window::Inner {
+            popover_visible: true,
+            // stale flags are exactly the case this failsafe exists for
+            popover_hovered: true,
+            pinned,
+            last_activity: ago(secs),
+            ..Default::default()
+        };
+        assert!(!inactivity_expired(&shown(false, 9), 10));
+        assert!(inactivity_expired(&shown(false, 10), 10));
+        assert!(!inactivity_expired(&shown(true, 59), 10));
+        assert!(inactivity_expired(&shown(true, 60), 10));
+        // off, hidden, or being dragged: never
+        assert!(!inactivity_expired(&shown(false, 3_600), 0));
+        let hidden = window::Inner {
+            popover_visible: false,
+            ..shown(false, 3_600)
+        };
+        assert!(!inactivity_expired(&hidden, 10));
+        let dragging = window::Inner {
+            drag_origin: Some(window::monitors::LogicalRect::new(0.0, 0.0, 1.0, 1.0)),
+            ..shown(false, 3_600)
+        };
+        assert!(!inactivity_expired(&dragging, 10));
     }
 
     #[test]

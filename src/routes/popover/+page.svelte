@@ -17,7 +17,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Popover from '$lib/components/Popover.svelte';
-  import { observeSize } from '$lib/actions';
+  import { HEARTBEAT_MS, observeSize, throttle } from '$lib/actions';
   import {
     hoverReport,
     isTauri,
@@ -68,6 +68,9 @@
   });
 
   $effect(() => applyTheme(settings.value));
+
+  /** "still here" while the pointer moves over the popover, see HEARTBEAT_MS */
+  const heartbeat = throttle(() => void hoverReport('popover', true), HEARTBEAT_MS);
 </script>
 
 <svelte:head><title>{t('app.name')}</title></svelte:head>
@@ -78,6 +81,8 @@
   oncontextmenu={(e) => e.preventDefault()}
   onmouseenter={() => void hoverReport('popover', true)}
   onmouseleave={() => void hoverReport('popover', false)}
+  onmousemove={heartbeat}
+  onwheel={heartbeat}
   role="presentation"
 >
   {#if quota}

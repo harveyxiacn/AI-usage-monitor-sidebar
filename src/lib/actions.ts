@@ -14,6 +14,24 @@ export function debounce<A extends unknown[]>(fn: (...args: A) => void, ms: numb
   return wrapped;
 }
 
+/** Leading-edge throttle: the first call goes through, the rest of `ms` is dropped. */
+export function throttle<A extends unknown[]>(fn: (...args: A) => void, ms: number) {
+  let last = -Infinity;
+  return (...args: A) => {
+    const now = performance.now();
+    if (now - last < ms) return;
+    last = now;
+    fn(...args);
+  };
+}
+
+/**
+ * How often a moving pointer tells the platform "still here". The platform
+ * closes the popover after `Settings.popoverTimeoutSec` of silence, which is
+ * what keeps a lost `mouseleave` from leaving the popover open for good.
+ */
+export const HEARTBEAT_MS = 1_000;
+
 export interface SizeReport {
   width: number;
   height: number;

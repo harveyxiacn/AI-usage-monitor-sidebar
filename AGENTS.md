@@ -146,6 +146,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `monitor` | `null` = primary, or a monitor name | |
 | `autoHide` | `false`, `true` | collapse to a thin handle when idle |
 | `autoHideDelayMs` | `800` | |
+| `popoverTimeoutSec` | `10` (0 = never) | the detail popover closes after this many seconds without pointer activity; a pinned one gets 6× |
 | `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, or one per window |
 | `percentMode` | `"used"`, `"remaining"` | |
 | `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |

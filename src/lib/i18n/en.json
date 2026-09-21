@@ -243,6 +243,8 @@
   "settings.behaviour": "Behaviour",
   "settings.autoHide": "Auto-hide to a thin handle",
   "settings.autoHideDelayMs": "Auto-hide delay (ms)",
+  "settings.popoverTimeoutSec": "Close the popover after (s)",
+  "settings.popoverTimeoutSec.hint": "Seconds without any pointer activity on the bar or the popover. A pinned popover gets six times as long. 0 = never.",
   "settings.collapsedWidth": "Handle width (px)",
   "settings.refreshIntervalSec": "Refresh interval (s)",
   "settings.refreshIntervalSec.hint": "Claude is never polled more often than every 2 min.",

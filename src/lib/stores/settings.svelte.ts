@@ -66,6 +66,7 @@ export const defaultSettings: Settings = {
   monitor: null,
   autoHide: false,
   autoHideDelayMs: 800,
+  popoverTimeoutSec: 10,
   collapsedWidth: 6,
   ringMode: 'concentric',
   showScopedRing: true,

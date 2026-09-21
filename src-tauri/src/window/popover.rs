@@ -46,6 +46,7 @@ pub fn show(app: &AppHandle, req: PopoverRequest) {
     window::with_state(app, |inner| {
         inner.popover_req = Some(req.clone());
         inner.popover_visible = true;
+        inner.last_activity = std::time::Instant::now();
     });
     if let Err(e) = app.emit_to(windows::POPOVER, events::POPOVER_TARGET, req.clone()) {
         log::warn!("emitting {} failed: {e}", events::POPOVER_TARGET);
@@ -163,6 +164,7 @@ pub fn hide(app: &AppHandle, force: bool) {
 pub fn set_pinned(app: &AppHandle, pinned: bool) {
     let Some((idle, expanded)) = window::with_state(app, |inner| {
         inner.pinned = pinned;
+        inner.last_activity = std::time::Instant::now();
         // Invalidate pending timers either way.
         inner.generation = inner.generation.wrapping_add(1);
         (!inner.bar_hovered && !inner.popover_hovered, inner.expanded)

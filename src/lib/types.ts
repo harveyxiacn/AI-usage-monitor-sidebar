@@ -204,6 +204,8 @@ export interface Settings {
   monitor: string | null;
   autoHide: boolean;
   autoHideDelayMs: number;
+  /** close the popover after this many seconds without pointer activity; 0 = never */
+  popoverTimeoutSec: number;
   /** width of the visible handle when collapsed (px) */
   collapsedWidth: number;
   ringMode: RingMode;

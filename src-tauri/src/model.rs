@@ -414,6 +414,9 @@ pub struct Settings {
     pub monitor: Option<String>,
     pub auto_hide: bool,
     pub auto_hide_delay_ms: u64,
+    /// The popover closes after this long without any pointer activity on the
+    /// bar or the popover, whatever the hover flags say. 0 = never.
+    pub popover_timeout_sec: u64,
     pub collapsed_width: u32,
     pub ring_mode: RingMode,
     /// Deprecated, mirrors `sidebar_items.scoped` (kept so older builds and
@@ -479,6 +482,7 @@ impl Default for Settings {
             monitor: None,
             auto_hide: false,
             auto_hide_delay_ms: 800,
+            popover_timeout_sec: 10,
             collapsed_width: 6,
             ring_mode: RingMode::Concentric,
             show_scoped_ring: true,
