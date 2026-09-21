@@ -326,6 +326,11 @@ pub struct HistoryQuery {
     pub group_by_model: bool,
     #[serde(default)]
     pub provider: Option<String>,
+    /// Exact cwd, or an empty string for requests with no project. None = all.
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub group_by_project: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -347,6 +352,9 @@ pub struct HistoryRow {
     pub bucket_start: String,
     pub provider: String,
     pub model: Option<String>,
+    /// None only for cross-project aggregation; empty means unassigned.
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(flatten)]
     pub totals: TokenTotals,
 }
@@ -357,6 +365,9 @@ pub struct HistoryResult {
     pub rows: Vec<HistoryRow>,
     pub totals: TokenTotals,
     pub by_provider: BTreeMap<String, TokenTotals>,
+    /// Projects in the selected time/provider range, before project filtering.
+    #[serde(default)]
+    pub projects: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

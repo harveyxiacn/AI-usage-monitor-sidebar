@@ -14,6 +14,8 @@
     window size (no resize feedback loop).
   * Hovering the bar reports `hover_report('bar', true|false)`; Rust owns the
     expand/collapse + popover-hide timers.
+  * Dragging the pill (past a 5px threshold) streams `sidebar_drag`; Rust moves
+    the window and snaps it to the nearer edge of the drop monitor on release.
   * Hovering a ring asks for the popover with the ring's centre y in CSS px
     relative to *this* window — which is the viewport, so
     `rect.top + rect.height / 2` is already the right number.
@@ -22,13 +24,15 @@
   import { onMount } from 'svelte';
   import Ring from '$lib/components/Ring.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
-  import { observeSize } from '$lib/actions';
+  import { dragHandle, observeSize, type DragPhase, type SizeReport } from '$lib/actions';
   import {
     hoverReport,
     onSidebarState,
     openDashboard,
+    popoverHide,
     popoverSetPinned,
     popoverShow,
+    sidebarDrag,
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
@@ -49,10 +53,17 @@
 
   /** platform-owned expand/collapse state; only meaningful when autoHide is on */
   let expanded = $state(true);
+  let expandedSize = $state<SizeReport>({ width: 76, height: 160 });
   /** ring key of the pinned popover, null when nothing is pinned */
   let pinnedKey = $state<string | null>(null);
 
   const collapsed = $derived(s.autoHide && !expanded);
+
+  function reportSize(size: SizeReport) {
+    if (!collapsed) expandedSize = size;
+    // A collapsed handle must not overwrite the size to restore on hover.
+    void sidebarRelayout(expandedSize.width, expandedSize.height);
+  }
 
   /**
    * Colour of the collapsed handle: the worst threshold reached by any ring.
@@ -73,6 +84,7 @@
     let disposed = false;
     void onSidebarState((state) => {
       expanded = state.expanded;
+      if (!state.pinned) pinnedKey = null;
     }).then((u) => (disposed ? u() : (un = u)));
     return () => {
       disposed = true;
@@ -83,6 +95,22 @@
 
   // theme / scale / opacity / language follow the settings rune
   $effect(() => applyTheme(settings.value));
+
+  /** true while the user is carrying the bar to another edge / height */
+  let dragging = $state(false);
+
+  function onDrag(phase: DragPhase, dx: number, dy: number) {
+    dragging = phase === 'start' || phase === 'move';
+    if (phase === 'start') pinnedKey = null; // the platform force-hides the popover
+    void sidebarDrag(phase, dx, dy);
+  }
+
+  function reportHover(hovered: boolean) {
+    // The window trails the pointer during a drag; a stray leave must not
+    // start the auto-hide timer under the user's hand.
+    if (dragging && !hovered) return;
+    void hoverReport('bar', hovered);
+  }
 
   function anchorOf(el: HTMLElement): number {
     const r = el.getBoundingClientRect();
@@ -99,6 +127,7 @@
   }
 
   function onRingEnter(item: RingItem, ev: MouseEvent) {
+    if (dragging) return;
     requestPopover(item, ev.currentTarget as HTMLElement);
   }
 
@@ -106,9 +135,15 @@
     const el = ev.currentTarget as HTMLElement;
     const nextPinned = pinnedKey !== item.key;
     pinnedKey = nextPinned ? item.key : null;
-    void popoverSetPinned(nextPinned);
-    // re-target so a click on a *different* ring moves the pinned popover
-    if (nextPinned) requestPopover(item, el);
+    // re-target so a click on a *different* ring moves the pinned popover;
+    // a second click on the pinned ring dismisses the popover right away
+    // (hovering the ring again brings it back)
+    if (nextPinned) {
+      void popoverSetPinned(true);
+      requestPopover(item, el);
+    } else {
+      void popoverHide();
+    }
   }
 
   /** Screen-reader label: every arc of the group, outer → inner. */
@@ -124,10 +159,10 @@
 <div
   class="stage"
   data-edge={s.edge}
-  use:observeSize={(size) => void sidebarRelayout(size.width, size.height)}
+  use:observeSize={reportSize}
   oncontextmenu={(e) => e.preventDefault()}
-  onmouseenter={() => void hoverReport('bar', true)}
-  onmouseleave={() => void hoverReport('bar', false)}
+  onmouseenter={() => reportHover(true)}
+  onmouseleave={() => reportHover(false)}
   role="presentation"
 >
   {#if collapsed}
@@ -135,13 +170,14 @@
     <div
       class="handle"
       style:width={`${Math.max(2, s.collapsedWidth)}px`}
+      style:height={`${expandedSize.height}px`}
       style:background={handleColor}
       onmouseenter={() => void hoverReport('bar', true)}
       role="presentation"
       title={t('app.name')}
     ></div>
   {:else}
-    <div class="pill surface" ondblclick={() => void openDashboard('overview')} role="presentation">
+    <div class="pill surface" use:dragHandle={onDrag} ondblclick={() => void openDashboard('overview')} role="presentation">
       {#if loading}
         {#each [0, 1] as i (i)}
           <div class="slot">
@@ -160,6 +196,7 @@
             role="button"
             tabindex="0"
             aria-label={ringLabel(item)}
+            aria-pressed={pinnedKey === item.key}
             onmouseenter={(e) => onRingEnter(item, e)}
             onclick={(e) => onRingClick(item, e)}
             onkeydown={(e) => {
@@ -216,6 +253,10 @@
     /* background / border / shadow / glass layers come from the global
        `.surface` material in base.css so the popover bubble matches exactly */
     border-radius: var(--r-pill);
+  }
+
+  .pill:global([data-dragging]) {
+    cursor: grabbing;
   }
 
   .stage[data-edge='right'] .pill {

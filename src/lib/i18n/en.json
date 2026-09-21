@@ -1,25 +1,20 @@
 {
   "app.name": "AI Usage Sidebar",
-
   "window.fiveHour": "5-hour",
   "window.fiveHourSession": "Current session",
   "window.weekly": "Weekly",
   "window.scoped": "{kind} · {scope}",
   "window.allModels": "All models",
-
   "percent.used": "{p}% Used",
   "percent.left": "{p}% left",
   "percent.unknown": "—",
-
   "reset.inMin": "Resets in {m} min",
   "reset.inHourMin": "Resets in {h} h {m} m",
   "reset.at": "Resets {when}",
   "reset.unknown": "—",
-
   "source.api": "API",
   "source.local_log": "local log",
   "source.cache": "cache",
-
   "status.ok": "Connected",
   "status.not_logged_in": "Not signed in",
   "status.token_expired": "Login expired",
@@ -32,13 +27,11 @@
   "status.hint.codex.token_expired": "Login expired — run `codex login` to refresh the token.",
   "status.hint.token_expired": "Login expired — sign in again to refresh the token.",
   "status.noWindows": "No rate-limit windows reported yet.",
-
   "ago.now": "just now",
   "ago.seconds": "{n} s ago",
   "ago.minutes": "{n} min ago",
   "ago.hours": "{n} h ago",
   "ago.days": "{n} d ago",
-
   "popover.title": "{provider} Usage",
   "popover.moreLimits": "More limits",
   "popover.credits": "Credits",
@@ -49,14 +42,11 @@
   "popover.details": "Details →",
   "popover.loading": "Loading…",
   "popover.empty": "No provider selected.",
-
   "sidebar.more": "Open dashboard",
   "sidebar.loading": "Loading…",
-
   "tab.overview": "Overview",
   "tab.history": "History",
   "tab.settings": "Settings",
-
   "common.refresh": "Refresh",
   "common.refreshAll": "Refresh all",
   "common.refreshing": "Refreshing…",
@@ -77,7 +67,6 @@
   "common.copied": "Copied",
   "common.up": "Move up",
   "common.down": "Move down",
-
   "overview.plan": "Plan",
   "overview.account": "Account",
   "overview.lastFetched": "Updated {ago} · {source}",
@@ -85,7 +74,6 @@
   "overview.noQuotaHistory": "No samples yet",
   "overview.credits": "Credits",
   "overview.noProviders": "No providers enabled. Enable one in Settings.",
-
   "history.range": "Range",
   "history.range.today": "Today",
   "history.range.7d": "7 days",
@@ -100,9 +88,15 @@
   "history.bucket.week": "Week",
   "history.bucket.month": "Month",
   "history.provider": "Provider",
+  "history.project": "Project",
+  "history.project.all": "All projects",
+  "history.project.unassigned": "No project",
+  "history.project.clear": "Show all projects",
   "history.groupBy": "Group by",
   "history.groupBy.provider": "Provider",
   "history.groupBy.model": "Model",
+  "history.groupByProject": "Split by project",
+  "history.modelUnknown": "Unknown model",
   "history.metric.tokens": "Tokens",
   "history.metric.cost": "Est. cost",
   "history.totals": "Totals",
@@ -115,6 +109,7 @@
   "history.reasoning": "Reasoning",
   "history.estCost": "Est. cost",
   "history.costNote": "Estimate — subscriptions don't bill per token.",
+  "chart.missingPrices": "Some models have no price. Their cost is unknown and omitted from this chart; the chart may show only a partial estimate.",
   "history.table.bucket": "Bucket",
   "history.table.model": "Model",
   "history.table.total": "Total",
@@ -130,7 +125,6 @@
   "history.ingestRunning": "Scanning logs…",
   "history.rescan": "Rescan logs",
   "history.ingestErrors": "{n} error(s)",
-
   "settings.appearance": "Appearance",
   "settings.theme": "Theme",
   "settings.theme.auto": "Auto",
@@ -149,7 +143,6 @@
   "settings.ringMode": "Ring layout",
   "settings.ringMode.primary": "Single",
   "settings.ringMode.all": "One per limit",
-
   "settings.ringMode.concentric": "Concentric",
   "settings.showScopedRing": "Show per-model ring (Claude)",
   "settings.surfaceStyle": "Surface",
@@ -167,7 +160,6 @@
   "settings.monitor": "Monitor",
   "settings.monitor.primary": "Primary",
   "settings.alwaysOnTop": "Always on top",
-
   "settings.behaviour": "Behaviour",
   "settings.autoHide": "Auto-hide to a thin handle",
   "settings.autoHideDelayMs": "Auto-hide delay (ms)",
@@ -175,7 +167,6 @@
   "settings.refreshIntervalSec": "Refresh interval (s)",
   "settings.notifications": "Notify near the limit",
   "settings.autostart": "Start at login",
-
   "settings.sizeColour": "Size & colour",
   "settings.sizes": "Sizes",
   "settings.sizes.ringSize": "Ring size",
@@ -197,7 +188,6 @@
   "settings.sizeHint": "Applies immediately; the bar re-measures itself.",
   "settings.providers": "Providers",
   "settings.providerEnabled": "Show in sidebar",
-
   "settings.data": "Data",
   "settings.ingestEnabled": "Read local session logs",
   "settings.pricing": "Pricing (USD per 1M tokens)",
@@ -208,7 +198,6 @@
   "settings.pricing.cacheRead": "Cache read",
   "settings.pricing.add": "Add row",
   "settings.pricing.save": "Save pricing",
-
   "settings.about": "About",
   "settings.about.backend": "Display backend",
   "settings.pricing.updated": "Updated {when}",
@@ -219,6 +208,18 @@
   "settings.about.configDir": "Config directory",
   "settings.about.github": "Open on GitHub",
   "settings.about.quit": "Quit",
-
-  "chart.noData": "No usage recorded in this range."
+  "chart.noData": "No usage recorded in this range.",
+  "common.retry": "Retry",
+  "common.saving": "Saving…",
+  "history.invalidRange": "Choose valid dates with the end date on or after the start date.",
+  "history.copyFailed": "Could not access the clipboard. Use Export CSV to save the data instead.",
+  "history.exportCsv": "Export CSV",
+  "history.exported": "Saved CSV: {path}",
+  "settings.pricing.invalid": "Use unique, non-empty model prefixes and non-negative prices.",
+  "settings.pricing.unsaved": "Unsaved pricing changes",
+  "overview.historyError": "Could not load quota trends: {message}",
+  "dashboard.preview": "Browser preview · sample data",
+  "chart.accessible": "Usage chart. The same values are available in the table below.",
+  "settings.warnThreshold": "Warning threshold (%)",
+  "settings.criticalThreshold": "Critical threshold (%)"
 }

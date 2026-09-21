@@ -20,6 +20,8 @@
   /** ticks so "Resets in …" / "Updated … ago" stay honest without a refetch */
   let now = $state(Date.now());
   let samples = $state<QuotaSample[]>([]);
+  let historyError = $state<string | null>(null);
+  let historyRequest = 0;
 
   const providers = $derived.by(() => {
     const list = snapshot.value?.providers ?? [];
@@ -45,22 +47,24 @@
   }
 
   async function loadQuotaHistory() {
+    const id = ++historyRequest;
     const to = Date.now();
     try {
-      samples = await getQuotaHistory({
+      const next = await getQuotaHistory({
         from: new Date(to - 7 * 86_400_000).toISOString(),
         to: new Date(to).toISOString(),
         provider: null,
       });
-    } catch {
-      samples = [];
+      if (id === historyRequest) { samples = next; historyError = null; }
+    } catch (e) {
+      if (id === historyRequest) historyError = String(e);
     }
   }
 
   onMount(() => {
     void loadQuotaHistory();
     const timer = setInterval(() => (now = Date.now()), 15_000);
-    return () => clearInterval(timer);
+    return () => { historyRequest++; clearInterval(timer); };
   });
 
   function statusHint(q: ProviderQuota): string | null {
@@ -99,6 +103,9 @@
       {snapshot.refreshing === 'all' ? t('common.refreshing') : t('common.refreshAll')}
     </button>
   </header>
+
+  {#if snapshot.error}<p class="hint bad" role="alert">{t('common.error', { message: snapshot.error })}</p>{/if}
+  {#if historyError}<p class="hint bad" role="alert">{t('overview.historyError', { message: historyError })}</p>{/if}
 
   {#if snapshot.loading}
     <p class="muted">{t('common.loading')}</p>
@@ -211,7 +218,7 @@
   .grid {
     display: grid;
     /* two cards side by side on a wide window, one column below ~880px */
-    grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
     gap: 1rem;
   }
 

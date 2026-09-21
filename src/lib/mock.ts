@@ -22,6 +22,7 @@ import type {
   Settings,
   TokenTotals,
 } from './types';
+import { mergeSettings, type SettingsPatch } from './settings-writer';
 
 const now = Date.now();
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -125,13 +126,43 @@ export const mockMonitors: MonitorInfo[] = [
   { name: 'HDMI-A-1', x: 3840, y: 240, width: 1920, height: 1080, scaleFactor: 1, isPrimary: false },
 ];
 
+// Keep the browser preview aligned with src-tauri/src/pricing.rs defaults.
 const PRICING: PricingEntry[] = [
-  { modelPattern: 'claude-opus-5', inputPerM: 5, outputPerM: 25, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
-  { modelPattern: 'claude-sonnet-4', inputPerM: 3, outputPerM: 15, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
-  { modelPattern: 'claude-haiku-4', inputPerM: 0.8, outputPerM: 4, cacheWritePerM: 1, cacheReadPerM: 0.08 },
-  { modelPattern: 'gpt-5.3-codex', inputPerM: 1.25, outputPerM: 10, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
-  { modelPattern: 'gpt-5.3-codex-spark', inputPerM: 0.25, outputPerM: 2, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
-  { modelPattern: 'o4-mini', inputPerM: 1.1, outputPerM: 4.4, cacheWritePerM: 1.1, cacheReadPerM: 0.275 },
+  { modelPattern: 'claude-opus-4', inputPerM: 15.0, outputPerM: 75.0, cacheWritePerM: 18.75, cacheReadPerM: 1.5 },
+  { modelPattern: 'claude-opus-4-1', inputPerM: 15.0, outputPerM: 75.0, cacheWritePerM: 18.75, cacheReadPerM: 1.5 },
+  { modelPattern: 'claude-opus-4-5', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-opus-4-6', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-opus-4-7', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-opus-4-8', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-opus-5', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-sonnet-4', inputPerM: 3.0, outputPerM: 15.0, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
+  { modelPattern: 'claude-sonnet-4-5', inputPerM: 3.0, outputPerM: 15.0, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
+  { modelPattern: 'claude-sonnet-4-6', inputPerM: 3.0, outputPerM: 15.0, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
+  { modelPattern: 'claude-sonnet-5', inputPerM: 2.0, outputPerM: 10.0, cacheWritePerM: 2.5, cacheReadPerM: 0.2 },
+  { modelPattern: 'claude-haiku-4-5', inputPerM: 1.0, outputPerM: 5.0, cacheWritePerM: 1.25, cacheReadPerM: 0.1 },
+  { modelPattern: 'claude-fable-5', inputPerM: 10.0, outputPerM: 50.0, cacheWritePerM: 12.5, cacheReadPerM: 1.0 },
+  { modelPattern: 'claude-mythos-5', inputPerM: 10.0, outputPerM: 50.0, cacheWritePerM: 12.5, cacheReadPerM: 1.0 },
+  { modelPattern: 'claude-fable-5-1', inputPerM: 10.0, outputPerM: 50.0, cacheWritePerM: 12.5, cacheReadPerM: 0.25 },
+  { modelPattern: 'claude-mythos-5-1', inputPerM: 10.0, outputPerM: 50.0, cacheWritePerM: 12.5, cacheReadPerM: 0.25 },
+  { modelPattern: 'gpt-5', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5-codex', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.1', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.1-codex', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.1-codex-max', inputPerM: 1.25, outputPerM: 10.0, cacheWritePerM: 1.25, cacheReadPerM: 0.125 },
+  { modelPattern: 'gpt-5.1-codex-mini', inputPerM: 0.25, outputPerM: 2.0, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
+  { modelPattern: 'gpt-5.2', inputPerM: 1.75, outputPerM: 14.0, cacheWritePerM: 1.75, cacheReadPerM: 0.175 },
+  { modelPattern: 'gpt-5.2-codex', inputPerM: 1.75, outputPerM: 14.0, cacheWritePerM: 1.75, cacheReadPerM: 0.175 },
+  { modelPattern: 'gpt-5.3-codex', inputPerM: 1.75, outputPerM: 14.0, cacheWritePerM: 1.75, cacheReadPerM: 0.175 },
+  { modelPattern: 'gpt-5.4', inputPerM: 2.5, outputPerM: 15.0, cacheWritePerM: 2.5, cacheReadPerM: 0.25 },
+  { modelPattern: 'gpt-5.5', inputPerM: 5.0, outputPerM: 30.0, cacheWritePerM: 5.0, cacheReadPerM: 0.5 },
+  { modelPattern: 'gpt-5.6-sol', inputPerM: 4.0, outputPerM: 20.0, cacheWritePerM: 5.0, cacheReadPerM: 0.4 },
+  { modelPattern: 'gpt-5.6-terra', inputPerM: 2.0, outputPerM: 12.0, cacheWritePerM: 2.5, cacheReadPerM: 0.2 },
+  { modelPattern: 'gpt-5.6-luna', inputPerM: 0.2, outputPerM: 1.2, cacheWritePerM: 0.25, cacheReadPerM: 0.02 },
+  { modelPattern: 'gpt-6-astra', inputPerM: 10.0, outputPerM: 50.0, cacheWritePerM: 12.5, cacheReadPerM: 1.0 },
+  { modelPattern: 'gpt-5-mini', inputPerM: 0.25, outputPerM: 2.0, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
+  { modelPattern: 'gpt-5-nano', inputPerM: 0.05, outputPerM: 0.4, cacheWritePerM: 0.05, cacheReadPerM: 0.005 },
+  { modelPattern: 'codex-mini', inputPerM: 1.5, outputPerM: 6.0, cacheWritePerM: 1.5, cacheReadPerM: 0.375 },
+  { modelPattern: 'codex-mini-latest', inputPerM: 1.5, outputPerM: 6.0, cacheWritePerM: 1.5, cacheReadPerM: 0.375 },
 ];
 
 let pricing: PricingTable = { entries: structuredClone(PRICING), updatedAt: iso(now - 9 * DAY) };
@@ -150,6 +181,7 @@ interface MockEvent {
   ts: number;
   provider: ProviderId;
   model: string;
+  project: string | null;
   inputTokens: number;
   cacheWriteTokens: number;
   cacheReadTokens: number;
@@ -162,6 +194,14 @@ const MODELS: Record<ProviderId, string[]> = {
   claude: ['claude-opus-5-20260514', 'claude-sonnet-4-6-20260219', 'claude-haiku-4-5-20251001'],
   codex: ['gpt-5.3-codex', 'gpt-5.3-codex-spark'],
 };
+
+/** Same basenames intentionally exercise exact project identity in the UI. */
+const PROJECTS = [
+  '/home/demo/projects/website',
+  '/home/demo/work/client/website',
+  'C:\\Users\\Demo\\Projects\\billing-service',
+  '',
+];
 
 /** Deterministic 32-bit LCG so every reload produces the same chart. */
 function lcg(seed: number) {
@@ -209,6 +249,7 @@ const events: MockEvent[] = (() => {
             ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
             provider,
             model: models[m],
+            project: PROJECTS[(dayBack + hour + m) % PROJECTS.length] || null,
             inputTokens: input,
             cacheWriteTokens: cacheWrite,
             cacheReadTokens: cacheRead,
@@ -238,11 +279,14 @@ function emptyTotals(): TokenTotals {
   };
 }
 
-/** Longest-prefix match against the (editable) pricing table, §9. */
+/** Built-ins match exact normalized names; custom entries allow prefixes. */
 function priceFor(model: string): PricingEntry | null {
+  const normalized = model.trim().toLowerCase().replace(/-\d{6,8}$/, '');
   let best: PricingEntry | null = null;
   for (const e of pricing.entries) {
-    if (model.startsWith(e.modelPattern) && (!best || e.modelPattern.length > best.modelPattern.length)) best = e;
+    const pattern = e.modelPattern.toLowerCase();
+    const builtin = PRICING.some((entry) => entry.modelPattern === pattern);
+    if (pattern && (builtin ? normalized === pattern : normalized.startsWith(pattern)) && (!best || pattern.length > best.modelPattern.length)) best = e;
   }
   return best;
 }
@@ -293,6 +337,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const rows = new Map<string, HistoryRow>();
   const totals = emptyTotals();
   const byProvider: Record<string, TokenTotals> = {};
+  const projects = new Set<string>();
   // cost is accumulated per model then summed, because the price list is
   // per-model — a grouped-by-provider row still gets a meaningful estimate.
   const rowCost = new Map<string, number | null>();
@@ -300,11 +345,15 @@ function runHistory(q: HistoryQuery): HistoryResult {
   let totalCost: number | null = 0;
 
   for (const e of events) {
-    if (e.ts < from || e.ts > to) continue;
+    if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    const project = e.project ?? '';
+    projects.add(project);
+    if (q.project != null && project !== q.project) continue;
 
     const bs = bucketStart(e.ts, q.bucket);
-    const key = `${bs}|${e.provider}|${q.groupByModel ? e.model : ''}`;
+    const rowProject = q.groupByProject ? project : q.project ?? null;
+    const key = JSON.stringify([bs, e.provider, q.groupByModel ? e.model : null, rowProject]);
     let row = rows.get(key);
     if (!row) {
       row = {
@@ -312,6 +361,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
         bucketStart: iso(bs),
         provider: e.provider,
         model: q.groupByModel ? e.model : null,
+        project: rowProject,
       };
       rows.set(key, row);
       rowCost.set(key, 0);
@@ -344,9 +394,10 @@ function runHistory(q: HistoryQuery): HistoryResult {
     (a, b) =>
       Date.parse(a.bucketStart) - Date.parse(b.bucketStart) ||
       a.provider.localeCompare(b.provider) ||
-      (a.model ?? '').localeCompare(b.model ?? '')
+      (a.model ?? '').localeCompare(b.model ?? '') ||
+      (a.project ?? '').localeCompare(b.project ?? '')
   );
-  return { rows: list, totals, byProvider };
+  return { rows: list, totals, byProvider, projects: [...projects].sort((a, b) => a.localeCompare(b)) };
 }
 
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */
@@ -358,7 +409,7 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
   for (const provider of ['claude', 'codex'] as ProviderId[]) {
     if (q.provider && provider !== q.provider) continue;
     const plan = provider === 'claude' ? 'max' : 'plus';
-    for (let ts = to - 14 * DAY; ts <= to; ts += HOUR / 2) {
+    for (let ts = to - 14 * DAY; ts < to; ts += HOUR / 2) {
       if (ts < from) continue;
       const base = provider === 'claude' ? 1 : 0.6;
       // 5-hour window: sawtooth that resets every 5 h
@@ -423,16 +474,10 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     case 'get_settings':
       return structuredClone(settings) as T;
     case 'update_settings': {
-      const patch = (args?.patch ?? {}) as Partial<Settings>;
+      const patch = (args?.patch ?? {}) as SettingsPatch;
       // `providers`, `colors` and `sizes` are merged per key, like the Rust
       // update_settings does (docs/ARCHITECTURE.md §5 / §7).
-      settings = {
-        ...settings,
-        ...patch,
-        providers: patch.providers ? { ...settings.providers, ...patch.providers } : settings.providers,
-        colors: patch.colors ? { ...settings.colors, ...patch.colors } : settings.colors,
-        sizes: patch.sizes ? { ...settings.sizes, ...patch.sizes } : settings.sizes,
-      };
+      settings = mergeSettings(settings, patch);
       mockEmit('settings-updated', structuredClone(settings));
       return structuredClone(settings) as T;
     }
@@ -442,9 +487,21 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return runQuotaHistory(args?.query as QuotaHistoryQuery) as T;
     case 'get_pricing':
       return structuredClone(pricing) as T;
-    case 'set_pricing':
-      pricing = { ...(args?.table as PricingTable), updatedAt: iso(Date.now()) };
+    case 'set_pricing': {
+      const table = args?.table as PricingTable;
+      const entries: PricingEntry[] = [];
+      for (const entry of table.entries) {
+        if (!entry.modelPattern.trim() || [entry.inputPerM, entry.outputPerM, entry.cacheWritePerM, entry.cacheReadPerM].some((value) => !Number.isFinite(value) || value < 0)) {
+          throw new Error('pricing entries require a model name and finite, non-negative rates');
+        }
+        const normalized = { ...entry, modelPattern: entry.modelPattern.trim().toLowerCase() };
+        const index = entries.findIndex((candidate) => candidate.modelPattern === normalized.modelPattern);
+        if (index === -1) entries.push(normalized);
+        else entries[index] = normalized;
+      }
+      pricing = { entries, updatedAt: iso(Date.now()) };
       return structuredClone(pricing) as T;
+    }
     case 'reingest_logs': {
       const start = Date.now();
       const stats: IngestStats = { filesScanned: 0, filesUpdated: 0, eventsAdded: 0, durationMs: 0, errors: [], running: true };

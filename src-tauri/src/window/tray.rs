@@ -12,6 +12,16 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub const TRAY_ID: &str = "main";
 
+#[derive(Clone)]
+pub struct MenuItems {
+    toggle: MenuItem<tauri::Wry>,
+    always_show: CheckMenuItem<tauri::Wry>,
+    refresh: MenuItem<tauri::Wry>,
+    dashboard: MenuItem<tauri::Wry>,
+    settings: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
 mod ids {
     pub const TOGGLE: &str = "toggle_sidebar";
     pub const ALWAYS_SHOW: &str = "always_show";
@@ -34,9 +44,9 @@ struct Labels {
 fn labels(settings: &Settings) -> Labels {
     let chinese = match settings.language.as_str() {
         "zh-CN" | "zh" => true,
-        "auto" => std::env::var("LC_ALL")
-            .or_else(|_| std::env::var("LC_MESSAGES"))
-            .or_else(|_| std::env::var("LANG"))
+        "auto" => ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
             .map(|v| v.starts_with("zh"))
             .unwrap_or(false),
         _ => false,
@@ -102,6 +112,18 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
     tray.set_menu(Some(menu))?;
     tray.on_menu_event(|app, event: MenuEvent| on_menu(app, event.id.as_ref()));
 
+    // The configured icon is a white macOS template glyph; Windows draws it
+    // verbatim, which is invisible on a light taskbar.
+    #[cfg(target_os = "windows")]
+    match tauri::image::Image::from_bytes(include_bytes!("../../icons/32x32.png")) {
+        Ok(icon) => {
+            if let Err(e) = tray.set_icon(Some(icon)) {
+                log::debug!("tray set_icon: {e}");
+            }
+        }
+        Err(e) => log::debug!("tray icon decode: {e}"),
+    }
+
     #[cfg(not(target_os = "linux"))]
     {
         use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -122,7 +144,14 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
     }
 
     if let Some(state) = app.try_state::<window::PlatformState>() {
-        *state.always_show_item.lock() = Some(always_show);
+        *state.tray_items.lock() = Some(MenuItems {
+            toggle,
+            always_show,
+            refresh,
+            dashboard: open_dashboard,
+            settings: open_settings,
+            quit,
+        });
     }
     log::info!("tray menu ready");
     Ok(())
@@ -159,6 +188,11 @@ fn toggle_sidebar(app: &AppHandle) {
     };
     if win.is_visible().unwrap_or(false) {
         crate::window::popover::hide(app, true);
+        window::with_state(app, |inner| {
+            inner.bar_hovered = false;
+            inner.generation = inner.generation.wrapping_add(1);
+            inner.revealed = true;
+        });
         if let Err(e) = win.hide() {
             log::warn!("hiding the sidebar failed: {e}");
         }
@@ -169,6 +203,8 @@ fn toggle_sidebar(app: &AppHandle) {
             return;
         }
         window::after_show(&win, window::settings_of(app).always_on_top);
+        window::with_state(app, |inner| inner.revealed = true);
+        crate::window::hover::schedule_idle_timers(app);
     }
 }
 
@@ -183,15 +219,30 @@ fn set_auto_hide(app: &AppHandle, auto_hide: bool) {
     }
 }
 
-/// Keep the check item in sync with settings changed elsewhere.
+/// Keep the check state and language in sync with settings changed elsewhere.
 pub fn sync(app: &AppHandle, settings: &Settings) {
     let Some(state) = app.try_state::<window::PlatformState>() else {
         return;
     };
-    let guard = state.always_show_item.lock();
-    if let Some(item) = guard.as_ref() {
-        if let Err(e) = item.set_checked(!settings.auto_hide) {
+    let items = state.tray_items.lock().clone();
+    if let Some(items) = items {
+        if let Err(e) = items.always_show.set_checked(!settings.auto_hide) {
             log::debug!("tray check item update failed: {e}");
+        }
+        let l = labels(settings);
+        for (item, text) in [
+            (&items.toggle, l.toggle),
+            (&items.refresh, l.refresh),
+            (&items.dashboard, l.dashboard),
+            (&items.settings, l.settings),
+            (&items.quit, l.quit),
+        ] {
+            if let Err(e) = item.set_text(text) {
+                log::debug!("tray label update failed: {e}");
+            }
+        }
+        if let Err(e) = items.always_show.set_text(l.always_show) {
+            log::debug!("tray check label update failed: {e}");
         }
     }
 }

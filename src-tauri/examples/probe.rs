@@ -61,6 +61,8 @@ async fn main() -> Result<()> {
         bucket: Bucket::Day,
         group_by_model: false,
         provider: None,
+        project: None,
+        group_by_project: false,
     };
     let pricing = ai_usage_sidebar_lib::commands::pricing::default_table();
     let history = store::query_history(&db, &query, &pricing)?;

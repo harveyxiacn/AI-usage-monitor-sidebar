@@ -26,6 +26,9 @@ pub fn open(app: &AppHandle, tab: Option<String>) {
     if let Err(e) = win.set_focus() {
         log::warn!("focusing the dashboard failed: {e}");
     }
+    // WebKitGTK can clear the title of a webview initially loaded while hidden.
+    // Restore it when reopening so task switching never shows an unnamed app.
+    let _ = win.set_title("AI Usage Sidebar — Dashboard");
     if let Err(e) = app.emit_to(
         windows::DASHBOARD,
         events::DASHBOARD_NAVIGATE,

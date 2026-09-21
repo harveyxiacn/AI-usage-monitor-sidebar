@@ -6,20 +6,26 @@
 //! * [`sidebar`]  — placement / expand / collapse of the edge bar
 //! * [`popover`]  — the detail bubble anchored to a ring
 //! * [`hover`]    — the hover state machine and its cancellable timers
+//! * [`drag`]     — dragging the bar to another edge / height / monitor
 //! * [`dashboard`]— the normal window (settings + history)
 //! * [`tray`]     — tray icon and menu
+//! * [`linux`]    — Wayland layer-shell docking and the KDE X11 blur hint
 //!
 //! Everything positional works in **logical** (CSS) pixels; see
 //! `docs/PLATFORM.md`.
 
 pub mod dashboard;
+pub mod drag;
 pub mod hover;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod monitors;
 pub mod popover;
 pub mod sidebar;
 pub mod tray;
 
 use crate::model::*;
+use crate::window::monitors::LogicalRect;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Listener, Manager, WebviewWindow, WindowEvent};
 
@@ -34,6 +40,11 @@ pub const POPOVER_GAP: f64 = 10.0;
 pub const REVEAL_FALLBACK_MS: u64 = 1_500;
 /// How long after the pointer left both windows the popover disappears.
 pub const POPOVER_HIDE_DELAY_MS: u64 = 250;
+/// A pinned popover survives hover-out, but not forever: this long after the
+/// pointer left both windows it closes as well.
+pub const PINNED_POPOVER_HIDE_DELAY_MS: u64 = 8_000;
+/// Period of the pointer check that catches a `mouseleave` the webview lost.
+pub const POINTER_CHECK_MS: u64 = 400;
 /// Period of the geometry watchdog (monitor hot-plug, WM moved us, …).
 pub const GEOMETRY_CHECK_SEC: u64 = 5;
 /// Tolerance of the geometry watchdog, logical px.
@@ -62,6 +73,8 @@ pub struct Inner {
     /// Bumped on every hover event; pending timers with an older generation
     /// are stale and do nothing when they wake up.
     pub generation: u64,
+    /// Where the bar was when the current drag began; `None` when idle.
+    pub drag_origin: Option<monitors::LogicalRect>,
 }
 
 impl Default for Inner {
@@ -77,6 +90,7 @@ impl Default for Inner {
             popover_visible: false,
             revealed: false,
             generation: 0,
+            drag_origin: None,
         }
     }
 }
@@ -84,9 +98,8 @@ impl Default for Inner {
 #[derive(Default)]
 pub struct PlatformState {
     pub inner: Mutex<Inner>,
-    /// The tray's "Always show sidebar" item, so it can be kept in sync with
-    /// settings changed elsewhere.
-    pub always_show_item: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    /// Tray items are updated in place when language or auto-hide changes.
+    pub tray_items: Mutex<Option<tray::MenuItems>>,
 }
 
 /// Read a copy of the platform state, or `None` before `setup` ran.
@@ -130,41 +143,111 @@ pub fn apply_stacking(win: &WebviewWindow, always_on_top: bool) {
     }
 }
 
+/// GTK treats non-resizable windows as their webview's natural size (200px),
+/// which prevents a narrow sidebar or collapsed handle. Equal min/max hints
+/// allow the requested size while still preventing the user from resizing it.
+pub fn set_overlay_size(win: &WebviewWindow, size: tauri::PhysicalSize<u32>) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        win.set_resizable(true)?;
+        win.set_size_constraints(tauri::WindowSizeConstraints {
+            min_width: Some(tauri::PhysicalUnit::new(size.width as i32).into()),
+            min_height: Some(tauri::PhysicalUnit::new(size.height as i32).into()),
+            max_width: Some(tauri::PhysicalUnit::new(size.width as i32).into()),
+            max_height: Some(tauri::PhysicalUnit::new(size.height as i32).into()),
+        })?;
+    }
+    win.set_size(size)
+}
+
+/// True when the Linux overlays are docked through Wayland layer-shell. The
+/// compositor then owns their position, so `set_position`, `outer_position`
+/// and the size constraints above are meaningless for them.
+pub fn layer_shell_active() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::is_active()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// The single place where a computed overlay rectangle reaches the OS.
+///
+/// Normally that is move → resize → move (GTK/X11 sometimes keeps the
+/// pre-resize origin when both happen in one frame; the watchdog catches the
+/// rest). Under Wayland layer-shell the compositor positions the surface from
+/// anchors and margins instead, and `linux::place` takes over completely.
+pub fn place_overlay(win: &WebviewWindow, rect: LogicalRect, scale: f64) {
+    #[cfg(target_os = "linux")]
+    if linux::place(win, rect) {
+        return;
+    }
+    let (position, size) = rect.to_physical(scale);
+    if let Err(e) = win.set_position(position) {
+        log::warn!("set_position on `{}` failed: {e}", win.label());
+    }
+    if let Err(e) = set_overlay_size(win, size) {
+        log::warn!("set_size on `{}` failed: {e}", win.label());
+    }
+    if let Err(e) = win.set_position(position) {
+        log::warn!("set_position on `{}` failed: {e}", win.label());
+    }
+}
+
 /// Native translucency for the overlay windows, where the OS provides it.
 ///
 /// * **macOS** — `NSVisualEffectView` behind the webview (HUD material).
 /// * **Windows** — the acrylic backdrop of DWM.
-/// * **Linux** — nothing to do: GNOME/mutter has no client-side blur protocol.
-///   Blur behind on KWin (`_KDE_NET_WM_BLUR_BEHIND_REGION`) is on the roadmap.
+/// * **Linux** — `_KDE_NET_WM_BLUR_BEHIND_REGION` on X11, which KWin honours
+///   and every other X11 compositor ignores (see [`linux::apply_blur`]).
+///   Wayland has no client-side blur protocol, so there the webview's own
+///   translucent fill is all you get.
 ///
 /// The frontend always paints a translucent surface itself, so a failure here
 /// only costs the background blur, never readability.
 pub fn apply_surface_style(win: &WebviewWindow, style: SurfaceStyle) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
-        let result = match style {
-            SurfaceStyle::Glass => {
-                apply_vibrancy(win, NSVisualEffectMaterial::HudWindow, None, Some(16.0))
+        let native_window = win.clone();
+        // Settings arrive on an async worker. AppKit effect views must be
+        // updated on the main thread; otherwise macOS rejects live changes.
+        if let Err(e) = win.run_on_main_thread(move || {
+            #[cfg(target_os = "macos")]
+            let result = {
+                use window_vibrancy::{apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial};
+                match style {
+                    SurfaceStyle::Glass => apply_vibrancy(
+                        &native_window,
+                        NSVisualEffectMaterial::HudWindow,
+                        None,
+                        Some(16.0),
+                    ),
+                    SurfaceStyle::Solid => clear_vibrancy(&native_window).map(|_| ()),
+                }
+            };
+            #[cfg(target_os = "windows")]
+            let result = {
+                use window_vibrancy::{apply_acrylic, clear_acrylic};
+                match style {
+                    SurfaceStyle::Glass => apply_acrylic(&native_window, Some((0, 0, 0, 10))),
+                    SurfaceStyle::Solid => clear_acrylic(&native_window),
+                }
+            };
+            if let Err(e) = result {
+                log::debug!("native backdrop on `{}`: {e}", native_window.label());
             }
-            SurfaceStyle::Solid => clear_vibrancy(win).map(|_| ()),
-        };
-        if let Err(e) = result {
-            log::debug!("vibrancy on `{}`: {e}", win.label());
+        }) {
+            log::debug!("scheduling native backdrop on `{}`: {e}", win.label());
         }
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     {
-        use window_vibrancy::{apply_acrylic, clear_acrylic};
-        let result = match style {
-            SurfaceStyle::Glass => apply_acrylic(win, Some((0, 0, 0, 10))),
-            SurfaceStyle::Solid => clear_acrylic(win),
-        };
-        if let Err(e) = result {
-            log::debug!("acrylic on `{}`: {e}", win.label());
-        }
+        linux::apply_blur(win, style);
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = (win, style);
     }
@@ -191,6 +274,14 @@ pub fn after_show(win: &WebviewWindow, always_on_top: bool) {
 /// Called once from `lib.rs` inside `.setup()`, after `AppState` is managed.
 pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     app.manage(PlatformState::default());
+
+    // Must run before anything shows or realises an overlay: gtk-layer-shell
+    // can only adopt an unrealised window. Failing is never fatal — it just
+    // leaves the overlays as ordinary (X)Wayland toplevels.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = linux::initialize(app) {
+        log::info!("native layer-shell docking not used: {e:#}");
+    }
 
     let settings = settings_of(app);
     log::info!(
@@ -228,6 +319,7 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     install_close_handlers(app);
     sidebar::place(app);
     sidebar::start_watchdogs(app);
+    hover::start_pointer_check(app);
 
     if let Err(e) = tray::build(app) {
         log::error!("tray icon could not be created: {e:#}");
@@ -305,6 +397,7 @@ fn install_close_handlers(app: &AppHandle) {
 /// Re-read the settings and re-apply everything the platform layer owns.
 pub fn apply_settings(app: &AppHandle) {
     let settings = settings_of(app);
+    hover::settings_changed(app);
     sidebar::place(app);
     popover::reposition(app);
     for label in [windows::SIDEBAR, windows::POPOVER] {
@@ -395,6 +488,17 @@ pub async fn sidebar_relayout(app: AppHandle, width: f64, height: f64) -> Result
 }
 
 #[tauri::command]
+pub async fn sidebar_drag(
+    app: AppHandle,
+    phase: drag::DragPhase,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
+    drag::drag(&app, phase, dx, dy);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn popover_show(app: AppHandle, req: PopoverRequest) -> Result<(), String> {
     popover::show(&app, req);
     Ok(())
@@ -408,7 +512,9 @@ pub async fn popover_relayout(app: AppHandle, width: f64, height: f64) -> Result
 
 #[tauri::command]
 pub async fn popover_hide(app: AppHandle) -> Result<(), String> {
-    popover::hide(&app, false);
+    // An explicit request (second click on the pinned ring) also unpins; only
+    // the hover timers respect a pin.
+    popover::hide(&app, true);
     Ok(())
 }
 

@@ -6,7 +6,7 @@
 //!
 //! Streaming writes several `assistant` lines for one `message.id`; the last
 //! one carries the complete usage, so within a chunk we dedupe on
-//! `<message.id>:<requestId>` keeping the **last** occurrence, and across
+//! `<message.id>:<requestId>` keeping the most complete occurrence, and across
 //! chunks `store::insert_usage_events` upgrades a row when a later line has
 //! more tokens.
 
@@ -113,18 +113,25 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
                 .output_tokens_details
                 .map(|d| d.thinking_tokens.max(0))
                 .unwrap_or(0),
-            total_tokens: usage.input_tokens.max(0)
-                + usage.cache_creation_input_tokens.max(0)
-                + usage.cache_read_input_tokens.max(0)
-                + usage.output_tokens.max(0),
+            total_tokens: usage
+                .input_tokens
+                .max(0)
+                .saturating_add(usage.cache_creation_input_tokens.max(0))
+                .saturating_add(usage.cache_read_input_tokens.max(0))
+                .saturating_add(usage.output_tokens.max(0)),
             session_id: parsed.session_id.clone(),
             request_id: key.clone(),
             cwd: parsed.cwd.clone(),
             source_file: Some(source.to_string()),
         };
-        if by_key.insert(key.clone(), event).is_none() {
+        if let Some(previous) = by_key.get(&key) {
+            if previous.total_tokens > event.total_tokens {
+                continue;
+            }
+        } else {
             order.push(key);
         }
+        by_key.insert(event.request_id.clone(), event);
     }
 
     order
@@ -222,5 +229,17 @@ mod tests {
     fn garbage_never_panics() {
         assert!(parse_chunk("", "x").is_empty());
         assert!(parse_chunk("not json\n{\"usage\":\"assistant\"}\n", "x").is_empty());
+    }
+
+    #[test]
+    fn less_complete_duplicates_do_not_replace_complete_usage() {
+        let line = |output: i64| {
+            format!(
+                r#"{{"type":"assistant","requestId":"req","message":{{"id":"msg","model":"claude-opus-5","usage":{{"input_tokens":2,"output_tokens":{output}}}}}}}"#
+            )
+        };
+        let events = parse_chunk(&format!("{}\n{}", line(100), line(1)), "x");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].output_tokens, 100);
     }
 }

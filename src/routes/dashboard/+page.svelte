@@ -10,7 +10,7 @@
   import HistoryTab from '$lib/components/dashboard/HistoryTab.svelte';
   import OverviewTab from '$lib/components/dashboard/OverviewTab.svelte';
   import SettingsTab from '$lib/components/dashboard/SettingsTab.svelte';
-  import { onDashboardNavigate, type Unlisten } from '$lib/api';
+  import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
   import { t } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -60,6 +60,7 @@
 <div class="app">
   <header class="topbar">
     <span class="brand">{t('app.name')}</span>
+    {#if !isTauri()}<span class="preview-badge">{t('dashboard.preview')}</span>{/if}
     <nav class="tabs" aria-label={t('app.name')}>
       {#each TABS as id (id)}
         <button
@@ -109,9 +110,15 @@
     white-space: nowrap;
   }
 
+  .preview-badge {
+    color: var(--muted);
+    font-size: 0.6875rem;
+  }
+
   .tabs {
     display: flex;
     gap: 0.25rem;
+    flex-wrap: wrap;
   }
 
   .tabs button {

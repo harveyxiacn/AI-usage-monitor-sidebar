@@ -44,7 +44,14 @@
   let appInfo = $state<AppInfo | null>(null);
   let pricing = $state<PricingTable | null>(null);
   let pricingSaved = $state(false);
+  let pricingLoading = $state(true);
+  let pricingSaving = $state(false);
+  let pricingError = $state<string | null>(null);
+  let pricingDirty = $state(false);
+  let actionError = $state<string | null>(null);
+  let rescanResult = $state<string | null>(null);
   let rescanning = $state(false);
+  let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Provider rows: known providers from the snapshot, ordered by settings. */
   const providerRows = $derived.by(() => {
@@ -54,9 +61,10 @@
   });
 
   onMount(() => {
-    void getMonitors().then((m) => (monitors = m)).catch(() => (monitors = []));
-    void getAppInfo().then((i) => (appInfo = i)).catch(() => (appInfo = null));
-    void getPricing().then((p) => (pricing = p)).catch(() => (pricing = null));
+    void getMonitors().then((m) => (monitors = m)).catch((e) => (actionError = String(e)));
+    void getAppInfo().then((i) => (appInfo = i)).catch((e) => (actionError = String(e)));
+    void loadPricing();
+    return () => clearTimeout(savedTimer);
   });
 
   const providerName = (id: ProviderId) =>
@@ -69,24 +77,45 @@
     const i = list.indexOf(id);
     const j = i + delta;
     if (i < 0 || j < 0 || j >= list.length) return;
-    const other = list[j];
-    const next = { ...s.providers };
-    const a = next[id] ?? { enabled: true, order: i };
-    const b = next[other] ?? { enabled: true, order: j };
-    next[id] = { ...a, order: j };
-    next[other] = { ...b, order: i };
-    await settings.patch({ providers: next });
+    const order = [...list];
+    [order[i], order[j]] = [order[j], order[i]];
+    await settings.patch({ providers: Object.fromEntries(order.map((provider, index) => [provider, { order: index }])) });
   }
 
   function num(e: Event): number {
     return Number((e.currentTarget as HTMLInputElement).value);
   }
 
+  async function loadPricing() {
+    pricingLoading = true;
+    pricingError = null;
+    try { pricing = await getPricing(); }
+    catch (e) { pricingError = String(e); }
+    finally { pricingLoading = false; }
+  }
+
   async function savePricing() {
-    if (!pricing) return;
-    pricing = await setPricing({ ...pricing, entries: pricing.entries });
-    pricingSaved = true;
-    setTimeout(() => (pricingSaved = false), 1500);
+    if (!pricing || pricingSaving) return;
+    pricingError = null;
+    const patterns = new Set<string>();
+    for (const entry of pricing.entries) {
+      const pattern = entry.modelPattern.trim().toLowerCase();
+      const prices = [entry.inputPerM, entry.outputPerM, entry.cacheWritePerM, entry.cacheReadPerM];
+      if (!pattern || patterns.has(pattern) || prices.some((value) => !Number.isFinite(value) || value < 0)) {
+        pricingError = t('settings.pricing.invalid');
+        return;
+      }
+      patterns.add(pattern);
+    }
+    pricingSaving = true;
+    try {
+      pricing = await setPricing({ ...pricing, entries: pricing.entries.map((entry) => ({ ...entry, modelPattern: entry.modelPattern.trim() })) });
+      pricingSaved = true;
+      pricingDirty = false;
+      clearTimeout(savedTimer);
+      savedTimer = setTimeout(() => (pricingSaved = false), 1500);
+    } catch (e) { pricingError = String(e); }
+    finally { pricingSaving = false; }
   }
 
   function addPricingRow() {
@@ -99,27 +128,39 @@
       cacheReadPerM: 0,
     };
     pricing = { ...pricing, entries: [...pricing.entries, entry] };
+    pricingDirty = true;
+    pricingSaved = false;
   }
 
   function removePricingRow(index: number) {
     if (!pricing) return;
     pricing = { ...pricing, entries: pricing.entries.filter((_, i) => i !== index) };
+    pricingDirty = true;
+    pricingSaved = false;
   }
 
   function editPricing(index: number, key: keyof PricingEntry, value: string) {
     if (!pricing) return;
     const entries = pricing.entries.map((e, i) =>
       i === index
-        ? { ...e, [key]: key === 'modelPattern' ? value : (Number(value) || 0) }
+        ? { ...e, [key]: key === 'modelPattern' ? value : (value === '' ? NaN : Number(value)) }
         : e
     );
     pricing = { ...pricing, entries };
+    pricingDirty = true;
+    pricingSaved = false;
   }
 
   async function rescan() {
     rescanning = true;
+    actionError = null;
+    rescanResult = null;
     try {
-      await reingestLogs();
+      const stats = await reingestLogs();
+      rescanResult = t('history.ingestStats', { files: stats.filesScanned, updated: stats.filesUpdated, events: stats.eventsAdded, ms: stats.durationMs });
+      if (stats.errors.length > 0) actionError = stats.errors.join('\n');
+    } catch (e) {
+      actionError = String(e);
     } finally {
       rescanning = false;
     }
@@ -134,6 +175,11 @@
     }
   }
 
+  async function runAction(action: () => Promise<unknown>) {
+    actionError = null;
+    try { await action(); } catch (e) { actionError = String(e); }
+  }
+
   const THEMES: Theme[] = ['auto', 'dark', 'light'];
   const LANGUAGES: Language[] = ['auto', 'en', 'zh-CN'];
   const EDGES: Edge[] = ['left', 'right'];
@@ -145,20 +191,26 @@
 
 <section class="settings">
   {#if settings.error}
-    <p class="err">{t('common.error', { message: settings.error })}</p>
+    <p class="err" role="alert">{t('common.error', { message: settings.error })}</p>
+  {/if}
+  {#if actionError}
+    <p class="err" role="alert">{t('common.error', { message: actionError })}</p>
+  {/if}
+  {#if settings.saving}
+    <p class="save-state muted" role="status">{t('common.saving')}</p>
   {/if}
 
   <article class="card group">
     <h3>{t('settings.appearance')}</h3>
 
     <Field label={t('settings.theme')}>
-      <select class="field" value={s.theme} onchange={(e) => void settings.patch({ theme: e.currentTarget.value as Theme })}>
+      <select aria-label={t('settings.theme')} class="field" value={s.theme} onchange={(e) => void settings.patch({ theme: e.currentTarget.value as Theme })}>
         {#each THEMES as v (v)}<option value={v}>{tDyn(`settings.theme.${v}`)}</option>{/each}
       </select>
     </Field>
 
     <Field label={t('settings.language')}>
-      <select class="field" value={s.language} onchange={(e) => void settings.patch({ language: e.currentTarget.value as Language })}>
+      <select aria-label={t('settings.language')} class="field" value={s.language} onchange={(e) => void settings.patch({ language: e.currentTarget.value as Language })}>
         {#each LANGUAGES as v (v)}<option value={v}>{tDyn(`settings.language.${v}`)}</option>{/each}
       </select>
     </Field>
@@ -196,13 +248,13 @@
     </Field>
 
     <Field label={t('settings.percentMode')}>
-      <select class="field" value={s.percentMode} onchange={(e) => void settings.patch({ percentMode: e.currentTarget.value as PercentMode })}>
+      <select aria-label={t('settings.percentMode')} class="field" value={s.percentMode} onchange={(e) => void settings.patch({ percentMode: e.currentTarget.value as PercentMode })}>
         {#each PERCENT_MODES as v (v)}<option value={v}>{tDyn(`settings.percentMode.${v}`)}</option>{/each}
       </select>
     </Field>
 
     <Field label={t('settings.ringMode')}>
-      <select class="field" value={s.ringMode} onchange={(e) => void settings.patch({ ringMode: e.currentTarget.value as RingMode })}>
+      <select aria-label={t('settings.ringMode')} class="field" value={s.ringMode} onchange={(e) => void settings.patch({ ringMode: e.currentTarget.value as RingMode })}>
         {#each RING_MODES as v (v)}<option value={v}>{tDyn(`settings.ringMode.${v}`)}</option>{/each}
       </select>
     </Field>
@@ -217,7 +269,7 @@
     </Field>
 
     <Field label={t('settings.surfaceStyle')}>
-      <select class="field" value={s.surfaceStyle} onchange={(e) => void settings.patch({ surfaceStyle: e.currentTarget.value as SurfaceStyle })}>
+      <select aria-label={t('settings.surfaceStyle')} class="field" value={s.surfaceStyle} onchange={(e) => void settings.patch({ surfaceStyle: e.currentTarget.value as SurfaceStyle })}>
         {#each SURFACE_STYLES as v (v)}<option value={v}>{tDyn(`settings.surfaceStyle.${v}`)}</option>{/each}
       </select>
     </Field>
@@ -229,13 +281,13 @@
     <h3>{t('settings.position')}</h3>
 
     <Field label={t('settings.edge')}>
-      <select class="field" value={s.edge} onchange={(e) => void settings.patch({ edge: e.currentTarget.value as Edge })}>
+      <select aria-label={t('settings.edge')} class="field" value={s.edge} onchange={(e) => void settings.patch({ edge: e.currentTarget.value as Edge })}>
         {#each EDGES as v (v)}<option value={v}>{tDyn(`settings.edge.${v}`)}</option>{/each}
       </select>
     </Field>
 
     <Field label={t('settings.verticalAlign')}>
-      <select class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
+      <select aria-label={t('settings.verticalAlign')} class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
         {#each ALIGNS as v (v)}<option value={v}>{tDyn(`settings.verticalAlign.${v}`)}</option>{/each}
       </select>
     </Field>
@@ -252,7 +304,7 @@
     </Field>
 
     <Field label={t('settings.monitor')}>
-      <select
+      <select aria-label={t('settings.monitor')}
         class="field"
         value={s.monitor ?? ''}
         onchange={(e) => void settings.patch({ monitor: e.currentTarget.value || null })}
@@ -333,6 +385,18 @@
       />
     </Field>
 
+    <Field label={t('settings.warnThreshold')}>
+      <input class="field num" type="number" min="1" max={s.thresholds.critical - 1} step="1"
+        value={s.thresholds.warn} aria-label={t('settings.warnThreshold')}
+        onchange={(e) => void settings.patch({ thresholds: { warn: Math.max(1, Math.min(s.thresholds.critical - 1, Math.round(num(e)))) } })} />
+    </Field>
+
+    <Field label={t('settings.criticalThreshold')}>
+      <input class="field num" type="number" min={s.thresholds.warn + 1} max="100" step="1"
+        value={s.thresholds.critical} aria-label={t('settings.criticalThreshold')}
+        onchange={(e) => void settings.patch({ thresholds: { critical: Math.min(100, Math.max(s.thresholds.warn + 1, Math.round(num(e)))) } })} />
+    </Field>
+
     <Field label={t('settings.autostart')}>
       <Toggle
         checked={s.autostart}
@@ -376,6 +440,8 @@
       </button>
     </Field>
 
+    {#if rescanResult}<p class="muted small" role="status">{rescanResult}</p>{/if}
+
     <div class="pricing">
       <header class="pricing-head">
         <span class="label">{t('settings.pricing')}</span>
@@ -386,11 +452,15 @@
         {/if}
       </header>
 
-      {#if !pricing}
+      {#if pricingError}
+        <p class="err" role="alert">{t('common.error', { message: pricingError })}</p>
+        {#if !pricing}<button class="btn" onclick={() => void loadPricing()} disabled={pricingLoading}>{t('common.retry')}</button>{/if}
+      {/if}
+      {#if pricingLoading}
         <p class="muted small">{t('common.loading')}</p>
-      {:else if pricing.entries.length === 0}
+      {:else if pricing?.entries.length === 0}
         <p class="muted small">{t('settings.pricing.none')}</p>
-      {:else}
+      {:else if pricing}
         <div class="table-wrap">
           <table>
             <thead>
@@ -410,6 +480,7 @@
                     <input
                       class="field pattern"
                       value={e.modelPattern}
+                      disabled={pricingSaving}
                       oninput={(ev) => editPricing(i, 'modelPattern', ev.currentTarget.value)}
                       aria-label={t('settings.pricing.model')}
                     />
@@ -422,13 +493,14 @@
                         min="0"
                         step="0.01"
                         value={e[key as keyof PricingEntry]}
+                        disabled={pricingSaving}
                         oninput={(ev) => editPricing(i, key as keyof PricingEntry, ev.currentTarget.value)}
                         aria-label={tDyn(label)}
                       />
                     </td>
                   {/each}
                   <td class="n">
-                    <button class="btn icon" onclick={() => removePricingRow(i)} aria-label={t('common.remove')}>×</button>
+                    <button class="btn icon" onclick={() => removePricingRow(i)} disabled={pricingSaving} aria-label={t('common.remove')}>×</button>
                   </td>
                 </tr>
               {/each}
@@ -438,9 +510,10 @@
       {/if}
 
       <div class="pricing-actions">
-        <button class="btn" onclick={addPricingRow} disabled={!pricing}>{t('settings.pricing.add')}</button>
-        <button class="btn btn-primary" onclick={() => void savePricing()} disabled={!pricing}>
-          {pricingSaved ? t('common.saved') : t('settings.pricing.save')}
+        {#if pricingDirty}<span class="muted small">{t('settings.pricing.unsaved')}</span>{/if}
+        <button class="btn" onclick={addPricingRow} disabled={!pricing || pricingSaving}>{t('settings.pricing.add')}</button>
+        <button class="btn btn-primary" onclick={() => void savePricing()} disabled={!pricing || pricingSaving}>
+          {pricingSaving ? t('common.saving') : pricingSaved ? t('common.saved') : t('settings.pricing.save')}
         </button>
       </div>
     </div>
@@ -464,8 +537,8 @@
       <span class="mono path" title={appInfo?.configDir ?? ''}>{appInfo?.configDir ?? '—'}</span>
     </Field>
     <div class="actions">
-      <button class="btn" onclick={() => void openGithub()}>{t('settings.about.github')}</button>
-      <button class="btn danger" onclick={() => void quitApp()}>{t('settings.about.quit')}</button>
+      <button class="btn" onclick={() => void runAction(openGithub)}>{t('settings.about.github')}</button>
+      <button class="btn danger" onclick={() => void runAction(quitApp)}>{t('settings.about.quit')}</button>
     </div>
   </article>
 </section>
@@ -473,7 +546,7 @@
 <style>
   .settings {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
     align-items: start;
     gap: 1rem;
   }
@@ -618,6 +691,8 @@
     display: flex;
     gap: 0.5rem;
     justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
   }
 
   .path {
@@ -633,5 +708,12 @@
     margin: 0;
     color: var(--critical);
     font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .save-state {
+    grid-column: 1 / -1;
+    margin: 0;
   }
 </style>

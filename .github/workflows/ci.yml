@@ -6,17 +6,27 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # reqwest pulls rustls -> aws-lc-sys, whose x86_64 Windows build assembles
+  # its .asm files with NASM and panics ("NASM command not found! Build cannot
+  # continue.") when it is missing. Allow the objects the crate vendors for
+  # exactly this case. Consulted only on windows-x86_64 and only when NASM is
+  # absent, so it is a no-op on Linux/macOS and on runners that do ship NASM.
+  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   build:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -68,26 +78,46 @@ jobs:
       - name: Type-check the frontend
         run: pnpm check
 
+      - name: Test frontend logic
+        run: pnpm test
+
+      - name: Install browser test dependencies
+        if: runner.os == 'Linux'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Test browser workflows
+        if: runner.os == 'Linux'
+        run: pnpm test:e2e
+
+      - name: Upload browser failure diagnostics
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: cargo fmt
         working-directory: src-tauri
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
         working-directory: src-tauri
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo test
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --locked
 
       - name: Build the app bundles
-        run: pnpm tauri build --ci
+        run: pnpm tauri build --ci -- --locked
 
       - name: Upload bundles
         uses: actions/upload-artifact@v4
         with:
           name: bundles-${{ matrix.platform }}
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
           path: |
             src-tauri/target/release/bundle/deb/*.deb

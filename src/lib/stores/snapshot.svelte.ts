@@ -11,6 +11,8 @@ class SnapshotStore {
 
   #refs = 0;
   #unlisten: Unlisten | null = null;
+  #generation = 0;
+  #revision = 0;
 
   init(): () => void {
     this.#refs += 1;
@@ -18,6 +20,7 @@ class SnapshotStore {
     return () => {
       this.#refs -= 1;
       if (this.#refs === 0) {
+        this.#generation++;
         this.#unlisten?.();
         this.#unlisten = null;
       }
@@ -25,26 +28,44 @@ class SnapshotStore {
   }
 
   async #start() {
+    const generation = ++this.#generation;
     try {
-      this.value = await getSnapshot();
+      const un = await onSnapshotUpdated((s) => {
+        if (generation !== this.#generation) return;
+        this.#receive(s);
+        this.loading = false;
+      });
+      if (generation !== this.#generation) { un(); return; }
+      this.#unlisten = un;
+    } catch (e) {
+      if (generation === this.#generation) this.error = String(e);
+    }
+    const revision = this.#revision;
+    try {
+      const value = await getSnapshot();
+      if (generation !== this.#generation) return;
+      if (revision === this.#revision) this.#receive(value);
       this.error = null;
     } catch (e) {
-      this.error = String(e);
+      if (generation === this.#generation) this.error = String(e);
     } finally {
-      this.loading = false;
+      if (generation === this.#generation) this.loading = false;
     }
-    const un = await onSnapshotUpdated((s) => {
-      this.value = s;
-      this.loading = false;
-    });
-    if (this.#refs === 0) un();
-    else this.#unlisten = un;
+  }
+
+  #receive(value: AppSnapshot) {
+    this.#revision++;
+    this.value = value;
+    this.error = null;
   }
 
   async refresh(provider?: ProviderId): Promise<void> {
+    if (this.refreshing !== null) return;
     this.refreshing = provider ?? 'all';
+    const revision = this.#revision;
     try {
-      this.value = await refreshNow(provider);
+      const value = await refreshNow(provider);
+      if (revision === this.#revision) this.#receive(value);
       this.error = null;
     } catch (e) {
       this.error = String(e);

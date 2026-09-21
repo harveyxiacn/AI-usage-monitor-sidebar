@@ -13,7 +13,7 @@
   let { label, hint, wide = false, children }: Props = $props();
 </script>
 
-<div class="field" class:wide>
+<div class="setting-field" class:wide>
   <div class="text">
     <span class="label">{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}
@@ -22,7 +22,7 @@
 </div>
 
 <style>
-  .field {
+  .setting-field {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -31,7 +31,7 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .field:last-child {
+  .setting-field:last-child {
     border-bottom: none;
   }
 
@@ -56,7 +56,12 @@
     align-items: center;
     gap: 0.5rem;
     flex: none;
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
   }
+
+  .control :global(select) { max-width: 100%; }
 
   .wide {
     flex-direction: column;
@@ -68,7 +73,7 @@
   }
 
   @media (max-width: 620px) {
-    .field {
+    .setting-field {
       flex-direction: column;
       align-items: stretch;
     }

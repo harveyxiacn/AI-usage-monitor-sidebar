@@ -3,6 +3,7 @@
 // `settings-updated` event keeps the three windows in sync.
 import { applyWindowSettings, getSettings, onSettingsUpdated, updateSettings, type Unlisten } from '$lib/api';
 import type { ColorSettings, Settings, SizeSettings } from '$lib/types';
+import { SettingsWriter, type SettingsPatch } from '$lib/settings-writer';
 
 /** Contract defaults for the user-tunable palette (empty = keep the theme's). */
 export const defaultColors: ColorSettings = {
@@ -97,9 +98,17 @@ class SettingsStore {
   value = $state<Settings>(structuredClone(defaultSettings));
   loaded = $state(false);
   error = $state<string | null>(null);
+  saving = $state(false);
 
   #refs = 0;
   #unlisten: Unlisten | null = null;
+  #generation = 0;
+  #writer = new SettingsWriter(structuredClone(defaultSettings), updateSettings,
+    (value, saving) => { this.value = value; this.saving = saving; },
+    (error) => { this.error = String(error); },
+    async (patch) => {
+      if (WINDOW_KEYS.some((key) => key in patch)) await applyWindowSettings();
+    });
 
   /** Idempotent; returns a disposer to call from onDestroy/onMount cleanup. */
   init(): () => void {
@@ -108,6 +117,7 @@ class SettingsStore {
     return () => {
       this.#refs -= 1;
       if (this.#refs === 0) {
+        this.#generation++;
         this.#unlisten?.();
         this.#unlisten = null;
       }
@@ -115,51 +125,43 @@ class SettingsStore {
   }
 
   async #start() {
+    const generation = ++this.#generation;
+    let received = false;
     try {
-      this.value = await getSettings();
+      const un = await onSettingsUpdated((value) => {
+        if (generation !== this.#generation) return;
+        received = true;
+        this.#writer.receive(value);
+      });
+      if (generation !== this.#generation) { un(); return; }
+      this.#unlisten = un;
+    } catch (e) {
+      if (generation === this.#generation) this.error = String(e);
+    }
+    try {
+      const value = await getSettings();
+      if (generation !== this.#generation) return;
+      if (!received) this.#writer.receive(value);
       this.error = null;
     } catch (e) {
-      this.error = String(e);
+      if (generation === this.#generation) this.error = String(e);
     } finally {
-      this.loaded = true;
+      if (generation === this.#generation) this.loaded = true;
     }
-    const un = await onSettingsUpdated((s) => {
-      this.value = s;
-    });
-    // init() may already have been disposed while we awaited.
-    if (this.#refs === 0) un();
-    else this.#unlisten = un;
   }
 
   /**
    * Immediate-apply patch: optimistic local update, then persist. When a
    * window-related key changed the platform layer is asked to re-anchor.
    */
-  async patch(patch: Partial<Settings>): Promise<void> {
-    const previous = this.value;
-    this.value = { ...previous, ...patch };
-    const needsWindowUpdate = WINDOW_KEYS.some((k) => k in patch);
-    try {
-      this.value = await updateSettings(patch);
-      this.error = null;
-    } catch (e) {
-      this.value = previous;
-      this.error = String(e);
-      return;
-    }
-    if (needsWindowUpdate) {
-      try {
-        await applyWindowSettings();
-      } catch (e) {
-        this.error = String(e);
-      }
-    }
+  patch(patch: SettingsPatch): Promise<void> {
+    this.error = null;
+    return this.#writer.patch(patch);
   }
 
   /** Convenience for the per-provider record (shallow-merged by the backend). */
   async patchProvider(id: string, next: { enabled?: boolean; order?: number }): Promise<void> {
-    const current = this.value.providers[id] ?? { enabled: true, order: 0 };
-    await this.patch({ providers: { ...this.value.providers, [id]: { ...current, ...next } } });
+    await this.patch({ providers: { [id]: next } });
   }
 }
 

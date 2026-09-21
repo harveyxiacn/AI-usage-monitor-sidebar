@@ -10,34 +10,54 @@ use std::path::{Path, PathBuf};
 
 pub const PRICING_FILE: &str = "pricing.json";
 
-/// `(model prefix, input, output, cache write, cache read)` — USD / 1M tokens.
+/// `(model id, input, output, cache write, cache read)` — USD / 1M tokens.
+/// Sources checked 2026-09-20:
+/// https://platform.claude.com/docs/en/about-claude/pricing
+/// https://developers.openai.com/api/docs/pricing
+/// Standard short-context rates; excludes fast-mode, long-context and cache
+/// TTL adjustments. Where no cache-write price is published, use input rate.
 const DEFAULTS: &[(&str, f64, f64, f64, f64)] = &[
     // --- Anthropic ---
     ("claude-opus-4", 15.0, 75.0, 18.75, 1.5),
     ("claude-opus-4-1", 15.0, 75.0, 18.75, 1.5),
     ("claude-opus-4-5", 5.0, 25.0, 6.25, 0.5),
     ("claude-opus-4-6", 5.0, 25.0, 6.25, 0.5),
+    ("claude-opus-4-7", 5.0, 25.0, 6.25, 0.5),
+    ("claude-opus-4-8", 5.0, 25.0, 6.25, 0.5),
     ("claude-opus-5", 5.0, 25.0, 6.25, 0.5),
     ("claude-sonnet-4", 3.0, 15.0, 3.75, 0.3),
     ("claude-sonnet-4-5", 3.0, 15.0, 3.75, 0.3),
-    ("claude-sonnet-5", 3.0, 15.0, 3.75, 0.3),
+    ("claude-sonnet-4-6", 3.0, 15.0, 3.75, 0.3),
+    ("claude-sonnet-5", 2.0, 10.0, 2.5, 0.2),
     ("claude-haiku-4-5", 1.0, 5.0, 1.25, 0.1),
-    ("claude-fable-5", 15.0, 75.0, 18.75, 1.5),
-    ("claude-mythos-5", 15.0, 75.0, 18.75, 1.5),
+    ("claude-fable-5", 10.0, 50.0, 12.5, 1.0),
+    ("claude-mythos-5", 10.0, 50.0, 12.5, 1.0),
+    ("claude-fable-5-1", 10.0, 50.0, 12.5, 0.25),
+    ("claude-mythos-5-1", 10.0, 50.0, 12.5, 0.25),
     // --- OpenAI ---
     ("gpt-5", 1.25, 10.0, 1.25, 0.125),
     ("gpt-5-codex", 1.25, 10.0, 1.25, 0.125),
     ("gpt-5.1", 1.25, 10.0, 1.25, 0.125),
     ("gpt-5.1-codex", 1.25, 10.0, 1.25, 0.125),
+    // https://developers.openai.com/api/docs/models/gpt-5.1-codex-max
+    ("gpt-5.1-codex-max", 1.25, 10.0, 1.25, 0.125),
+    // https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini
+    ("gpt-5.1-codex-mini", 0.25, 2.0, 0.25, 0.025),
     ("gpt-5.2", 1.75, 14.0, 1.75, 0.175),
+    // https://developers.openai.com/api/docs/models/gpt-5.2-codex
+    ("gpt-5.2-codex", 1.75, 14.0, 1.75, 0.175),
     ("gpt-5.3-codex", 1.75, 14.0, 1.75, 0.175),
     ("gpt-5.4", 2.5, 15.0, 2.5, 0.25),
-    ("gpt-5.5", 2.5, 15.0, 2.5, 0.25),
-    ("gpt-6", 2.5, 15.0, 2.5, 0.25),
-    ("gpt-6-astra", 2.5, 15.0, 2.5, 0.25),
+    ("gpt-5.5", 5.0, 30.0, 5.0, 0.5),
+    ("gpt-5.6-sol", 4.0, 20.0, 5.0, 0.4),
+    ("gpt-5.6-terra", 2.0, 12.0, 2.5, 0.2),
+    ("gpt-5.6-luna", 0.2, 1.2, 0.25, 0.02),
+    ("gpt-6-astra", 10.0, 50.0, 12.5, 1.0),
     ("gpt-5-mini", 0.25, 2.0, 0.25, 0.025),
     ("gpt-5-nano", 0.05, 0.4, 0.05, 0.005),
     ("codex-mini", 1.5, 6.0, 1.5, 0.375),
+    // https://developers.openai.com/api/docs/models/codex-mini-latest
+    ("codex-mini-latest", 1.5, 6.0, 1.5, 0.375),
 ];
 
 /// The built-in table (no user overrides applied).
@@ -61,21 +81,30 @@ pub fn pricing_path(config_dir: &Path) -> PathBuf {
     config_dir.join(PRICING_FILE)
 }
 
-/// Defaults merged with the user's `pricing.json` (same pattern → override).
+/// The saved table is the user's complete selection, including deletions.
+/// Defaults are used only when no readable, valid pricing file exists.
 pub fn load(config_dir: &Path) -> PricingTable {
-    let mut table = default_table();
     let path = pricing_path(config_dir);
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return table;
+        return default_table();
     };
     let overrides: PricingTable = match serde_json::from_str(&text) {
         Ok(t) => t,
         Err(e) => {
             log::warn!("ignoring invalid {}: {}", path.display(), e);
-            return table;
+            return default_table();
         }
     };
-    for entry in overrides.entries {
+    let mut table = PricingTable {
+        entries: Vec::new(),
+        updated_at: overrides.updated_at,
+    };
+    for mut entry in overrides.entries {
+        if !valid_entry(&entry) {
+            log::warn!("ignoring invalid pricing entry");
+            continue;
+        }
+        entry.model_pattern = entry.model_pattern.trim().to_ascii_lowercase();
         match table
             .entries
             .iter_mut()
@@ -85,12 +114,15 @@ pub fn load(config_dir: &Path) -> PricingTable {
             None => table.entries.push(entry),
         }
     }
-    table.updated_at = overrides.updated_at;
     table
 }
 
-/// Persist the user's table atomically and return the merged result.
+/// Persist the user's complete table atomically and return its normalized form.
 pub fn save(config_dir: &Path, table: &PricingTable) -> Result<PricingTable> {
+    anyhow::ensure!(
+        table.entries.iter().all(valid_entry),
+        "pricing entries require a model name and finite, non-negative rates"
+    );
     let mut to_write = table.clone();
     to_write.updated_at = Some(crate::commands::providers::now_rfc3339());
     std::fs::create_dir_all(config_dir).ok();
@@ -99,6 +131,18 @@ pub fn save(config_dir: &Path, table: &PricingTable) -> Result<PricingTable> {
         &serde_json::to_vec_pretty(&to_write).context("serialize pricing table")?,
     )?;
     Ok(load(config_dir))
+}
+
+fn valid_entry(entry: &PricingEntry) -> bool {
+    !entry.model_pattern.trim().is_empty()
+        && [
+            entry.input_per_m,
+            entry.output_per_m,
+            entry.cache_write_per_m,
+            entry.cache_read_per_m,
+        ]
+        .iter()
+        .all(|rate| rate.is_finite() && *rate >= 0.0)
 }
 
 /// Lowercase the model and drop a trailing date suffix (`-20250514`).
@@ -113,7 +157,8 @@ pub fn normalize_model(model: &str) -> String {
     lower
 }
 
-/// Longest-prefix match on the (normalised) model name.
+/// Built-in patterns require an exact normalized model name. Additional
+/// user-defined patterns use longest-prefix matching.
 pub fn find_entry<'a>(table: &'a PricingTable, model: &str) -> Option<&'a PricingEntry> {
     let name = normalize_model(model);
     table
@@ -121,7 +166,12 @@ pub fn find_entry<'a>(table: &'a PricingTable, model: &str) -> Option<&'a Pricin
         .iter()
         .filter(|e| {
             let p = e.model_pattern.to_ascii_lowercase();
-            !p.is_empty() && name.starts_with(&p)
+            !p.is_empty()
+                && if DEFAULTS.iter().any(|entry| entry.0 == p) {
+                    name == p
+                } else {
+                    name.starts_with(&p)
+                }
         })
         .max_by_key(|e| e.model_pattern.len())
 }
@@ -213,6 +263,35 @@ mod tests {
         assert!(find_entry(&t, "llama-9").is_none());
         assert!(estimate_cost(&t, "llama-9", &totals(1000, 1000, 0, 0)).is_none());
         assert!(estimate_cost(&t, "", &totals(1, 1, 1, 1)).is_none());
+        assert!(find_entry(&t, "gpt-5.9").is_none());
+        assert!(find_entry(&t, "gpt-5.3-codex-spark").is_none());
+        assert!(find_entry(&t, "claude-opus-4-99").is_none());
+    }
+
+    #[test]
+    fn documented_codex_variants_have_their_own_exact_prices() {
+        let table = default_table();
+        for (model, input, output, cached) in [
+            ("gpt-5.1-codex-max", 1.25, 10.0, 0.125),
+            ("gpt-5.1-codex-mini", 0.25, 2.0, 0.025),
+            ("gpt-5.2-codex", 1.75, 14.0, 0.175),
+            ("codex-mini-latest", 1.5, 6.0, 0.375),
+        ] {
+            let entry = find_entry(&table, model).expect("documented model must be priced");
+            assert_eq!(entry.model_pattern, model);
+            assert_eq!(
+                (
+                    entry.input_per_m,
+                    entry.output_per_m,
+                    entry.cache_read_per_m
+                ),
+                (input, output, cached)
+            );
+            let estimated =
+                estimate_cost(&table, model, &totals(1_000_000, 1_000_000, 0, 1_000_000)).unwrap();
+            assert!((estimated - input - output - cached).abs() < 1e-9);
+            assert!(find_entry(&table, &format!("{model}-unverified")).is_none());
+        }
     }
 
     #[test]
@@ -232,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn user_overrides_merge_over_the_defaults() {
+    fn saved_table_replaces_defaults_and_preserves_custom_prefixes() {
         let dir = tempdir();
         let overrides = PricingTable {
             entries: vec![
@@ -256,10 +335,8 @@ mod tests {
         let merged = save(&dir, &overrides).unwrap();
         assert!(merged.updated_at.is_some());
         assert_eq!(find_entry(&merged, "gpt-5").unwrap().input_per_m, 99.0);
-        assert_eq!(
-            find_entry(&merged, "gpt-5-codex").unwrap().input_per_m,
-            1.25
-        );
+        assert!(find_entry(&merged, "gpt-5-codex").is_none());
+        assert_eq!(merged.entries.len(), 2);
         assert_eq!(
             find_entry(&merged, "my-local-model-x")
                 .unwrap()
@@ -271,5 +348,46 @@ mod tests {
         std::fs::write(pricing_path(&dir), "{{ broken").unwrap();
         assert_eq!(load(&dir).entries.len(), default_table().entries.len());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deleting_builtin_custom_or_every_price_survives_reload() {
+        let dir = tempdir();
+        let mut table = default_table();
+        table.entries.push(PricingEntry {
+            model_pattern: "custom-model".into(),
+            input_per_m: 1.0,
+            output_per_m: 2.0,
+            cache_write_per_m: 1.0,
+            cache_read_per_m: 0.1,
+        });
+        save(&dir, &table).unwrap();
+        table
+            .entries
+            .retain(|entry| !matches!(entry.model_pattern.as_str(), "gpt-5" | "custom-model"));
+        save(&dir, &table).unwrap();
+        let reloaded = load(&dir);
+        assert!(find_entry(&reloaded, "gpt-5").is_none());
+        assert!(find_entry(&reloaded, "custom-model").is_none());
+        assert_eq!(reloaded.entries.len(), table.entries.len());
+        table.entries.clear();
+        assert!(save(&dir, &table).unwrap().entries.is_empty());
+        assert!(load(&dir).entries.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_prices_do_not_replace_the_saved_table() {
+        let dir = tempdir();
+        let table = default_table();
+        save(&dir, &table).unwrap();
+        let before = std::fs::read(pricing_path(&dir)).unwrap();
+        let mut invalid = table;
+        invalid.entries[0].input_per_m = -1.0;
+        assert!(save(&dir, &invalid).is_err());
+        invalid.entries[0].input_per_m = f64::INFINITY;
+        assert!(save(&dir, &invalid).is_err());
+        assert_eq!(std::fs::read(pricing_path(&dir)).unwrap(), before);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

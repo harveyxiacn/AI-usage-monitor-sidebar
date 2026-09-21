@@ -167,6 +167,18 @@ Key semantics:
   (from cache or local logs) if available, with `source` telling where they
   came from.
 * Times/timestamps in the DB are unix **milliseconds** (INTEGER).
+* `HistoryQuery.project` is optional: null/absent selects all projects, an
+  empty string selects events whose `cwd` is null or empty, and any other
+  string matches the original working-directory path exactly. Paths are
+  not trimmed, canonicalized or case-folded across platforms.
+* `HistoryQuery.groupByProject` defaults to false and combines with
+  `groupByModel`. `HistoryRow.project` is the original path (or an empty
+  string for unassigned events) when grouped or filtered by project; null
+  means an unfiltered aggregate across projects.
+* `HistoryResult.projects` lists distinct project paths within the selected
+  time/provider range, ignoring the current project filter. It includes an
+  empty string when unassigned events exist. UI labels may shorten paths,
+  but selection, series identity and CSV preserve the complete value.
 
 ## 5. Tauri commands
 
@@ -180,7 +192,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_snapshot` | – | `AppSnapshot` (cached, never blocks on network) |
 | `refresh_now` | `provider?: ProviderId` | `AppSnapshot` (forces network fetch) |
 | `get_settings` | – | `Settings` |
-| `update_settings` | `patch: Partial<Settings>` (JSON object, shallow merge; `providers` merged per key) | `Settings` (also emits `settings-updated`) |
+| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
 | `get_usage_history` | `query: HistoryQuery` | `HistoryResult` |
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
 | `get_pricing` | – | `PricingTable` |
@@ -188,15 +200,17 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
+| `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
 
 ### Platform (window) commands — `src-tauri/src/window/`
 | command | args | effect |
 |---|---|---|
 | `sidebar_set_expanded` | `expanded: boolean` | expand to full width / collapse to the thin handle (window resize + reposition). Emits `sidebar-state`. |
 | `sidebar_relayout` | `width: number, height: number` (CSS px the bar content needs) | resize sidebar window to fit content and re-anchor to the edge |
+| `sidebar_drag` | `phase: 'start'\|'move'\|'end'\|'cancel', dx: number, dy: number` (CSS px the pointer travelled since `start`, screen space) | the bar follows the pointer; on `end` it snaps to the nearer edge of the monitor it was dropped on and the result is persisted as `edge` / `monitor` / `verticalOffset` (emits `settings-updated`). `cancel` puts it back. |
 | `popover_show` | `req: PopoverRequest` | position popover next to the ring and show it; emits `popover-target` to the popover window |
 | `popover_relayout` | `width: number, height: number` (CSS px the popover content needs) | resize the popover window to fit content and re-anchor it next to the ring |
-| `popover_hide` | – | hide popover (unless pinned) |
+| `popover_hide` | – | hide the popover now and unpin it (second click on the pinned ring). Hover-out hides an unpinned popover after 250 ms and a pinned one after 8 s. |
 | `popover_set_pinned` | `pinned: boolean` | pinned popovers ignore hover-out |
 | `hover_report` | `source: "bar" \| "popover", hovered: boolean` | Rust keeps a hover state machine. `bar/true` expands a collapsed bar and cancels timers. When neither bar nor popover is hovered: the popover hides after ~250 ms (unless pinned) and, if `autoHide`, the bar collapses after `autoHideDelayMs`. |
 | `open_dashboard` | `tab?: "overview" \| "history" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` |
@@ -241,7 +255,11 @@ autostart off, thresholds warn 70 / critical 90.
 `Settings.sizes` (px at scale 1: `ringSize` 40–96, `ringStroke` 3–8, `barGap`
 6–40, `barPadding` 4–24, `cornerRadius` 8–40, `labelSize` 9–18) are applied by
 the frontend as CSS custom properties; the backend only clamps and persists
-them. `update_settings` merges `colors` and `sizes` per key like `providers`.
+them. `update_settings` merges `colors`, `sizes`, `thresholds` and each
+provider's fields individually. Invalid nested members do not discard valid
+siblings. Backend read/merge/write/event emission is serialized, and memory
+changes only after a successful disk write. Each frontend window serializes
+its own saves and keeps newer optimistic edits visible while earlier saves finish.
 
 ## 8. Storage (`usage.db` in the app data dir, SQLite)
 
@@ -264,13 +282,48 @@ CREATE TABLE ingest_files (
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 ```
 Ingestion is incremental (remember byte offset per file; if the file shrank or
-mtime/size changed under the offset, re-parse from 0). A quota sample is
-stored on every successful refresh when the percent changed or ≥ 5 min passed.
+was rewritten without growth, re-parse from 0). File modification times are
+recorded at nanosecond precision; upgrading older bookkeeping causes one rescan.
+An unfinished JSONL line, including an incomplete UTF-8 character, is retried
+on the next append. A quota sample is stored only for a successful live API
+refresh when the percent changed or ≥ 5 min passed; cached/offline values
+never acquire a new sample timestamp. History ranges use `[from, to)` and
+local calendar buckets.
 
 ## 9. Cost estimation
 
 `pricing.rs` ships an API-equivalent price list (USD per 1M tokens: input,
-output, cache write, cache read) matched by model-name prefix (longest prefix
-wins). Subscription users do not pay per token; the estimate is a
-*comparison indicator* and is labelled as such in the UI. Unknown models →
-`estimatedCostUsd = null`.
+output, cache write, cache read). Built-in model names match exactly after
+case/date normalization; new custom entries support longest-prefix matching.
+Unknown variants must not inherit a similarly named model's built-in price.
+Any group containing an unknown model has `estimatedCostUsd = null`, rather
+than a misleading partial total. Subscription users do not pay per token;
+the estimate is a *comparison indicator* and is labelled as such in the UI.
+The saved user table is authoritative (including removed rows or an empty
+table); defaults apply only when no valid saved table exists.
+
+Defaults were checked on 2026-09-20 against
+[OpenAI pricing](https://developers.openai.com/api/docs/pricing),
+[GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5),
+[GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex), and
+[Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+These are standard short-context estimates, not invoices: fast/batch tiers,
+long-context multipliers, region fees and cache TTL differences are not
+tracked in the normalized counters. Cache writes use the published rate
+where available, otherwise the base input rate.
+
+## 10. History export and verification
+
+History presets include today and count local calendar days. Custom ranges
+end at midnight after the final selected day, including DST transitions;
+invalid dates stop the query and show a validation message. Later queries
+win over earlier requests. CSV uses CRLF, quotes embedded delimiters and
+escapes spreadsheet formula prefixes in text fields. Clipboard failure is
+reported. Desktop export opens a native save dialog and writes UTF-8 with
+a BOM (cancel returns null); the browser preview downloads a Blob.
+
+`pnpm test` covers date, CSV and save-queue regressions. `pnpm test:e2e`
+exercises the three browser routes using synthetic data. Native geometry,
+parsing, persistence and aggregation are tested with `cargo test --locked`.
+CI additionally builds bundles on Linux, macOS and Windows. Browser tests
+do not prove native window-manager behavior; see `docs/VALIDATION.md`.

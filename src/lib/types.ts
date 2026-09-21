@@ -153,6 +153,9 @@ export interface HistoryQuery {
   bucket: Bucket;
   groupByModel: boolean;
   provider: ProviderId | null;
+  /** Exact cwd; null/omitted = all projects, empty string = unassigned. */
+  project?: string | null;
+  groupByProject?: boolean;
 }
 
 export interface TokenTotals {
@@ -171,6 +174,8 @@ export interface HistoryRow extends TokenTotals {
   bucketStart: string;
   provider: ProviderId;
   model: string | null;
+  /** Exact cwd or "" for unassigned; null for aggregation across projects. */
+  project: string | null;
 }
 
 export interface HistoryResult {
@@ -178,6 +183,8 @@ export interface HistoryResult {
   totals: TokenTotals;
   /** totals per provider */
   byProvider: Record<string, TokenTotals>;
+  /** Projects in the time/provider range, independent of the project filter. */
+  projects: string[];
 }
 
 export interface QuotaHistoryQuery {
