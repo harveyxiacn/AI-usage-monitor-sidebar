@@ -257,6 +257,9 @@ pub struct Settings {
     pub adaptive_refresh: bool,
     pub providers: BTreeMap<String, ProviderSettings>,
     pub ingest_enabled: bool,
+    /// Opt-in https URL of a pricing table to refresh from (empty = off; the
+    /// app makes no third-party request while it is empty).
+    pub pricing_url: String,
     pub autostart: bool,
     pub opacity: f64,
     pub scale: f64,
@@ -304,6 +307,7 @@ impl Default for Settings {
             adaptive_refresh: true,
             providers,
             ingest_enabled: true,
+            pricing_url: String::new(),
             autostart: false,
             opacity: 1.0,
             scale: 1.0,
@@ -382,6 +386,10 @@ pub struct HistoryResult {
     /// Projects in the selected time/provider range, before project filtering.
     #[serde(default)]
     pub projects: Vec<String>,
+    /// At least one cost came from an approximate family match, not from a
+    /// price for that exact model (ARCHITECTURE §9).
+    #[serde(default)]
+    pub cost_approximate: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

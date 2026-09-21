@@ -71,6 +71,7 @@ export const defaultSettings: Settings = {
   adaptiveRefresh: true,
   providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
   ingestEnabled: true,
+  pricingUrl: '',
   autostart: false,
   opacity: 1,
   scale: 1,

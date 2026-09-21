@@ -71,6 +71,8 @@ pub fn run() {
             scheduler::start(app.handle().clone());
             // External edits of settings.json apply without a restart.
             commands::settings::watch(app.handle().clone());
+            // No-op unless the user opted into a remote pricing table.
+            commands::pricing::start_remote_refresh(app.handle().clone());
 
             #[cfg(debug_assertions)]
             if std::env::var("AI_USAGE_SIDEBAR_DEVTOOLS").as_deref() == Ok("1") {
@@ -92,6 +94,7 @@ pub fn run() {
             commands::get_quota_history,
             commands::get_pricing,
             commands::set_pricing,
+            commands::refresh_pricing,
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,

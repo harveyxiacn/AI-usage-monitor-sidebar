@@ -52,6 +52,8 @@ export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('g
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });
+/** Only reaches the network when Settings.pricingUrl is set. */
+export const refreshPricing = () => invoke<PricingTable>('refresh_pricing');
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');

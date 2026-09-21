@@ -107,6 +107,8 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
     let mut buckets: BTreeMap<HistoryBucket, Acc> = BTreeMap::new();
     let mut totals = Acc::default();
     let mut by_provider: BTreeMap<String, Acc> = BTreeMap::new();
+    // Set as soon as one model was priced from its family, not from itself.
+    let mut cost_approximate = false;
     let projects;
 
     {
@@ -147,7 +149,13 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
                 requests: 1,
                 estimated_cost_usd: None,
             };
-            let cost = pricing::estimate_cost(pricing, &model, &t);
+            let cost = match pricing::estimate_cost_kind(pricing, &model, &t) {
+                Some((cost, kind)) => {
+                    cost_approximate |= kind == pricing::MatchKind::Family;
+                    Some(cost)
+                }
+                None => None,
+            };
             let key_model = if q.group_by_model {
                 Some(model.clone())
             } else {
@@ -192,6 +200,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
             .map(|(k, v)| (k, v.finish()))
             .collect(),
         projects,
+        cost_approximate,
     })
 }
 
@@ -516,6 +525,48 @@ mod tests {
             query_history(&db, &query("2020-01-01", "2020-01-02", Bucket::Day), &table).unwrap();
         assert!(empty.rows.is_empty());
         assert_eq!(empty.totals.requests, 0);
+    }
+
+    #[test]
+    fn a_family_priced_model_marks_the_result_approximate() {
+        let db = Db::open_in_memory().unwrap();
+        let table = pricing::default_table();
+        let range = query("2026-09-14", "2026-09-20", Bucket::Day);
+
+        // A model the table knows exactly: an honest, exact estimate.
+        let known = event(
+            "codex",
+            "gpt-5.3-codex",
+            ms("2026-09-16T10:00:00"),
+            "a",
+            1_000_000,
+            0,
+        );
+        insert_usage_events(&db, &[known]).unwrap();
+        let exact = query_history(&db, &range, &table).unwrap();
+        assert!(!exact.cost_approximate);
+        assert_eq!(exact.totals.estimated_cost_usd, Some(1.75));
+
+        // A model released after this build: priced from its family, and the
+        // result says so rather than silently showing "—".
+        let fresh = event(
+            "codex",
+            "gpt-5.3-codex-spark",
+            ms("2026-09-16T11:00:00"),
+            "b",
+            1_000_000,
+            0,
+        );
+        insert_usage_events(&db, &[fresh]).unwrap();
+        let approximate = query_history(&db, &range, &table).unwrap();
+        assert!(approximate.cost_approximate, "family match is approximate");
+        assert_eq!(approximate.totals.estimated_cost_usd, Some(3.5));
+
+        // Something from another vendor is still unknown, not guessed at.
+        let alien = event("codex", "who-knows", ms("2026-09-16T12:00:00"), "c", 10, 0);
+        insert_usage_events(&db, &[alien]).unwrap();
+        let unknown = query_history(&db, &range, &table).unwrap();
+        assert!(unknown.totals.estimated_cost_usd.is_none());
     }
 
     #[test]

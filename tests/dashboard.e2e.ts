@@ -31,6 +31,21 @@ test('a rate-limited provider reads as stale, not as an error', async ({ page })
   await expect(claude.locator('.win').first()).toBeVisible();
 });
 
+test('refreshing prices from a URL is opt-in', async ({ page }) => {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const refresh = page.getByRole('button', { name: 'Refresh prices now', exact: true });
+  // No URL configured → nothing to fetch, so the button cannot be pressed.
+  await expect(refresh).toBeDisabled();
+
+  const url = page.getByLabel('Pricing table URL');
+  await url.fill('https://raw.githubusercontent.com/example/repo/main/pricing.json');
+  await url.blur();
+  await expect(refresh).toBeEnabled();
+  await refresh.click();
+  await expect(page.getByText(/Updated /)).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('overview refreshes and history filters and exports the visible rows', async ({ page }) => {
   await expect(page.locator('.provider')).toHaveCount(2);
   await page.getByRole('button', { name: 'Refresh all', exact: true }).click();
@@ -51,7 +66,11 @@ test('overview refreshes and history filters and exports the visible rows', asyn
   expect(csv.trim().split(/\r?\n/)).toHaveLength(await page.locator('tbody tr').count() + 1);
   await page.screenshot({ path: test.info().outputPath('history.png') });
   await page.getByRole('group', { name: 'Show', exact: true }).getByRole('button', { name: 'Est. cost', exact: true }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Some models have no price' })).toBeVisible();
+  // `gpt-5.3-codex-spark` is not in the table; it is priced from its family
+  // (`gpt-5.3-codex`), so the estimate is shown but flagged as approximate.
+  await expect(
+    page.getByText('Some models are priced from the closest known family')
+  ).toBeVisible();
 });
 
 test('the project filter narrows the table and exports complete paths', async ({ page }) => {

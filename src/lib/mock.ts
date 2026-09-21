@@ -95,6 +95,7 @@ export const mockSettings: Settings = {
   adaptiveRefresh: true,
   providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
   ingestEnabled: true,
+  pricingUrl: '',
   autostart: false,
   opacity: 1,
   scale: 1,
@@ -294,9 +295,40 @@ function priceFor(model: string): PricingEntry | null {
   return best;
 }
 
+const parts = (name: string) => name.split(/[-.]/).filter(Boolean);
+
+/**
+ * Nearest known family for an unpriced model — the same heuristic as
+ * `pricing::find_family_entry`: most shared leading components first, then
+ * the most generic pattern, then the later entry.
+ */
+function familyPriceFor(model: string): PricingEntry | null {
+  const want = parts(model.trim().toLowerCase().replace(/-\d{6,8}$/, ''));
+  if (want.length < 2) return null;
+  let best: PricingEntry | null = null;
+  let bestKey: [number, number] = [0, 0];
+  for (const e of pricing.entries) {
+    const have = parts(e.modelPattern.toLowerCase());
+    let shared = 0;
+    while (shared < want.length && shared < have.length && want[shared] === have[shared]) shared += 1;
+    if (shared < 2) continue;
+    const key: [number, number] = [shared, -have.length];
+    if (key[0] > bestKey[0] || (key[0] === bestKey[0] && key[1] >= bestKey[1])) {
+      best = e;
+      bestKey = key;
+    }
+  }
+  return best;
+}
+
+/** True when the cost of `model` could only be approximated from its family. */
+function costIsApproximate(model: string | null): boolean {
+  return model != null && priceFor(model) == null && familyPriceFor(model) != null;
+}
+
 function costOf(model: string | null, t: TokenTotals): number | null {
   if (!model) return null;
-  const p = priceFor(model);
+  const p = priceFor(model) ?? familyPriceFor(model);
   if (!p) return null;
   return (
     (t.inputTokens * p.inputPerM +
@@ -341,6 +373,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const totals = emptyTotals();
   const byProvider: Record<string, TokenTotals> = {};
   const projects = new Set<string>();
+  let costApproximate = false;
   // cost is accumulated per model then summed, because the price list is
   // per-model — a grouped-by-provider row still gets a meaningful estimate.
   const rowCost = new Map<string, number | null>();
@@ -374,6 +407,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
     byProvider[e.provider] ??= emptyTotals();
     addInto(byProvider[e.provider], e);
 
+    costApproximate ||= costIsApproximate(e.model);
     const c = costOf(e.model, {
       ...emptyTotals(),
       inputTokens: e.inputTokens,
@@ -400,7 +434,13 @@ function runHistory(q: HistoryQuery): HistoryResult {
       (a.model ?? '').localeCompare(b.model ?? '') ||
       (a.project ?? '').localeCompare(b.project ?? '')
   );
-  return { rows: list, totals, byProvider, projects: [...projects].sort((a, b) => a.localeCompare(b)) };
+  return {
+    rows: list,
+    totals,
+    byProvider,
+    projects: [...projects].sort((a, b) => a.localeCompare(b)),
+    costApproximate,
+  };
 }
 
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */
@@ -534,6 +574,12 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         else entries[index] = normalized;
       }
       pricing = { entries, updatedAt: iso(Date.now()) };
+      return structuredClone(pricing) as T;
+    }
+    case 'refresh_pricing': {
+      // The preview has no network; mirror the "no URL configured" error.
+      if (!settings.pricingUrl.trim()) throw new Error('no pricing URL configured');
+      pricing = { ...pricing, updatedAt: iso(Date.now()) };
       return structuredClone(pricing) as T;
     }
     case 'reingest_logs': {

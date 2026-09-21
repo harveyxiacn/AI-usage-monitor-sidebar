@@ -383,6 +383,9 @@
             <div><dt>{t('history.estCost')}</dt><dd>{formatCost(p.totals.estimatedCostUsd)}</dd></div>
           </dl>
           <p class="note">{t('history.costNote')}</p>
+          {#if result?.costApproximate}
+            <p class="note">{t('history.costApproxNote')}</p>
+          {/if}
         </article>
       {/each}
     </div>

@@ -163,7 +163,12 @@ impl AppState {
         std::fs::create_dir_all(&data_dir).ok();
 
         let settings = settings::load(&config_dir);
-        let pricing = pricing::load(&config_dir);
+        // The user's own table wins; below it sits the cached remote list
+        // (only when they configured one) and then the bundled defaults.
+        let pricing = pricing::load_with_base(
+            &config_dir,
+            pricing::base_table(&data_dir, &settings.pricing_url),
+        );
         let provider_ctx = ProviderCtx::with_data_dir(&data_dir);
 
         let db = match Db::open(&data_dir.join("usage.db")) {

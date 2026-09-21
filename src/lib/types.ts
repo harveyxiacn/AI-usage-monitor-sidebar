@@ -141,6 +141,8 @@ export interface Settings {
   adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
   ingestEnabled: boolean;
+  /** Opt-in https URL of a pricing table; empty = no third-party request is ever made */
+  pricingUrl: string;
   autostart: boolean;
   /** 0.3 .. 1 */
   opacity: number;
@@ -196,6 +198,8 @@ export interface HistoryResult {
   byProvider: Record<string, TokenTotals>;
   /** Projects in the time/provider range, independent of the project filter. */
   projects: string[];
+  /** At least one cost came from an approximate family match (§9). */
+  costApproximate: boolean;
 }
 
 export interface QuotaHistoryQuery {

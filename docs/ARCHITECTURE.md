@@ -200,6 +200,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
+| `refresh_pricing` | – | `PricingTable` (downloads `settings.pricingUrl` now; errors when it is empty — no network call is ever made without it) |
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
@@ -337,10 +338,28 @@ local calendar buckets.
 
 `pricing.rs` ships an API-equivalent price list (USD per 1M tokens: input,
 output, cache write, cache read). Built-in model names match exactly after
-case/date normalization; new custom entries support longest-prefix matching.
-Unknown variants must not inherit a similarly named model's built-in price.
-Any group containing an unknown model has `estimatedCostUsd = null`, rather
-than a misleading partial total. Subscription users do not pay per token;
+case/date normalization; new custom entries support longest-prefix matching
+(`find_entry`).
+
+A model that matches nothing exactly falls back to the **closest known
+family** (`find_family_entry`): among the entries sharing the longest run of
+leading `-`/`.` components — at least two — the most generic one wins, so
+`gpt-5.3-codex-spark` is priced as `gpt-5.3-codex` and `gpt-5.9` as `gpt-5`,
+while `llama-9` stays unpriced. Such a price is an approximation, never an
+exact match: `find_match` / `estimate_cost_kind` report it as
+`MatchKind::Family` and `HistoryResult.costApproximate` tells the UI to say
+so. A model with no family at all still yields `estimatedCostUsd = null` for
+every group it touches, rather than a misleading partial total.
+
+The effective table is layered: the user's saved `pricing.json` wins; below
+it sits the cached remote list, and below that the bundled defaults. The
+remote layer is **opt-in** — nothing is downloaded unless the user sets
+`settings.pricingUrl` to an `https` URL. It is then fetched at most once a
+day (or on `refresh_pricing`), limited to 256 KiB and 2000 entries,
+validated for plausible names and rates, and cached as
+`<data_dir>/pricing-remote.json`; any failure keeps the previous table.
+`pricing.json` at the repository root is the same schema, so the project can
+host its own list over raw.githubusercontent. Subscription users do not pay per token;
 the estimate is a *comparison indicator* and is labelled as such in the UI.
 The saved user table is authoritative (including removed rows or an empty
 table); defaults apply only when no valid saved table exists.
