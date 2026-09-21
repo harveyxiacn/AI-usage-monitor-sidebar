@@ -21,7 +21,7 @@
 </script>
 
 <div class="track" class:dimmed style:--h={`${height / 16}rem`}>
-  <div class="fill" style:width={`${pct}%`} style:background={color}></div>
+  <div class="fill" style:width={`${pct}%`} style:background={color} style:color={color}></div>
 </div>
 
 <style>

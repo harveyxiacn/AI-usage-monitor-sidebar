@@ -185,7 +185,7 @@
   const EDGES: Edge[] = ['left', 'right'];
   const ALIGNS: VerticalAlign[] = ['top', 'center', 'bottom'];
   const RING_MODES: RingMode[] = ['concentric', 'primary', 'all'];
-  const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid'];
+  const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
 </script>
 
