@@ -148,6 +148,7 @@
   "settings.surfaceStyle": "表面风格",
   "settings.surfaceStyle.glass": "液态玻璃",
   "settings.surfaceStyle.solid": "纯色",
+  "settings.surfaceStyle.cyber": "赛博 HUD",
   "settings.position": "位置",
   "settings.edge": "贴靠边缘",
   "settings.edge.left": "左侧",

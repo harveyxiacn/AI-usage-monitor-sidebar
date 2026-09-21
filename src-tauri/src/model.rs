@@ -172,6 +172,8 @@ pub enum Theme {
 pub enum SurfaceStyle {
     Glass,
     Solid,
+    /// Dark sci-fi HUD painted entirely by the frontend; no native backdrop.
+    Cyber,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
