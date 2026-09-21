@@ -76,13 +76,13 @@ pub fn insert_quota_samples(
     Ok(n)
 }
 
-/// Read stored samples in `[from, to]`, oldest first.
+/// Read stored samples in `[from, to)`, oldest first.
 pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSample>> {
     let (from, to) = super::usage::query_range(&q.from, &q.to)?;
     let conn = db.lock();
     let sql = "SELECT provider, kind, scope, used_percent, resets_at, plan, ts
                FROM quota_samples
-               WHERE ts >= ?1 AND ts <= ?2 AND (?3 IS NULL OR provider = ?3)
+               WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
                ORDER BY ts";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(rusqlite::params![from, to, q.provider], |r| {
@@ -178,5 +178,34 @@ mod tests {
         assert!(claude_only
             .iter()
             .any(|s| s.scope.as_deref() == Some("Fable")));
+    }
+
+    #[test]
+    fn quota_history_range_includes_start_and_excludes_end() {
+        let db = Db::open_in_memory().unwrap();
+        let start = 1_789_430_400_000;
+        let end = start + 86_400_000;
+        for (index, ts) in [start - 1, start, end - 1, end].into_iter().enumerate() {
+            insert_quota_sample(
+                &db,
+                "codex",
+                None,
+                &window(WindowKind::FiveHour, index as f64, None),
+                ts,
+            )
+            .unwrap();
+        }
+        let samples = query_quota_history(
+            &db,
+            &QuotaHistoryQuery {
+                from: "2026-09-15T00:00:00Z".into(),
+                to: "2026-09-16T00:00:00Z".into(),
+                provider: Some("codex".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].used_percent, 1.0);
+        assert_eq!(samples[1].used_percent, 2.0);
     }
 }

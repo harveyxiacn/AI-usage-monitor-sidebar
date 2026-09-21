@@ -27,23 +27,11 @@ pub fn current_rect(app: &AppHandle) -> Option<LogicalRect> {
 /// Resize + reposition the bar. `expanded` decides the width only.
 pub fn place_sidebar(app: &AppHandle, expanded: bool) -> Option<LogicalRect> {
     let (rect, scale) = desired_rect(app, expanded)?;
-    let (position, size) = rect.to_physical(scale);
     let Some(win) = app.get_webview_window(windows::SIDEBAR) else {
         log::warn!("sidebar window is gone, cannot place it");
         return None;
     };
-    // GTK/X11 occasionally keeps the pre-resize origin when a window is moved
-    // and resized in the same frame, so the origin is written on both sides of
-    // the resize; the 5 s watchdog catches whatever still slips through.
-    if let Err(e) = win.set_position(position) {
-        log::warn!("sidebar set_position failed: {e}");
-    }
-    if let Err(e) = window::set_overlay_size(&win, size) {
-        log::warn!("sidebar set_size failed: {e}");
-    }
-    if let Err(e) = win.set_position(position) {
-        log::warn!("sidebar set_position failed: {e}");
-    }
+    window::place_overlay(&win, rect, scale);
     window::apply_stacking(&win, window::settings_of(app).always_on_top);
     log::debug!("sidebar placed at {rect:?} (expanded={expanded})");
     Some(rect)
@@ -143,6 +131,13 @@ fn check_geometry(app: &AppHandle) {
     };
     if !state.revealed {
         reveal(app);
+        return;
+    }
+    // A layer surface has no position of its own: `outer_position` reports
+    // nothing meaningful, so a drift check could only ever re-place the bar
+    // in a loop. The compositor keeps it anchored; settings changes and
+    // relayouts still go through `place_sidebar`.
+    if window::layer_shell_active() {
         return;
     }
     let Some((expected, scale)) = desired_rect(app, state.expanded) else {

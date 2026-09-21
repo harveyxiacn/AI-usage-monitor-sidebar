@@ -4,15 +4,6 @@
 > rate-limit quotas at a glance — one ring per provider, a detail popover on hover,
 > and a dashboard with your local token-usage history.
 
-<p align="center">
-  <img src="docs/reference/sidebar-claude-popover.jpg" alt="Sidebar with the Claude popover open" width="46%">
-  <img src="docs/reference/sidebar-codex-popover-zh.jpg" alt="Sidebar with the Codex popover open, Chinese UI" width="46%">
-</p>
-
-<sub>The two images above are the design reference this project targets: a thin bar hugging
-the screen edge, vertically centred, with the popover opening towards the middle of the
-screen and its tail pointing back at the hovered ring.</sub>
-
 [中文说明见下 ↓](#ai-使用量侧边栏)
 
 ---
@@ -154,6 +145,11 @@ GNOME users on Linux also want the
 [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/)
 for the tray icon.
 
+**Any Linux, without a package** — `scripts/install-linux.sh` builds a release
+binary and installs it for the current user (`~/.local/bin`, launcher entry and
+icons, no root), so it can be started and pinned from the dock.
+`--uninstall` removes it again; settings and history are kept.
+
 ## Build & run
 
 ```sh
@@ -251,13 +247,6 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 > 一个常驻屏幕边缘、置顶显示的小挂件，一眼看清 **Claude Code** 与 **OpenAI Codex**
 > 的额度用量：每个服务一个进度环，悬停弹出详情，仪表盘里还有本地 token 使用历史。
-
-<p align="center">
-  <img src="docs/reference/sidebar-claude-popover.jpg" alt="侧边栏与 Claude 详情弹层" width="46%">
-  <img src="docs/reference/sidebar-codex-popover-zh.jpg" alt="侧边栏与 Codex 详情弹层（中文）" width="46%">
-</p>
-
-<sub>上面两张图就是本项目的设计参考：细窄的竖条紧贴屏幕边缘、垂直居中，详情弹层朝屏幕中心方向展开，尖角指回被悬停的那个环。</sub>
 
 ## 截图
 
@@ -384,6 +373,10 @@ Rust、Node 22+ 与 pnpm。
 Linux 上使用 GNOME 的用户还需要安装
 [AppIndicator 扩展](https://extensions.gnome.org/extension/615/appindicator-support/)
 才能看到托盘图标。
+
+**任意 Linux、免打包安装**：`scripts/install-linux.sh` 会构建发布版并安装到当前用户
+（`~/.local/bin`、启动器条目与图标，无需 root），之后即可从 dock 启动并固定。
+`--uninstall` 可卸载，设置与历史数据会保留。
 
 ## 构建与运行
 

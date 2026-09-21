@@ -33,6 +33,11 @@ pub fn run() {
         // Must be the first plugin: a second launch hands its argv to the
         // running instance instead of starting another sidebar.
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // A second autostart entry (`--hidden`) must not pop the dashboard.
+            if argv.iter().any(|arg| arg == "--hidden") {
+                log::info!("second hidden instance ({argv:?} in {cwd}), ignoring");
+                return;
+            }
             log::info!("second instance ({argv:?} in {cwd}), focusing the dashboard");
             window::dashboard::focus(app);
         }))
@@ -46,8 +51,19 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .setup(|app| {
+            // A tray widget has no business in the Dock or the app switcher.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             let config_dir = app.path().app_config_dir().expect("app config dir");
-            let data_dir = app.path().app_data_dir().expect("app data dir");
+            // SQLite (WAL) must not live in the Windows roaming profile, which
+            // may be a redirected network share. Same path as before elsewhere.
+            let roaming_dir = app.path().app_data_dir().expect("app data dir");
+            let data_dir = match app.path().app_local_data_dir() {
+                // Keep a database that an earlier version already created.
+                Ok(local) if !roaming_dir.join("usage.db").exists() => local,
+                _ => roaming_dir,
+            };
             std::fs::create_dir_all(&config_dir).ok();
             std::fs::create_dir_all(&data_dir).ok();
             app.manage(state::AppState::new(config_dir, data_dir));

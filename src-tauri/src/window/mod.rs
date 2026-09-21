@@ -8,18 +8,22 @@
 //! * [`hover`]    — the hover state machine and its cancellable timers
 //! * [`dashboard`]— the normal window (settings + history)
 //! * [`tray`]     — tray icon and menu
+//! * [`linux`]    — Wayland layer-shell docking and the KDE X11 blur hint
 //!
 //! Everything positional works in **logical** (CSS) pixels; see
 //! `docs/PLATFORM.md`.
 
 pub mod dashboard;
 pub mod hover;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod monitors;
 pub mod popover;
 pub mod sidebar;
 pub mod tray;
 
 use crate::model::*;
+use crate::window::monitors::LogicalRect;
 use parking_lot::Mutex;
 use tauri::{AppHandle, Listener, Manager, WebviewWindow, WindowEvent};
 
@@ -146,12 +150,51 @@ pub fn set_overlay_size(win: &WebviewWindow, size: tauri::PhysicalSize<u32>) -> 
     win.set_size(size)
 }
 
+/// True when the Linux overlays are docked through Wayland layer-shell. The
+/// compositor then owns their position, so `set_position`, `outer_position`
+/// and the size constraints above are meaningless for them.
+pub fn layer_shell_active() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::is_active()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// The single place where a computed overlay rectangle reaches the OS.
+///
+/// Normally that is move → resize → move (GTK/X11 sometimes keeps the
+/// pre-resize origin when both happen in one frame; the watchdog catches the
+/// rest). Under Wayland layer-shell the compositor positions the surface from
+/// anchors and margins instead, and `linux::place` takes over completely.
+pub fn place_overlay(win: &WebviewWindow, rect: LogicalRect, scale: f64) {
+    #[cfg(target_os = "linux")]
+    if linux::place(win, rect) {
+        return;
+    }
+    let (position, size) = rect.to_physical(scale);
+    if let Err(e) = win.set_position(position) {
+        log::warn!("set_position on `{}` failed: {e}", win.label());
+    }
+    if let Err(e) = set_overlay_size(win, size) {
+        log::warn!("set_size on `{}` failed: {e}", win.label());
+    }
+    if let Err(e) = win.set_position(position) {
+        log::warn!("set_position on `{}` failed: {e}", win.label());
+    }
+}
+
 /// Native translucency for the overlay windows, where the OS provides it.
 ///
 /// * **macOS** — `NSVisualEffectView` behind the webview (HUD material).
 /// * **Windows** — the acrylic backdrop of DWM.
-/// * **Linux** — nothing to do: GNOME/mutter has no client-side blur protocol.
-///   Blur behind on KWin (`_KDE_NET_WM_BLUR_BEHIND_REGION`) is on the roadmap.
+/// * **Linux** — `_KDE_NET_WM_BLUR_BEHIND_REGION` on X11, which KWin honours
+///   and every other X11 compositor ignores (see [`linux::apply_blur`]).
+///   Wayland has no client-side blur protocol, so there the webview's own
+///   translucent fill is all you get.
 ///
 /// The frontend always paints a translucent surface itself, so a failure here
 /// only costs the background blur, never readability.
@@ -190,7 +233,11 @@ pub fn apply_surface_style(win: &WebviewWindow, style: SurfaceStyle) {
             log::debug!("scheduling native backdrop on `{}`: {e}", win.label());
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::apply_blur(win, style);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = (win, style);
     }
@@ -217,6 +264,14 @@ pub fn after_show(win: &WebviewWindow, always_on_top: bool) {
 /// Called once from `lib.rs` inside `.setup()`, after `AppState` is managed.
 pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     app.manage(PlatformState::default());
+
+    // Must run before anything shows or realises an overlay: gtk-layer-shell
+    // can only adopt an unrealised window. Failing is never fatal — it just
+    // leaves the overlays as ordinary (X)Wayland toplevels.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = linux::initialize(app) {
+        log::info!("native layer-shell docking not used: {e:#}");
+    }
 
     let settings = settings_of(app);
     log::info!(

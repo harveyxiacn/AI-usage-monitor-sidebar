@@ -89,6 +89,14 @@ pub fn count_events(db: &Db) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM usage_events", [], |r| r.get(0))?)
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct HistoryBucket {
+    start: i64,
+    provider: String,
+    project: Option<String>,
+    model: Option<String>,
+}
+
 /// Aggregate `usage_events` into local-time buckets.
 ///
 /// Bucketing happens in Rust (not SQL) so it can use the machine's local time
@@ -96,32 +104,35 @@ pub fn count_events(db: &Db) -> Result<i64> {
 pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Result<HistoryResult> {
     let (from, to) = query_range(&q.from, &q.to)?;
 
-    // key: (bucket_start_ms, provider, model)
-    let mut buckets: BTreeMap<(i64, String, Option<String>), Acc> = BTreeMap::new();
+    let mut buckets: BTreeMap<HistoryBucket, Acc> = BTreeMap::new();
     let mut totals = Acc::default();
     let mut by_provider: BTreeMap<String, Acc> = BTreeMap::new();
+    let projects;
 
     {
         let conn = db.lock();
-        let (sql, provider_filter) = match q.provider.as_deref() {
-            Some(p) => (
-                "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
-                        output_tokens, reasoning_tokens, total_tokens
-                 FROM usage_events WHERE ts >= ?1 AND ts <= ?2 AND provider = ?3 ORDER BY ts",
-                Some(p.to_string()),
-            ),
-            None => (
-                "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
-                        output_tokens, reasoning_tokens, total_tokens
-                 FROM usage_events WHERE ts >= ?1 AND ts <= ?2 ORDER BY ts",
-                None,
-            ),
-        };
+        // Project options deliberately ignore the active project selection.
+        // Do not normalize paths: case, separators, spaces and Unicode are
+        // part of the provider's original cwd identity on every platform.
+        let mut options = conn.prepare(
+            "SELECT DISTINCT COALESCE(cwd, '') AS project FROM usage_events
+             WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
+             ORDER BY project COLLATE BINARY",
+        )?;
+        projects = options
+            .query_map(rusqlite::params![from, to, q.provider], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let sql = "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
+                          output_tokens, reasoning_tokens, total_tokens, cwd
+                   FROM usage_events
+                   WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
+                     AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
+                   ORDER BY ts";
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = match &provider_filter {
-            Some(p) => stmt.query(rusqlite::params![from, to, p])?,
-            None => stmt.query(rusqlite::params![from, to])?,
-        };
+        let mut rows = stmt.query(rusqlite::params![from, to, q.provider, q.project])?;
         while let Some(row) = rows.next()? {
             let provider: String = row.get(0)?;
             let model: String = row.get(1)?;
@@ -142,9 +153,19 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
             } else {
                 None
             };
+            let project = if q.group_by_project {
+                Some(row.get::<_, Option<String>>(9)?.unwrap_or_default())
+            } else {
+                q.project.clone()
+            };
             let bucket_ms = bucket_start_ms(ts, q.bucket);
             buckets
-                .entry((bucket_ms, provider.clone(), key_model))
+                .entry(HistoryBucket {
+                    start: bucket_ms,
+                    provider: provider.clone(),
+                    project,
+                    model: key_model,
+                })
                 .or_default()
                 .add(&t, cost);
             by_provider.entry(provider).or_default().add(&t, cost);
@@ -154,10 +175,11 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
 
     let rows = buckets
         .into_iter()
-        .map(|((ms, provider, model), acc)| HistoryRow {
-            bucket_start: local_rfc3339(ms),
-            provider,
-            model,
+        .map(|(bucket, acc)| HistoryRow {
+            bucket_start: local_rfc3339(bucket.start),
+            provider: bucket.provider,
+            model: bucket.model,
+            project: bucket.project,
             totals: acc.finish(),
         })
         .collect();
@@ -169,6 +191,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
             .into_iter()
             .map(|(k, v)| (k, v.finish()))
             .collect(),
+        projects,
     })
 }
 
@@ -327,7 +350,14 @@ mod tests {
             bucket,
             group_by_model: false,
             provider: None,
+            project: None,
+            group_by_project: false,
         }
+    }
+
+    fn in_project(mut event: UsageEvent, project: Option<&str>) -> UsageEvent {
+        event.cwd = project.map(str::to_owned);
+        event
     }
 
     #[test]
@@ -523,6 +553,262 @@ mod tests {
         assert!(query_history(&db, &query("bad", "2026-09-20", Bucket::Day), &table).is_err());
         assert!(
             query_history(&db, &query("2026-09-20", "2026-09-01", Bucket::Day), &table).is_err()
+        );
+    }
+
+    #[test]
+    fn project_and_model_groups_keep_independent_totals_and_prices() {
+        let db = Db::open_in_memory().unwrap();
+        let at = ms("2026-09-15T12:00:00");
+        let linux = "/home/dev/项目 one";
+        let windows = r"C:\Work\O'Reilly, Inc\项目 one";
+        let events = [
+            in_project(event("codex", "gpt-5", at, "a", 1_000_000, 0), Some(linux)),
+            in_project(event("codex", "gpt-5", at, "b", 1_000_000, 0), Some(linux)),
+            in_project(
+                event("codex", "gpt-5-mini", at, "c", 1_000_000, 0),
+                Some(linux),
+            ),
+            in_project(
+                event("codex", "gpt-5", at, "d", 3_000_000, 0),
+                Some(windows),
+            ),
+            in_project(event("codex", "unknown", at, "e", 100, 0), Some(windows)),
+            in_project(event("codex", "gpt-5", at, "f", 10, 0), None),
+            in_project(event("codex", "gpt-5", at, "g", 10, 0), Some("")),
+            in_project(
+                event("claude", "claude-opus-4-5", at, "h", 1_000_000, 0),
+                Some(linux),
+            ),
+        ];
+        insert_usage_events(&db, &events).unwrap();
+        let table = pricing::default_table();
+        let q = HistoryQuery {
+            group_by_project: true,
+            group_by_model: true,
+            ..query("2026-09-15", "2026-09-16", Bucket::Day)
+        };
+        let grouped = query_history(&db, &q, &table).unwrap();
+        assert_eq!(grouped.rows.len(), 6);
+        assert_eq!(grouped.projects, vec!["", linux, windows]);
+        let linux_gpt = grouped
+            .rows
+            .iter()
+            .find(|row| {
+                row.project.as_deref() == Some(linux) && row.model.as_deref() == Some("gpt-5")
+            })
+            .unwrap();
+        assert_eq!(linux_gpt.totals.requests, 2);
+        assert_eq!(linux_gpt.totals.estimated_cost_usd, Some(2.5));
+        let windows_gpt = grouped
+            .rows
+            .iter()
+            .find(|row| {
+                row.project.as_deref() == Some(windows) && row.model.as_deref() == Some("gpt-5")
+            })
+            .unwrap();
+        assert_eq!(windows_gpt.totals.estimated_cost_usd, Some(3.75));
+        let unassigned = grouped
+            .rows
+            .iter()
+            .find(|row| row.project.as_deref() == Some(""))
+            .unwrap();
+        assert_eq!(
+            unassigned.totals.requests, 2,
+            "NULL and empty cwd share the unassigned group"
+        );
+        assert_eq!(grouped.by_provider["codex"].requests, 7);
+        assert_eq!(grouped.by_provider["claude"].estimated_cost_usd, Some(5.0));
+        assert!(grouped.totals.estimated_cost_usd.is_none());
+
+        let per_project = query_history(
+            &db,
+            &HistoryQuery {
+                group_by_model: false,
+                ..q.clone()
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(per_project.rows.len(), 4);
+        let linux_codex = per_project
+            .rows
+            .iter()
+            .find(|row| row.provider == "codex" && row.project.as_deref() == Some(linux))
+            .unwrap();
+        assert_eq!(linux_codex.totals.estimated_cost_usd, Some(2.75));
+        assert!(per_project
+            .rows
+            .iter()
+            .find(|row| row.project.as_deref() == Some(windows))
+            .unwrap()
+            .totals
+            .estimated_cost_usd
+            .is_none());
+        let per_model = query_history(
+            &db,
+            &HistoryQuery {
+                group_by_project: false,
+                ..q
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(per_model.rows.len(), 4);
+        assert!(per_model.rows.iter().all(|row| row.project.is_none()));
+        let ungrouped =
+            query_history(&db, &query("2026-09-15", "2026-09-16", Bucket::Day), &table).unwrap();
+        assert_eq!(ungrouped.rows.len(), 2);
+        assert_eq!(ungrouped.totals, grouped.totals);
+        assert!(ungrouped
+            .rows
+            .iter()
+            .all(|row| row.project.is_none() && row.model.is_none()));
+    }
+
+    #[test]
+    fn project_filter_is_exact_and_options_ignore_only_the_project_filter() {
+        let db = Db::open_in_memory().unwrap();
+        let at = ms("2026-09-15T12:00:00");
+        let paths = [
+            r"C:\Work\O'Reilly, Inc\项目",
+            r"c:\Work\O'Reilly, Inc\项目",
+            r"\\server\share\项目",
+            " /Users/me/spaces ",
+            "' OR 1=1 --",
+        ];
+        for (i, path) in paths.iter().enumerate() {
+            insert_usage_events(
+                &db,
+                &[in_project(
+                    event("codex", "gpt-5", at, &i.to_string(), 10, 0),
+                    Some(path),
+                )],
+            )
+            .unwrap();
+        }
+        insert_usage_events(
+            &db,
+            &[
+                in_project(event("codex", "gpt-5", at, "null", 10, 0), None),
+                in_project(event("codex", "gpt-5", at, "empty", 10, 0), Some("")),
+                in_project(
+                    event("claude", "claude-opus-4-5", at, "other-provider", 10, 0),
+                    Some("/claude-only"),
+                ),
+                in_project(
+                    event("codex", "gpt-5", ms("2026-09-14T12:00:00"), "old", 10, 0),
+                    Some("/outside-range"),
+                ),
+            ],
+        )
+        .unwrap();
+        let table = pricing::default_table();
+        let mut q = HistoryQuery {
+            provider: Some("codex".into()),
+            ..query("2026-09-15", "2026-09-16", Bucket::Day)
+        };
+        let mut expected = paths
+            .iter()
+            .map(|p| p.to_string())
+            .chain([String::new()])
+            .collect::<Vec<_>>();
+        expected.sort();
+        for path in paths {
+            q.project = Some(path.into());
+            let result = query_history(&db, &q, &table).unwrap();
+            assert_eq!(
+                result.totals.requests, 1,
+                "path filter must use a bound exact value"
+            );
+            assert_eq!(result.projects, expected);
+            assert_eq!(
+                result.rows[0].project.as_deref(),
+                Some(path),
+                "filtered rows retain the full path even without grouping"
+            );
+        }
+        q.project = Some("".into());
+        let unassigned = query_history(&db, &q, &table).unwrap();
+        assert_eq!(unassigned.totals.requests, 2);
+        assert_eq!(unassigned.rows[0].project.as_deref(), Some(""));
+        q.project = Some("/missing' OR 1=1 --".into());
+        let missing = query_history(&db, &q, &table).unwrap();
+        assert!(missing.rows.is_empty());
+        assert_eq!(
+            missing.projects, expected,
+            "an empty filtered result must still offer other projects"
+        );
+    }
+
+    #[test]
+    fn history_range_includes_start_and_excludes_end_for_rows_and_projects() {
+        let db = Db::open_in_memory().unwrap();
+        let start = ms("2026-09-15T00:00:00");
+        let end = ms("2026-09-16T00:00:00");
+        let events = [
+            (start - 1, "/before"),
+            (start, "/at-start"),
+            (end - 1, "/last-ms"),
+            (end, "/at-end"),
+        ]
+        .into_iter()
+        .map(|(ts, path)| in_project(event("codex", "gpt-5", ts, path, 10, 0), Some(path)))
+        .collect::<Vec<_>>();
+        insert_usage_events(&db, &events).unwrap();
+        let result = query_history(
+            &db,
+            &query("2026-09-15", "2026-09-16", Bucket::Day),
+            &pricing::default_table(),
+        )
+        .unwrap();
+        assert_eq!(result.totals.requests, 2);
+        assert_eq!(result.projects, vec!["/at-start", "/last-ms"]);
+        let empty = query_history(
+            &db,
+            &query("2026-09-15", "2026-09-15", Bucket::Day),
+            &pricing::default_table(),
+        )
+        .unwrap();
+        assert!(empty.rows.is_empty() && empty.projects.is_empty());
+    }
+
+    #[test]
+    fn history_json_keeps_legacy_queries_and_project_paths_compatible() {
+        let old_query: HistoryQuery = serde_json::from_value(
+            serde_json::json!({"from":"2026-09-15", "to":"2026-09-16", "bucket":"day"}),
+        )
+        .unwrap();
+        assert!(!old_query.group_by_project);
+        assert!(old_query.project.is_none());
+        let path = "C:\\团队\\comma, quote\" project";
+        let db = Db::open_in_memory().unwrap();
+        insert_usage_events(
+            &db,
+            &[in_project(
+                event("codex", "gpt-5", ms("2026-09-15T12:00:00"), "one", 10, 0),
+                Some(path),
+            )],
+        )
+        .unwrap();
+        let grouped = HistoryQuery {
+            group_by_project: true,
+            ..old_query
+        };
+        let query_json = serde_json::to_value(&grouped).unwrap();
+        assert_eq!(query_json["groupByProject"], true);
+        let result = query_history(&db, &grouped, &pricing::default_table()).unwrap();
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(wire["projects"][0], path);
+        assert_eq!(wire["rows"][0]["project"], path);
+        assert_eq!(
+            wire["rows"][0]["totalTokens"], 10,
+            "CSV consumes flattened row totals"
+        );
+        assert!(wire["rows"][0].get("totals").is_none());
+        assert_eq!(
+            serde_json::from_value::<HistoryResult>(wire).unwrap(),
+            result
         );
     }
 }

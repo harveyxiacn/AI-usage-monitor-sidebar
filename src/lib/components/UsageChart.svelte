@@ -23,6 +23,7 @@
   import { onDestroy } from 'svelte';
   import { cssVar, lighten, PROVIDER_ACCENT, resolveColor } from '$lib/colors';
   import { formatBucket, formatCost, formatTokens } from '$lib/format';
+  import { historySeries, projectLabels, shortenLabel } from '$lib/history';
   import { t } from '$lib/i18n/i18n.svelte';
   import type { Bucket, HistoryRow, ProviderId } from '$lib/types';
 
@@ -32,28 +33,22 @@
     rows: HistoryRow[];
     bucket: Bucket;
     groupByModel: boolean;
+    groupByProject?: boolean;
+    /** path → label, so the legend matches the table; falls back to our own */
+    projectNames?: ReadonlyMap<string, string>;
     metric: 'tokens' | 'cost';
     /** changes whenever the palette changes, forcing a rebuild */
     themeKey: string;
     height?: number;
   }
 
-  let { rows, bucket, groupByModel, metric, themeKey, height = 260 }: Props = $props();
+  let { rows, bucket, groupByModel, groupByProject = false, projectNames, metric, themeKey, height = 260 }: Props = $props();
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let chart: Chart<'bar', (number | null)[], string> | null = null;
 
-  const value = (r: HistoryRow) => (metric === 'cost' ? r.estimatedCostUsd : r.totalTokens);
   const missingPrices = $derived(metric === 'cost' && rows.some((row) => row.estimatedCostUsd == null));
   const fmt = (v: number) => (metric === 'cost' ? formatCost(v) : formatTokens(v));
-
-  /** series key → legend label; grouping by model prefixes the provider. */
-  function seriesOf(r: HistoryRow): { key: string; label: string; provider: ProviderId } {
-    if (groupByModel && r.model) {
-      return { key: `${r.provider}/${r.model}`, label: r.model, provider: r.provider };
-    }
-    return { key: r.provider, label: r.provider === 'claude' ? 'Claude' : 'Codex', provider: r.provider };
-  }
 
   interface Built {
     labels: string[];
@@ -61,40 +56,24 @@
   }
 
   function build(): Built {
-    // x axis: every distinct bucket in chronological order
-    const buckets = [...new Set(rows.map((r) => r.bucketStart))].sort(
-      (a, b) => Date.parse(a) - Date.parse(b)
-    );
-    const xIndex = new Map(buckets.map((b, i) => [b, i]));
-
-    const order: string[] = [];
-    const meta = new Map<string, { label: string; provider: ProviderId; data: (number | null)[] }>();
-    for (const r of rows) {
-      const s = seriesOf(r);
-      let m = meta.get(s.key);
-      if (!m) {
-        m = { label: s.label, provider: s.provider, data: new Array(buckets.length).fill(0) };
-        meta.set(s.key, m);
-        order.push(s.key);
-      }
-      const index = xIndex.get(r.bucketStart) ?? 0;
-      const amount = value(r);
-      const previous = m.data[index];
-      m.data[index] = amount == null || previous == null ? null : previous + amount;
-    }
-    // stable series order: claude first, then alphabetical inside a provider
-    order.sort((a, b) => a.localeCompare(b));
-
+    const { buckets, series } = historySeries(rows, groupByModel, groupByProject, metric);
+    const unassigned = t('history.project.unassigned');
+    const own = projectLabels(series.map((entry) => entry.project ?? ''), unassigned);
+    const projects = projectNames ?? own;
     const providerIndex: Record<ProviderId, number> = { claude: 0, codex: 0 };
     return {
       labels: buckets.map((b) => formatBucket(b, bucket)),
-      datasets: order.map((key) => {
-        const m = meta.get(key)!;
-        const base = resolveColor(PROVIDER_ACCENT[m.provider]);
-        const color = groupByModel ? lighten(base, (providerIndex[m.provider]++ % 5) * 0.09, 0.75) : base;
+      datasets: series.map((entry) => {
+        const path = entry.project ?? '';
+        const label = [entry.provider === 'claude' ? 'Claude' : 'Codex'];
+        if (groupByModel) label.push(entry.model || t('history.modelUnknown'));
+        // a legend entry is a single line: long paths are elided in the middle
+        if (groupByProject) label.push(shortenLabel(projects.get(path) ?? own.get(path) ?? unassigned));
+        const base = resolveColor(PROVIDER_ACCENT[entry.provider]);
+        const color = groupByModel || groupByProject ? lighten(base, (providerIndex[entry.provider]++ % 5) * 0.09, 0.75) : base;
         return {
-          label: m.label,
-          data: m.data,
+          label: label.join(' · '),
+          data: entry.values,
           backgroundColor: resolveColor(color),
           borderWidth: 0,
           borderRadius: 3,
@@ -170,7 +149,7 @@
   // one $effect that reads every input: any change rebuilds the chart
   $effect(() => {
     // touched explicitly so the effect re-runs on each of them
-    void [rows, bucket, groupByModel, metric, themeKey, canvas];
+    void [rows, bucket, groupByModel, groupByProject, projectNames, metric, themeKey, canvas];
     render();
   });
 

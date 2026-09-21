@@ -80,6 +80,20 @@ pub fn credentials_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join(".credentials.json"))
 }
 
+/// Keychain item Claude Code uses on macOS instead of a credentials file.
+pub const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// Where the credentials actually come from on this machine, for diagnostics.
+/// On macOS that is normally the login Keychain, not a file that exists.
+pub fn credential_source() -> Option<String> {
+    let path = credentials_path();
+    #[cfg(target_os = "macos")]
+    if !path.as_ref().map(|p| p.is_file()).unwrap_or(false) {
+        return Some(format!("Keychain: {KEYCHAIN_SERVICE}"));
+    }
+    path.map(|p| p.display().to_string())
+}
+
 /// `~/.claude/projects` — the session-log root.
 pub fn log_root() -> Option<PathBuf> {
     config_dir().map(|d| d.join("projects"))
@@ -104,15 +118,31 @@ fn read_credentials_text() -> Option<String> {
     keychain_credentials()
 }
 
+/// How long a Keychain answer is reused. Reading the item shells out to
+/// `security`, which is slow and can raise a Keychain access prompt, so the
+/// 15 s+ refresh tick must not re-read it every round.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_TTL: Duration = Duration::from_secs(120);
+
+#[cfg(target_os = "macos")]
+static KEYCHAIN_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+
 #[cfg(target_os = "macos")]
 fn keychain_credentials() -> Option<String> {
+    if let Some((at, cached)) = KEYCHAIN_CACHE.lock().as_ref() {
+        if at.elapsed() < KEYCHAIN_TTL {
+            return cached.clone();
+        }
+    }
+    let fresh = read_keychain_item();
+    *KEYCHAIN_CACHE.lock() = Some((Instant::now(), fresh.clone()));
+    fresh
+}
+
+#[cfg(target_os = "macos")]
+fn read_keychain_item() -> Option<String> {
     let out = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -130,6 +160,15 @@ fn keychain_credentials() -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn keychain_credentials() -> Option<String> {
     None
+}
+
+/// Drop any cached Keychain answer so the next read sees a token that
+/// `claude` has just refreshed. A no-op off macOS.
+pub fn forget_cached_credentials() {
+    #[cfg(target_os = "macos")]
+    {
+        *KEYCHAIN_CACHE.lock() = None;
+    }
 }
 
 /// Parse the credentials JSON. Exposed for tests.
@@ -474,7 +513,7 @@ impl Provider for ClaudeProvider {
             id: CLAUDE_ID.into(),
             display_name: DISPLAY_NAME.into(),
             logged_in: creds.as_ref().map(|c| !c.is_expired(now)).unwrap_or(false),
-            credential_path: credentials_path().map(|p| p.display().to_string()),
+            credential_path: credential_source(),
             log_path: log_root().map(|p| p.display().to_string()),
             plan_label: creds.as_ref().and_then(|c| {
                 plan_label(c.subscription_type.as_deref(), c.rate_limit_tier.as_deref())
@@ -491,6 +530,9 @@ impl Provider for ClaudeProvider {
         let now_ms = chrono::Utc::now().timestamp_millis();
         if creds.is_expired(now_ms) {
             log::info!("claude: access token expired");
+            // A stale Keychain read must not keep an expired token alive
+            // after the user has re-run `claude`.
+            forget_cached_credentials();
             return degraded(
                 &self.ctx,
                 CLAUDE_ID,
@@ -525,6 +567,7 @@ impl Provider for ClaudeProvider {
 
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            forget_cached_credentials();
             return degraded(
                 &self.ctx,
                 CLAUDE_ID,
@@ -703,6 +746,25 @@ mod tests {
         assert!(parse_credentials("{}").is_none());
         assert!(parse_credentials("not json").is_none());
         assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":""}}"#).is_none());
+    }
+
+    #[test]
+    fn credential_source_names_the_real_store_on_every_os() {
+        let Some(source) = credential_source() else {
+            return; // machine without a resolvable home directory
+        };
+        let keychain = format!("Keychain: {KEYCHAIN_SERVICE}");
+        assert!(
+            source.ends_with(".credentials.json") || source == keychain,
+            "unexpected credential source `{source}`"
+        );
+        // Only macOS, and only while no credentials file shadows the item.
+        assert_eq!(
+            source == keychain,
+            cfg!(target_os = "macos") && !credentials_path().is_some_and(|p| p.is_file()),
+        );
+        // Clearing the (possibly absent) cache must never panic or block.
+        forget_cached_credentials();
     }
 
     #[test]

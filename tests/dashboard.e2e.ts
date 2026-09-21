@@ -38,6 +38,36 @@ test('overview refreshes and history filters and exports the visible rows', asyn
   await expect(page.getByRole('status').filter({ hasText: 'Some models have no price' })).toBeVisible();
 });
 
+test('the project filter narrows the table and exports complete paths', async ({ page }) => {
+  await page.getByRole('button', { name: 'History', exact: true }).click();
+  await expect(page.locator('tbody tr').first()).toBeVisible();
+  // no project column until something is filtered or split by project
+  await expect(page.getByRole('columnheader', { name: /Project/ })).toHaveCount(0);
+
+  const path = '/home/demo/work/client/website';
+  await page.locator('#project').selectOption(`project:${path}`);
+  await expect(page.getByRole('columnheader', { name: /Project/ })).toBeVisible();
+  const cells = page.locator('tbody tr td:nth-child(3)');
+  expect(await cells.count()).toBeGreaterThan(0);
+  // the shortened label disambiguates the two "website" projects…
+  for (const text of await cells.allTextContents()) expect(text).toBe('website — /home/demo/work/client');
+  // …while the exact path stays available for selection and export
+  for (const title of await cells.evaluateAll((els) => els.map((el) => el.getAttribute('title')))) expect(title).toBe(path);
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
+  const csv = await readFile((await (await downloadPromise).path())!, 'utf8');
+  expect(csv).toContain('model,project,input_tokens');
+  for (const line of csv.trim().split(/\r?\n/).slice(1)) expect(line).toContain(`,${path},`);
+
+  // splitting by project keeps the filter but shows every project once cleared
+  await page.getByLabel('Split by project').check();
+  await expect(cells).toHaveCount(await page.locator('tbody tr').count());
+  await page.locator('#project').selectOption('all');
+  await expect(page.locator('#project')).toHaveValue('all');
+  await expect.poll(async () => new Set(await cells.allTextContents()).size).toBeGreaterThan(1);
+});
+
 test('invalid custom dates do not silently fall back to another range', async ({ page }) => {
   await page.getByRole('button', { name: 'History', exact: true }).click();
   await page.getByRole('button', { name: 'Custom', exact: true }).click();

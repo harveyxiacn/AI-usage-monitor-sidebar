@@ -14,6 +14,7 @@ src-tauri/src/window/
   hover.rs      the hover state machine and its cancellable timers
   dashboard.rs  show / focus / navigate, close-to-hide
   tray.rs       tray icon menu (localised), autoHide toggle
+  linux.rs      Wayland layer-shell docking + the KDE X11 blur hint
 ```
 
 ## 1. X11 vs Wayland
@@ -30,13 +31,72 @@ On wlroots compositors (Sway, Hyprland) and KDE those are available through the
 it will not. So on Linux `main.rs` sets `GDK_BACKEND=x11` **before GTK
 initialises**, which makes the app an XWayland client where
 `_NET_WM_STATE_ABOVE`, `_NET_WM_STATE_STICKY`, `_NET_WM_STATE_SKIP_TASKBAR` and
-absolute coordinates all work. `AI_USAGE_SIDEBAR_BACKEND=wayland` opts out,
-including when `GDK_BACKEND=x11` was inherited. A pure Wayland session without
-`DISPLAY` falls back to Wayland instead of failing to start; the compositor
-then chooses the bar's position.
+absolute coordinates all work.
+
+### Backend selection (`main.rs::linux_backend`)
+
+XWayland is the default whenever an X display exists, on every desktop.
+Native Wayland is **strictly opt-in**, in this order:
+
+| Condition | `GDK_BACKEND` |
+|---|---|
+| `AI_USAGE_SIDEBAR_BACKEND=wayland` | `wayland` |
+| `AI_USAGE_SIDEBAR_BACKEND=x11` | `x11` |
+| the user already set `GDK_BACKEND` themselves | left untouched |
+| no `DISPLAY`, but a `WAYLAND_DISPLAY` | `wayland` |
+| anything else (including GNOME Wayland) | `x11` |
+
+The pure decision function is unit tested (`cargo test --bin ai-usage-sidebar`).
+
+### Native layer-shell docking (`window/linux.rs`)
+
+Only when the step above left us on Wayland, `linux::prepare_backend()` runs —
+still in `main`, before anything initialises GTK. It `dlopen`s
+`libgtk-layer-shell.so.0` (so X11 and GNOME users never need the library
+installed), initialises GTK and asks `gtk_layer_is_supported()`. If the library
+is missing, too old or the compositor has no `zwlr_layer_shell_v1`, it
+**falls back to XWayland**: by setting `GDK_BACKEND=x11` when GTK is not yet
+initialised, otherwise by `exec()`ing the same binary again with
+`GDK_BACKEND=x11` (GTK cannot change display after `gtk_init`;
+`AI_USAGE_SIDEBAR_BACKEND_REEXEC=1` guards against a restart loop). A pure
+Wayland session without `DISPLAY` has nothing to fall back to: the failure is
+logged and the app starts anyway as an ordinary Wayland window that the
+compositor places, exactly as before layer-shell existed.
+
+`window::setup()` then calls `linux::initialize()` **before any overlay is
+shown or realised** — `gtk_layer_init_for_window()` only works on an unrealised
+window, which is why the overlays are `visible: false` in `tauri.conf.json`.
+Any failure is logged at `info` and leaves the app on the ordinary
+move/resize path; start-up is never aborted.
+
+Once active (`window::layer_shell_active()`):
+
+* `window::place_overlay()` — the single place a computed rectangle reaches the
+  OS — routes to `linux::place()`, which sets the layer (`TOP` when
+  `alwaysOnTop`, else `BOTTOM`), anchors to top + the configured edge, and
+  translates the rectangle into **output-local** margins, then applies the
+  documented `set_size_request()` + `resize(1, 1)` sequence. Margins are
+  monitor-local logical px, so negative-origin and mixed-DPI layouts work.
+* The exclusive zone is 0: the bar never reserves desktop space.
+* Keyboard interactivity is `NONE` where the symbol exists
+  (`gtk_layer_set_keyboard_mode` is only in gtk-layer-shell ≥ 0.6, so it is
+  looked up optionally and a missing symbol does not fail the load).
+* The target output is matched by `GdkMonitor::model()`, which is exactly what
+  tao reports as `Monitor::name()` and therefore what `settings.monitor` holds.
+* **The geometry watchdog is disabled.** A layer surface has no position of its
+  own, so `outer_position()` is meaningless and a drift check could only
+  re-place the bar in a loop. Settings changes and relayouts still place it.
+
+Env vars: `AI_USAGE_SIDEBAR_BACKEND` (`wayland` | `x11`), `GDK_BACKEND`,
+`AI_USAGE_SIDEBAR_BACKEND_REEXEC` (internal marker).
 
 `window::backend_name()` reports what is actually in use and it ends up in
 `AppInfo.backend` in the dashboard's *About* section.
+
+The `native-smoke` cargo feature enables one extra test that `dlopen`s
+`libgtk-layer-shell.so.0` and asserts every symbol we bind resolves, including
+the ≥ 0.6 keyboard-mode one. It only makes sense on a machine that has the
+library installed: `cargo test --features native-smoke window::linux`.
 
 Two more Linux quirks handled in `main.rs` / `window/mod.rs`:
 
@@ -57,11 +117,14 @@ the `window-vibrancy` crate, cfg-gated:
 |---|---|
 | macOS | `NSVisualEffectMaterial::HudWindow`, corner radius 16 |
 | Windows | DWM acrylic, tint `(0, 0, 0, 10)` |
-| Linux | nothing — mutter has no client-side blur; the webview's own translucent fill is all you get. `_KDE_NET_WM_BLUR_BEHIND_REGION` for KWin is on the roadmap |
+| Linux (X11/XWayland) | `linux::apply_blur()` sets `_KDE_NET_WM_BLUR_BEHIND_REGION` to an empty `CARDINAL` region ("blur the whole window"), which KWin honours and every other X11 compositor — mutter included — silently ignores. `solid` deletes the property. On a window that is still hidden the property is written from a one-shot `realize` handler |
+| Linux (Wayland) | nothing: there is no client-side blur protocol, so the webview's own translucent fill is all you get |
 
 The crate is only a dependency on macOS and Windows
 (`[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]`),
-so Linux builds do not pull it in at all.
+so Linux builds do not pull it in at all. Linux instead uses `gtk 0.18` (the
+same version tauri/wry already link, verified with `cargo tree -i gtk`, so no
+second GTK crate is compiled in) and `libloading 0.8`.
 
 ## 2. Geometry maths
 
@@ -117,7 +180,8 @@ offset the tail when clamping moved the window.
 * on `sidebar_set_expanded` and on every popover show,
 * and every 5 s from a watchdog that compares the window's real geometry with
   the computed one and re-places it when it drifted more than 2 px (monitor
-  hot-plug, resolution change, a window manager that "helpfully" moved us).
+  hot-plug, resolution change, a window manager that "helpfully" moved us) —
+  skipped under Wayland layer-shell, see §1.
 
 GTK on X11 sometimes keeps the pre-resize origin when a window is moved and
 resized in the same frame, so the origin is written **before and after** the
@@ -213,9 +277,19 @@ and the dashboard hides, so the app keeps living in the tray. A second launch
 * **GNOME needs the AppIndicator extension** for the tray icon to appear at all.
 * **`alwaysOnTop` fights full-screen windows.** Most WMs put full-screen windows
   above everything; that is intentional and not worked around.
-* **Wayland mode (`AI_USAGE_SIDEBAR_BACKEND=wayland`)** currently gives a
-  floating window at a compositor-chosen position. Useful for debugging
-  rendering, not for daily use, until layer-shell lands.
+* **Wayland mode (`AI_USAGE_SIDEBAR_BACKEND=wayland`)** docks natively through
+  layer-shell where `zwlr_layer_shell_v1` and `libgtk-layer-shell.so.0` are
+  both present (wlroots: Sway/Hyprland; KWin). Everywhere else it falls back
+  to XWayland, or — with no X display at all — to a floating window at a
+  compositor-chosen position, which is only useful for debugging rendering.
+* **The layer-shell path has not been exercised on real hardware yet.** It was
+  written and reviewed against `gtk-layer-shell.h`, but no wlroots or KWin
+  session has run it. Unverified in particular: whether Tauri's overlays are
+  still unrealised when `window::setup` runs on every wry version, the
+  `set_size_request` + `resize(1, 1)` shrink sequence with a WebKit child,
+  multi-output margins on a real mixed-DPI Wayland desktop, monitor hot-plug
+  without the geometry watchdog, and whether `set_focusable(false)` plus
+  keyboard mode `NONE` really keep the popover from taking focus.
 * **macOS** windows are not notarised yet; `set_focusable(false)` cannot unfocus
   an already-focused window (an OS limitation), which is why the popover is made
   non-focusable *before* it is ever shown.

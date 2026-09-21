@@ -112,6 +112,18 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
     tray.set_menu(Some(menu))?;
     tray.on_menu_event(|app, event: MenuEvent| on_menu(app, event.id.as_ref()));
 
+    // The configured icon is a white macOS template glyph; Windows draws it
+    // verbatim, which is invisible on a light taskbar.
+    #[cfg(target_os = "windows")]
+    match tauri::image::Image::from_bytes(include_bytes!("../../icons/32x32.png")) {
+        Ok(icon) => {
+            if let Err(e) = tray.set_icon(Some(icon)) {
+                log::debug!("tray set_icon: {e}");
+            }
+        }
+        Err(e) => log::debug!("tray icon decode: {e}"),
+    }
+
     #[cfg(not(target_os = "linux"))]
     {
         use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};

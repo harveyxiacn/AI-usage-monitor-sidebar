@@ -15,6 +15,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # reqwest pulls rustls -> aws-lc-sys, whose x86_64 Windows build assembles
+  # its .asm files with NASM and panics ("NASM command not found! Build cannot
+  # continue.") when it is missing. Allow the objects the crate vendors for
+  # exactly this case. Consulted only on windows-x86_64 and only when NASM is
+  # absent, so it is a no-op on Linux/macOS and on runners that do ship NASM.
+  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   build:

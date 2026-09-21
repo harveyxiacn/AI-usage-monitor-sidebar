@@ -167,6 +167,18 @@ Key semantics:
   (from cache or local logs) if available, with `source` telling where they
   came from.
 * Times/timestamps in the DB are unix **milliseconds** (INTEGER).
+* `HistoryQuery.project` is optional: null/absent selects all projects, an
+  empty string selects events whose `cwd` is null or empty, and any other
+  string matches the original working-directory path exactly. Paths are
+  not trimmed, canonicalized or case-folded across platforms.
+* `HistoryQuery.groupByProject` defaults to false and combines with
+  `groupByModel`. `HistoryRow.project` is the original path (or an empty
+  string for unassigned events) when grouped or filtered by project; null
+  means an unfiltered aggregate across projects.
+* `HistoryResult.projects` lists distinct project paths within the selected
+  time/provider range, ignoring the current project filter. It includes an
+  empty string when unassigned events exist. UI labels may shorten paths,
+  but selection, series identity and CSV preserve the complete value.
 
 ## 5. Tauri commands
 

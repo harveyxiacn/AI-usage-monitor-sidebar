@@ -181,6 +181,7 @@ interface MockEvent {
   ts: number;
   provider: ProviderId;
   model: string;
+  project: string | null;
   inputTokens: number;
   cacheWriteTokens: number;
   cacheReadTokens: number;
@@ -193,6 +194,14 @@ const MODELS: Record<ProviderId, string[]> = {
   claude: ['claude-opus-5-20260514', 'claude-sonnet-4-6-20260219', 'claude-haiku-4-5-20251001'],
   codex: ['gpt-5.3-codex', 'gpt-5.3-codex-spark'],
 };
+
+/** Same basenames intentionally exercise exact project identity in the UI. */
+const PROJECTS = [
+  '/home/demo/projects/website',
+  '/home/demo/work/client/website',
+  'C:\\Users\\Demo\\Projects\\billing-service',
+  '',
+];
 
 /** Deterministic 32-bit LCG so every reload produces the same chart. */
 function lcg(seed: number) {
@@ -240,6 +249,7 @@ const events: MockEvent[] = (() => {
             ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
             provider,
             model: models[m],
+            project: PROJECTS[(dayBack + hour + m) % PROJECTS.length] || null,
             inputTokens: input,
             cacheWriteTokens: cacheWrite,
             cacheReadTokens: cacheRead,
@@ -327,6 +337,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const rows = new Map<string, HistoryRow>();
   const totals = emptyTotals();
   const byProvider: Record<string, TokenTotals> = {};
+  const projects = new Set<string>();
   // cost is accumulated per model then summed, because the price list is
   // per-model — a grouped-by-provider row still gets a meaningful estimate.
   const rowCost = new Map<string, number | null>();
@@ -336,9 +347,13 @@ function runHistory(q: HistoryQuery): HistoryResult {
   for (const e of events) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    const project = e.project ?? '';
+    projects.add(project);
+    if (q.project != null && project !== q.project) continue;
 
     const bs = bucketStart(e.ts, q.bucket);
-    const key = `${bs}|${e.provider}|${q.groupByModel ? e.model : ''}`;
+    const rowProject = q.groupByProject ? project : q.project ?? null;
+    const key = JSON.stringify([bs, e.provider, q.groupByModel ? e.model : null, rowProject]);
     let row = rows.get(key);
     if (!row) {
       row = {
@@ -346,6 +361,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
         bucketStart: iso(bs),
         provider: e.provider,
         model: q.groupByModel ? e.model : null,
+        project: rowProject,
       };
       rows.set(key, row);
       rowCost.set(key, 0);
@@ -378,9 +394,10 @@ function runHistory(q: HistoryQuery): HistoryResult {
     (a, b) =>
       Date.parse(a.bucketStart) - Date.parse(b.bucketStart) ||
       a.provider.localeCompare(b.provider) ||
-      (a.model ?? '').localeCompare(b.model ?? '')
+      (a.model ?? '').localeCompare(b.model ?? '') ||
+      (a.project ?? '').localeCompare(b.project ?? '')
   );
-  return { rows: list, totals, byProvider };
+  return { rows: list, totals, byProvider, projects: [...projects].sort((a, b) => a.localeCompare(b)) };
 }
 
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */

@@ -59,9 +59,10 @@ function result(provider: ProviderId, totalTokens: number): HistoryResult {
     outputTokens: 0, reasoningTokens: 0, totalTokens, requests: 1, estimatedCostUsd: 0.01,
   };
   return {
-    rows: [{ ...totals, bucketStart: '2026-09-20T00:00:00Z', provider, model: null }],
+    rows: [{ ...totals, bucketStart: '2026-09-20T00:00:00Z', provider, model: null, project: null }],
     totals,
     byProvider: { [provider]: totals },
+    projects: [],
   };
 }
 

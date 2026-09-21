@@ -55,17 +55,7 @@ fn apply_rect(app: &AppHandle, win: &tauri::WebviewWindow, req: &PopoverRequest)
     let Some((rect, scale)) = desired_rect(app, req) else {
         return;
     };
-    let (position, size) = rect.to_physical(scale);
-    // See the note in `sidebar::place_sidebar` about move+resize on GTK/X11.
-    if let Err(e) = win.set_position(position) {
-        log::warn!("popover set_position failed: {e}");
-    }
-    if let Err(e) = window::set_overlay_size(win, size) {
-        log::warn!("popover set_size failed: {e}");
-    }
-    if let Err(e) = win.set_position(position) {
-        log::warn!("popover set_position failed: {e}");
-    }
+    window::place_overlay(win, rect, scale);
     log::debug!(
         "popover placed at {rect:?} for {}#{}",
         req.provider,

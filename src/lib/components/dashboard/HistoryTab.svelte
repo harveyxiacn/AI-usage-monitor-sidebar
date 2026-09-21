@@ -8,7 +8,7 @@
   import { onMount } from 'svelte';
   import UsageChart from '$lib/components/UsageChart.svelte';
   import { exportUsageCsv, getUsageHistory, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
-  import { historyCsv, historyRange, localDateInput, type HistoryPreset } from '$lib/history';
+  import { historyCsv, historyRange, localDateInput, projectLabels, projectName, type HistoryPreset } from '$lib/history';
   import { formatBucket, formatCost, formatInt, formatTokens } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import type {
@@ -34,6 +34,9 @@
   let bucket = $state<Bucket>('day');
   let provider = $state<ProviderId | ''>('');
   let groupByModel = $state(false);
+  let groupByProject = $state(false);
+  let project = $state<string | null>(null);
+  let projects = $state<string[]>([]);
   let metric = $state<'tokens' | 'cost'>('tokens');
 
   let result = $state<HistoryResult | null>(null);
@@ -50,7 +53,7 @@
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
 
-  let sortKey = $state<'bucketStart' | 'provider' | 'model' | keyof TokenTotals>('bucketStart');
+  let sortKey = $state<'bucketStart' | 'provider' | 'model' | 'project' | keyof TokenTotals>('bucketStart');
   let sortDir = $state<1 | -1>(-1);
 
   /** [fromMs, toMs) for the active preset; custom uses whole local days. */
@@ -65,6 +68,11 @@
   // keep the bucket legal when the range shrinks/grows underneath it
   $effect(() => {
     if (!hourAllowed && bucket === 'hour') bucket = 'day';
+  });
+
+  // …and keep the sort on a column that is still on screen
+  $effect(() => {
+    if ((sortKey === 'model' && !groupByModel) || (sortKey === 'project' && !showProject)) sortKey = 'bucketStart';
   });
 
   function pickPreset(next: HistoryPreset) {
@@ -96,9 +104,14 @@
         to: new Date(activeRange.to).toISOString(),
         bucket,
         groupByModel,
+        groupByProject,
+        project,
         provider: provider === '' ? null : provider,
       });
-      if (id === requestId && !disposed) result = next;
+      if (id === requestId && !disposed) {
+        result = next;
+        projects = next.projects;
+      }
     } catch (e) {
       if (id === requestId && !disposed) error = String(e);
     } finally {
@@ -108,7 +121,7 @@
 
   // refetch whenever a query input changes
   $effect(() => {
-    void [range, bucket, groupByModel, provider];
+    void [range, bucket, groupByModel, groupByProject, provider, project];
     void load();
   });
 
@@ -145,6 +158,13 @@
 
   const rows = $derived(result?.rows ?? []);
   const totals = $derived(result?.totals ?? null);
+  // the active filter stays selectable even when the new range no longer lists it
+  const projectOptions = $derived(
+    [...new Set(project === null ? projects : [...projects, project])].sort((a, b) => a.localeCompare(b))
+  );
+  const projectNames = $derived(projectLabels(projectOptions, t('history.project.unassigned')));
+  const showProject = $derived(groupByProject || project !== null);
+  const projectLabel = (value: string) => projectNames.get(value) ?? projectName(value, t('history.project.unassigned'));
 
   const providerTotals = $derived.by(() => {
     const by = result?.byProvider ?? {};
@@ -162,7 +182,7 @@
       let cmp: number;
       if (key === 'bucketStart') cmp = Date.parse(a.bucketStart) - Date.parse(b.bucketStart);
       else if (key === 'provider') cmp = a.provider.localeCompare(b.provider);
-      else if (key === 'model') cmp = (a.model ?? '').localeCompare(b.model ?? '');
+      else if (key === 'model' || key === 'project') cmp = (a[key] ?? '').localeCompare(b[key] ?? '');
       else cmp = (a[key] ?? 0) - (b[key] ?? 0);
       return cmp * dir || Date.parse(a.bucketStart) - Date.parse(b.bucketStart);
     });
@@ -173,7 +193,7 @@
     if (sortKey === key) sortDir = sortDir === 1 ? -1 : 1;
     else {
       sortKey = key;
-      sortDir = key === 'provider' || key === 'model' ? 1 : -1;
+      sortDir = key === 'provider' || key === 'model' || key === 'project' ? 1 : -1;
     }
   }
 
@@ -273,6 +293,17 @@
         <option value="codex">Codex</option>
       </select>
 
+      <label class="ctl-label" for="project">{t('history.project')}</label>
+      <select id="project" class="field project-select"
+        value={project === null ? 'all' : `project:${project}`}
+        title={project === null ? t('history.project.all') : project || t('history.project.unassigned')}
+        onchange={(e) => (project = e.currentTarget.value === 'all' ? null : e.currentTarget.value.slice('project:'.length))}>
+        <option value="all">{t('history.project.all')}</option>
+        {#each projectOptions as path (path)}
+          <option value={`project:${path}`} title={path || t('history.project.unassigned')}>{projectLabel(path)}</option>
+        {/each}
+      </select>
+
       <label class="ctl-label" for="group">{t('history.groupBy')}</label>
       <select
         id="group"
@@ -283,6 +314,11 @@
         <option value="provider">{t('history.groupBy.provider')}</option>
         <option value="model">{t('history.groupBy.model')}</option>
       </select>
+
+      <label class="project-group">
+        <input type="checkbox" bind:checked={groupByProject} />
+        {t('history.groupByProject')}
+      </label>
 
       <div class="segmented" role="group" aria-label={t('history.metric')}>
         <button class:active={metric === 'tokens'} aria-pressed={metric === 'tokens'} onclick={() => (metric = 'tokens')}>
@@ -325,7 +361,7 @@
     {#if loading}
       <p class="muted" role="status">{t('common.loading')}</p>
     {:else if result}
-      <UsageChart {rows} {bucket} {groupByModel} {metric} {themeKey} />
+      <UsageChart {rows} {bucket} {groupByModel} {groupByProject} {projectNames} {metric} {themeKey} />
     {/if}
   </div>
 
@@ -369,14 +405,15 @@
       <p class="muted">{t('common.loading')}</p>
     {:else if result && sortedRows.length === 0}
       <p class="muted">{t('history.noRows')}</p>
+      {#if project !== null}<button class="btn clear-project" onclick={() => (project = null)}>{t('history.project.clear')}</button>{/if}
     {:else if sortedRows.length > 0}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              {#each [['bucketStart', 'history.table.bucket'], ['provider', 'history.table.provider'], ...(groupByModel ? [['model', 'history.table.model']] : []), ['inputTokens', 'history.input'], ['cacheReadTokens', 'history.cacheRead'], ['cacheWriteTokens', 'history.cacheWrite'], ['outputTokens', 'history.output'], ['requests', 'history.requests'], ['totalTokens', 'history.table.total'], ['estimatedCostUsd', 'history.estCost']] as [key, label] (key)}
+              {#each [['bucketStart', 'history.table.bucket'], ['provider', 'history.table.provider'], ...(groupByModel ? [['model', 'history.table.model']] : []), ...(showProject ? [['project', 'history.project']] : []), ['inputTokens', 'history.input'], ['cacheReadTokens', 'history.cacheRead'], ['cacheWriteTokens', 'history.cacheWrite'], ['outputTokens', 'history.output'], ['requests', 'history.requests'], ['totalTokens', 'history.table.total'], ['estimatedCostUsd', 'history.estCost']] as [key, label] (key)}
                 <th
-                  class:num={key !== 'bucketStart' && key !== 'provider' && key !== 'model'}
+                  class:num={key !== 'bucketStart' && key !== 'provider' && key !== 'model' && key !== 'project'}
                   aria-sort={sortKey === key ? (sortDir === 1 ? 'ascending' : 'descending') : 'none'}
                 >
                   <button onclick={() => sortBy(key as typeof sortKey)}>
@@ -388,11 +425,12 @@
             </tr>
           </thead>
           <tbody>
-            {#each sortedRows as r, i (r.bucketStart + r.provider + (r.model ?? '') + i)}
+            {#each sortedRows as r, i (JSON.stringify([r.bucketStart, r.provider, r.model, r.project, i]))}
               <tr>
                 <td>{formatBucket(r.bucketStart, bucket)}</td>
                 <td>{providerName(r.provider)}</td>
                 {#if groupByModel}<td class="model" title={r.model ?? ''}>{r.model ?? '—'}</td>{/if}
+                {#if showProject}<td class="project-name" title={r.project || t('history.project.unassigned')}>{projectLabel(r.project ?? '')}</td>{/if}
                 <td class="num mono">{formatTokens(r.inputTokens)}</td>
                 <td class="num mono">{formatTokens(r.cacheReadTokens)}</td>
                 <td class="num mono">{formatTokens(r.cacheWriteTokens)}</td>
@@ -465,6 +503,29 @@
     font-size: 0.75rem;
     color: var(--muted);
     white-space: nowrap;
+  }
+
+  .project-select {
+    min-width: 8rem;
+    /* a deep path must never widen the controls row past the card */
+    max-width: min(100%, 22rem);
+    text-overflow: ellipsis;
+  }
+
+  .project-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+  }
+
+  .project-group input { accent-color: var(--focus); }
+  .clear-project { align-self: flex-start; }
+
+  .project-name {
+    max-width: 18rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .segmented {
