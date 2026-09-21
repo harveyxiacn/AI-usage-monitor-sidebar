@@ -2,8 +2,11 @@
 // One instance per window (each Tauri window is its own page load); the
 // `settings-updated` event keeps the three windows in sync.
 import { applyWindowSettings, getSettings, onSettingsUpdated, updateSettings, type Unlisten } from '$lib/api';
+import { defaultSidebarItems } from '$lib/sidebar-items';
 import type { ColorSettings, Settings, SizeSettings } from '$lib/types';
 import { SettingsWriter, type SettingsPatch } from '$lib/settings-writer';
+
+export { defaultSidebarItems };
 
 /** Contract defaults for the user-tunable palette (empty = keep the theme's). */
 export const defaultColors: ColorSettings = {
@@ -67,8 +70,12 @@ export const defaultSettings: Settings = {
   showScopedRing: true,
   percentMode: 'used',
   showPercentLabel: true,
+  sidebarItems: structuredClone(defaultSidebarItems),
   refreshIntervalSec: 60,
-  providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
+  providers: {
+    claude: { enabled: true, showInSidebar: true, order: 0 },
+    codex: { enabled: true, showInSidebar: true, order: 1 },
+  },
   ingestEnabled: true,
   autostart: false,
   opacity: 1,
@@ -160,7 +167,10 @@ class SettingsStore {
   }
 
   /** Convenience for the per-provider record (shallow-merged by the backend). */
-  async patchProvider(id: string, next: { enabled?: boolean; order?: number }): Promise<void> {
+  async patchProvider(
+    id: string,
+    next: { enabled?: boolean; showInSidebar?: boolean; order?: number }
+  ): Promise<void> {
     await this.patch({ providers: { [id]: next } });
   }
 }

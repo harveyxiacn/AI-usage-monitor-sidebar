@@ -167,11 +167,11 @@
             thresholds={s.thresholds}
             size={s.sizes.ringSize}
             stroke={s.sizes.ringStroke}
-            showPercentLabel={s.showPercentLabel}
+            showPercentLabel={s.sidebarItems.percentLabel}
             percentMode={s.percentMode}
           >
             {#snippet logo(logoSize)}
-              <ProviderLogo provider="claude" size={logoSize} />
+              {#if s.sidebarItems.logo}<ProviderLogo provider="claude" size={logoSize} />{/if}
             {/snippet}
           </Ring>
         </div>

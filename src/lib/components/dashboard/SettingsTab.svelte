@@ -19,7 +19,7 @@
     setPricing,
   } from '$lib/api';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
-  import { settings } from '$lib/stores/settings.svelte';
+  import { defaultSidebarItems, settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import type {
     AppInfo,
@@ -31,6 +31,7 @@
     PricingTable,
     ProviderId,
     RingMode,
+    SidebarItems,
     SurfaceStyle,
     Theme,
     VerticalAlign,
@@ -195,6 +196,8 @@
   const alignLabel = (v: VerticalAlign) =>
     alongIsHorizontal ? `settings.horizontalAlign.${ALIGN_LABELS[v]}` : `settings.verticalAlign.${v}`;
   const RING_MODES: RingMode[] = ['concentric', 'primary', 'all'];
+  /** "Sidebar items" rows, in the order they are declared in the contract. */
+  const SIDEBAR_ITEM_KEYS = Object.keys(defaultSidebarItems) as (keyof SidebarItems)[];
   const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
 </script>
@@ -249,14 +252,6 @@
       />
     </Field>
 
-    <Field label={t('settings.showPercentLabel')}>
-      <Toggle
-        checked={s.showPercentLabel}
-        label={t('settings.showPercentLabel')}
-        onchange={(v) => void settings.patch({ showPercentLabel: v })}
-      />
-    </Field>
-
     <Field label={t('settings.percentMode')}>
       <select aria-label={t('settings.percentMode')} class="field" value={s.percentMode} onchange={(e) => void settings.patch({ percentMode: e.currentTarget.value as PercentMode })}>
         {#each PERCENT_MODES as v (v)}<option value={v}>{tDyn(`settings.percentMode.${v}`)}</option>{/each}
@@ -269,20 +264,26 @@
       </select>
     </Field>
 
-    <Field label={t('settings.showScopedRing')}>
-      <Toggle
-        checked={s.showScopedRing}
-        label={t('settings.showScopedRing')}
-        disabled={s.ringMode !== 'concentric'}
-        onchange={(v) => void settings.patch({ showScopedRing: v })}
-      />
-    </Field>
-
     <Field label={t('settings.surfaceStyle')}>
       <select aria-label={t('settings.surfaceStyle')} class="field" value={s.surfaceStyle} onchange={(e) => void settings.patch({ surfaceStyle: e.currentTarget.value as SurfaceStyle })}>
         {#each SURFACE_STYLES as v (v)}<option value={v}>{tDyn(`settings.surfaceStyle.${v}`)}</option>{/each}
       </select>
     </Field>
+  </article>
+
+  <article class="card group">
+    <h3>{t('settings.sidebarItems')}</h3>
+    <p class="note">{t('settings.sidebarItems.hint')}</p>
+    {#each SIDEBAR_ITEM_KEYS as key (key)}
+      <Field label={tDyn(`settings.sidebarItems.${key}`)}>
+        <Toggle
+          checked={s.sidebarItems[key]}
+          label={tDyn(`settings.sidebarItems.${key}`)}
+          disabled={key === 'scoped' && s.ringMode !== 'concentric'}
+          onchange={(v) => void settings.patch({ sidebarItems: { [key]: v } })}
+        />
+      </Field>
+    {/each}
   </article>
 
   <SizeColourGroup />
@@ -424,13 +425,26 @@
         <span class="pname">{providerName(id)}</span>
         <button class="btn icon" disabled={i === 0} onclick={() => void move(id, -1)} aria-label={t('common.up')}>↑</button>
         <button class="btn icon" disabled={i === providerRows.length - 1} onclick={() => void move(id, 1)} aria-label={t('common.down')}>↓</button>
-        <Toggle
-          checked={s.providers[id]?.enabled ?? true}
-          label={`${providerName(id)} — ${t('settings.providerEnabled')}`}
-          onchange={(v) => void settings.patchProvider(id, { enabled: v })}
-        />
+        <span class="pcol" title={t('settings.providerEnabled')}>
+          <span class="pcap">{t('settings.providerEnabled.short')}</span>
+          <Toggle
+            checked={s.providers[id]?.enabled ?? true}
+            label={`${providerName(id)} — ${t('settings.providerEnabled')}`}
+            onchange={(v) => void settings.patchProvider(id, { enabled: v })}
+          />
+        </span>
+        <span class="pcol" title={t('settings.sidebarItems.provider')}>
+          <span class="pcap">{t('settings.sidebarItems.provider.short')}</span>
+          <Toggle
+            checked={s.providers[id]?.showInSidebar ?? true}
+            label={`${providerName(id)} — ${t('settings.sidebarItems.provider')}`}
+            disabled={!(s.providers[id]?.enabled ?? true)}
+            onchange={(v) => void settings.patchProvider(id, { showInSidebar: v })}
+          />
+        </span>
       </div>
     {/each}
+    <p class="note">{t('settings.providers.hint')}</p>
   </article>
 
   <article class="card group wide">
@@ -629,6 +643,28 @@
   .icon {
     padding: 0.125rem 0.4375rem;
     line-height: 1.2;
+  }
+
+  /* the two provider switches need a caption each to be told apart */
+  .pcol {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.125rem;
+    flex: none;
+  }
+
+  .pcap {
+    font-size: 0.625rem;
+    line-height: 1;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .note {
+    margin: 0.375rem 0;
+    font-size: 0.6875rem;
+    color: var(--faint);
   }
 
   .danger {
