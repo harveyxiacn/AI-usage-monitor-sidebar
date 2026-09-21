@@ -2,6 +2,9 @@
 //!
 //! Loading never fails: a missing, partial or partly-invalid file degrades to
 //! the defaults for the fields it cannot supply.
+//!
+//! The file is also **watched**, so a user or an AI agent can edit it while
+//! the app runs (see `watch`).
 
 use crate::model::{ColorSettings, ProviderSettings, Settings, SizeSettings};
 use anyhow::{Context, Result};
@@ -29,19 +32,18 @@ pub fn load(config_dir: &Path) -> Settings {
             return Settings::default();
         }
     };
-    let value: Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!(
-                "{} is not valid JSON ({}), using defaults",
-                path.display(),
-                e
-            );
-            return Settings::default();
-        }
-    };
-    // `merge` is field-by-field, so a single bad field cannot poison the rest.
-    merge(&Settings::default(), &value)
+    parse(&text).unwrap_or_else(|| {
+        log::warn!("{} is not valid JSON, using defaults", path.display());
+        Settings::default()
+    })
+}
+
+/// Turn the *contents* of a settings file into usable settings, or `None`
+/// when it is not valid JSON (a half-written file, say). `merge` is
+/// field-by-field, so a single bad field cannot poison the rest.
+pub fn parse(text: &str) -> Option<Settings> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    Some(merge(&Settings::default(), &value))
 }
 
 /// Shallow merge of a JSON patch onto `base`.
@@ -187,11 +189,17 @@ fn clamp_f64(v: f64, min: f64, max: f64, fallback: f64) -> f64 {
     }
 }
 
+/// The exact bytes this process wrote last. The file watcher compares against
+/// them so our own atomic save never bounces back as an "external" change.
+static LAST_WRITTEN: parking_lot::Mutex<Option<Vec<u8>>> = parking_lot::Mutex::new(None);
+
 /// Write `settings.json` atomically (temp file + rename).
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<()> {
     std::fs::create_dir_all(config_dir).ok();
     let bytes = serde_json::to_vec_pretty(settings).context("serialize settings")?;
-    write_atomic(&settings_path(config_dir), &bytes)
+    write_atomic(&settings_path(config_dir), &bytes)?;
+    *LAST_WRITTEN.lock() = Some(bytes);
+    Ok(())
 }
 
 /// Write `bytes` to `path` via a sibling temp file + rename, so a crash can
@@ -275,6 +283,131 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
     if let Err(e) = app.emit(events::SETTINGS_UPDATED, settings) {
         log::warn!("could not emit {}: {e}", events::SETTINGS_UPDATED);
     }
+}
+
+// ---------- live reload of an externally edited settings.json ----------
+
+/// Quiet period after the last file-system event before re-reading, so an
+/// editor's write-truncate-write dance produces one reload, not three.
+const RELOAD_DEBOUNCE_MS: u64 = 300;
+
+/// What the watcher should do with the settings file as it is right now.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReloadAction {
+    /// Our own write, or a file that says exactly what memory already says.
+    Ignore,
+    /// Unreadable or not valid JSON *yet* — an editor mid-write. Wait for the
+    /// next event instead of resetting anything to the defaults.
+    Wait,
+    /// Somebody else changed the file: apply these settings.
+    Apply(Box<Settings>),
+}
+
+/// Decide what to do, given the bytes currently on disk (`None` = the file
+/// could not be read), the bytes this process wrote last, and the settings
+/// currently live in memory.
+///
+/// Reading the file at decision time (rather than trusting the event) is what
+/// keeps a stale event from clobbering a newer in-memory change: whatever the
+/// event said, the comparison is always against the current file and the
+/// current memory.
+pub fn reload_action(
+    on_disk: Option<&[u8]>,
+    own_write: Option<&[u8]>,
+    in_memory: &Settings,
+) -> ReloadAction {
+    let Some(bytes) = on_disk else {
+        return ReloadAction::Wait;
+    };
+    if own_write == Some(bytes) {
+        return ReloadAction::Ignore;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ReloadAction::Wait;
+    };
+    match parse(text) {
+        None => ReloadAction::Wait,
+        Some(next) if next == *in_memory => ReloadAction::Ignore,
+        Some(next) => ReloadAction::Apply(Box::new(next)),
+    }
+}
+
+/// True when a watcher event concerns `settings.json` itself. The watch is on
+/// the *directory* (editors and our own atomic save replace the file by
+/// rename, which a watch on the file would lose), so neighbours like
+/// `pricing.json` and our `.settings.json.<pid>.<n>.tmp` must be filtered out.
+pub fn event_touches_settings(paths: &[PathBuf]) -> bool {
+    paths
+        .iter()
+        .any(|p| p.file_name().and_then(|n| n.to_str()) == Some(SETTINGS_FILE))
+}
+
+/// Re-read `settings.json` and hot-apply an external edit.
+fn apply_external(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let path = settings_path(&state.config_dir);
+    let on_disk = std::fs::read(&path).ok();
+    let own = LAST_WRITTEN.lock().clone();
+    // The write lock is held across the comparison so a concurrent
+    // `update_settings` cannot be overwritten by a file that predates it.
+    let next = {
+        let mut current = state.settings.write();
+        match reload_action(on_disk.as_deref(), own.as_deref(), &current) {
+            ReloadAction::Ignore | ReloadAction::Wait => return,
+            ReloadAction::Apply(next) => {
+                *current = (*next).clone();
+                *next
+            }
+        }
+    };
+    log::info!("{} changed on disk, applied", path.display());
+    emit_updated(app, &next);
+}
+
+/// Watch the config directory and hot-apply external edits of
+/// `settings.json`, so editing the file (by hand or by an AI agent) does not
+/// need a restart. Runs on its own thread which owns the watcher for the
+/// lifetime of the app.
+pub fn watch(app: AppHandle) {
+    std::thread::spawn(move || {
+        use notify::{RecursiveMode, Watcher};
+        use std::sync::mpsc::RecvTimeoutError;
+        let dir = app.state::<AppState>().config_dir.clone();
+        std::fs::create_dir_all(&dir).ok();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("settings are not watched ({e}); edits need a restart");
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            log::warn!("cannot watch {} ({e}); edits need a restart", dir.display());
+            return;
+        }
+        log::debug!("watching {} for external settings edits", dir.display());
+        let mut pending = false;
+        loop {
+            let received = if pending {
+                rx.recv_timeout(std::time::Duration::from_millis(RELOAD_DEBOUNCE_MS))
+            } else {
+                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            };
+            match received {
+                // Any further event restarts the debounce window.
+                Ok(Ok(event)) if event_touches_settings(&event.paths) => pending = true,
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    pending = false;
+                    apply_external(&app);
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -448,6 +581,108 @@ mod tests {
         assert_eq!(merged.sizes.bar_gap, base.sizes.bar_gap);
         assert_eq!(merged.thresholds.warn, 60.0);
         assert_eq!(merged.thresholds.critical, base.thresholds.critical);
+    }
+
+    #[test]
+    fn an_external_edit_is_applied_and_our_own_write_is_not() {
+        let memory = Settings::default();
+        let own = serde_json::to_vec_pretty(&memory).unwrap();
+
+        // Our own atomic save must not bounce back as an external change.
+        assert_eq!(
+            reload_action(Some(&own), Some(&own), &memory),
+            ReloadAction::Ignore
+        );
+        // Neither must a file that only *says* what memory already holds
+        // (a different process rewriting the same values, reformatted).
+        let same = br#"{"edge":"right","theme":"dark"}"#;
+        assert_eq!(
+            reload_action(Some(same), Some(&own), &memory),
+            ReloadAction::Ignore
+        );
+
+        // A real edit is applied, merged and clamped exactly like start-up.
+        let edited = br#"{"edge":"left","opacity":0.05,"refreshIntervalSec":3}"#;
+        let ReloadAction::Apply(next) = reload_action(Some(edited), Some(&own), &memory) else {
+            panic!("an external edit must be applied");
+        };
+        assert_eq!(next.edge, Edge::Left);
+        assert_eq!(next.opacity, 0.3, "clamped like load()");
+        assert_eq!(next.refresh_interval_sec, 15);
+        assert_eq!(next.theme, memory.theme, "untouched fields survive");
+    }
+
+    #[test]
+    fn a_half_written_or_unreadable_file_is_waited_out_never_reset() {
+        let memory = Settings {
+            auto_hide: true,
+            ..Settings::default()
+        };
+        // Mid-rename the file can be missing for an instant.
+        assert_eq!(reload_action(None, None, &memory), ReloadAction::Wait);
+        // An editor truncating before writing, or writing half a document.
+        assert_eq!(reload_action(Some(b""), None, &memory), ReloadAction::Wait);
+        assert_eq!(
+            reload_action(Some(br#"{"edge": "le"#), None, &memory),
+            ReloadAction::Wait
+        );
+        assert_eq!(
+            reload_action(Some(&[0x7b, 0xff, 0xfe]), None, &memory),
+            ReloadAction::Wait,
+            "invalid UTF-8 is not valid JSON either"
+        );
+    }
+
+    #[test]
+    fn a_newer_in_memory_change_is_not_clobbered_by_an_older_file() {
+        // The user (or another window) just saved `autoHide`; the watcher is
+        // only now getting round to an event from before that save. Because
+        // the decision compares the *current* file with the *current* memory,
+        // and the current file is our own write, nothing happens.
+        let memory = Settings {
+            auto_hide: true,
+            ..Settings::default()
+        };
+        let own = serde_json::to_vec_pretty(&memory).unwrap();
+        assert_eq!(
+            reload_action(Some(&own), Some(&own), &memory),
+            ReloadAction::Ignore
+        );
+    }
+
+    #[test]
+    fn only_settings_json_events_trigger_a_reload() {
+        let touches = |name: &str| event_touches_settings(&[PathBuf::from("/cfg").join(name)]);
+        assert!(touches(SETTINGS_FILE));
+        assert!(!touches("pricing.json"));
+        assert!(!touches(".settings.json.1234.0.tmp"));
+        assert!(!event_touches_settings(&[]));
+        // A rename event carries both paths; the destination is what counts.
+        assert!(event_touches_settings(&[
+            PathBuf::from("/cfg/.settings.json.1234.0.tmp"),
+            PathBuf::from("/cfg/settings.json"),
+        ]));
+    }
+
+    #[test]
+    fn a_real_save_is_recognised_as_our_own_write() {
+        let dir = tempdir();
+        let s = Settings {
+            vertical_offset: 42,
+            ..Settings::default()
+        };
+        save(&dir, &s).unwrap();
+        let on_disk = std::fs::read(settings_path(&dir)).unwrap();
+        // `save` records exactly these bytes (the marker itself is a process
+        // global, so this reproduces it instead of racing other tests).
+        let own = serde_json::to_vec_pretty(&s).unwrap();
+        assert_eq!(own, on_disk, "the marker is what landed on disk");
+        assert!(LAST_WRITTEN.lock().is_some(), "saving records a marker");
+        assert_eq!(
+            reload_action(Some(&on_disk), Some(&own), &s),
+            ReloadAction::Ignore
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

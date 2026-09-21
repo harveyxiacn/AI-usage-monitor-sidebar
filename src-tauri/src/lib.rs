@@ -69,6 +69,8 @@ pub fn run() {
             app.manage(state::AppState::new(config_dir, data_dir));
             window::setup(app.handle())?;
             scheduler::start(app.handle().clone());
+            // External edits of settings.json apply without a restart.
+            commands::settings::watch(app.handle().clone());
 
             #[cfg(debug_assertions)]
             if std::env::var("AI_USAGE_SIDEBAR_DEVTOOLS").as_deref() == Ok("1") {

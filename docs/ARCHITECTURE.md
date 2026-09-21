@@ -290,8 +290,16 @@ requests.
 `Settings.sizes` (px at scale 1: `ringSize` 40–96, `ringStroke` 3–8, `barGap`
 6–40, `barPadding` 4–24, `cornerRadius` 8–40, `labelSize` 9–18) are applied by
 the frontend as CSS custom properties; the backend only clamps and persists
-them. `update_settings` merges `colors`, `sizes`, `thresholds` and each
-provider's fields individually. Invalid nested members do not discard valid
+them. `settings.json` is watched (`settings::watch`, `notify` on the config
+*directory*, 300 ms debounce): an external edit — by the user or by an AI
+agent — is re-read, merged and clamped exactly like start-up, swapped into
+`AppState.settings` and published as `settings-updated`, so no restart is
+needed. The decision is the pure `settings::reload_action`: our own atomic
+save is recognised by its bytes and ignored, a file that is missing or does
+not parse yet is waited out rather than treated as empty, and the comparison
+always uses the file and the memory *as they are now*, so a late event cannot
+clobber a newer in-memory change. `update_settings` merges `colors`, `sizes`,
+`thresholds` and each provider's fields individually. Invalid nested members do not discard valid
 siblings. Backend read/merge/write/event emission is serialized, and memory
 changes only after a successful disk write. Each frontend window serializes
 its own saves and keeps newer optimistic edits visible while earlier saves finish.

@@ -120,9 +120,10 @@ A ring in an error state has its message in the popover and in the log.
 
 ## 5. Configure
 
-Settings live in one JSON file. The app reads it **at start-up** and rewrites
-it when the user changes something in the dashboard, so: quit the app (tray →
-Quit, or kill the process), edit, start it again.
+Settings live in one JSON file. The app **watches** it: save your edit and it
+applies within about a second — no restart, no quitting. (It also rewrites the
+file when the user changes something in the dashboard; a half-written file is
+ignored until it parses, so write it atomically or in one go.)
 
 | Platform | Path |
 |---|---|
