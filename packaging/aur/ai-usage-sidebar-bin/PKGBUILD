@@ -3,14 +3,13 @@
 # Repackages the official .deb from the GitHub release. Nothing is compiled,
 # so this is the fast route for Arch/CachyOS/Manjaro users on x86_64.
 #
-# Before publishing: bump pkgver, then run `updpkgsums` (pacman-contrib) to
-# replace the SKIP placeholders below with real checksums, and regenerate
-# .SRCINFO with `makepkg --printsrcinfo > .SRCINFO`.
+# For a new release: bump pkgver, run `updpkgsums` (pacman-contrib) to refresh
+# the checksums, and regenerate .SRCINFO with `makepkg --printsrcinfo > .SRCINFO`.
 
 pkgname=ai-usage-sidebar-bin
 _pkgname=ai-usage-sidebar
 _appname=AI.Usage.Sidebar
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Always-on-top edge sidebar showing Claude Code / Codex rate-limit quotas and token usage history'
 arch=('x86_64')
@@ -29,9 +28,8 @@ source=(
   "LICENSE-$pkgver::$url/raw/v$pkgver/LICENSE"
 )
 noextract=("$pkgname-$pkgver.deb")
-# TODO before publishing: `updpkgsums` fills these in. SKIP means "not verified".
-sha256sums=('SKIP'
-            'SKIP')
+sha256sums=('5f76a4a77e2e38b869b0a77ae0a4e7418561cdd4c67362540e111608eeeb2dee'
+            'e89fa281cb33943f7d1f87afd27ae876ed0296e9a5655411cb0cdd819bfd41a9')
 
 package() {
   # A .deb is an ar archive holding data.tar.<compression>; bsdtar reads both.

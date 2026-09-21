@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
 PackageIdentifier: harveyxiacn.AIUsageSidebar
-PackageVersion: 0.1.1
+PackageVersion: 0.2.0
 PackageLocale: en-US
 Publisher: Harvey Xia
 PublisherUrl: https://github.com/harveyxiacn
@@ -30,6 +30,6 @@ Tags:
   - quota
   - sidebar
   - usage
-ReleaseNotesUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/tag/v0.1.1
+ReleaseNotesUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/tag/v0.2.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

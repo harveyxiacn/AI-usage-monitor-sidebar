@@ -51,6 +51,16 @@ way to retry a single failed platform.
 
 ---
 
+### 1.1 Never name the integration branch like the tag
+
+`v0.2.0` was developed on a branch called `v0.2.0`. After the merge,
+`git push origin v0.2.0` was refused ("cannot push some refs") because the name
+matched both the branch and the new tag, and the release workflow checks out
+`github.ref_name` by name, which would have been just as ambiguous. Use a
+branch name such as `release/0.2.0`; if it happens anyway, delete the merged
+branch (`git push origin --delete refs/heads/<name>`) and push the tag
+explicitly (`git push origin refs/tags/<name>`).
+
 ## 2. The updater signing key
 
 ### 2.1 What is already in the repository
