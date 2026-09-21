@@ -113,13 +113,29 @@ pub struct AppSnapshot {
 
 // ---------- settings ----------
 
+/// The screen edge the bar is docked to. `Left`/`Right` make it a vertical
+/// pill, `Top`/`Bottom` a horizontal strip.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Edge {
     Left,
     Right,
+    Top,
+    Bottom,
 }
 
+impl Edge {
+    /// True for `Top`/`Bottom`: the bar runs along the x axis, so the
+    /// "position along the edge" settings apply horizontally.
+    pub fn is_horizontal(self) -> bool {
+        matches!(self, Edge::Top | Edge::Bottom)
+    }
+}
+
+/// Position **along** the docked edge. The wire values are historical (the bar
+/// used to be vertical only): `Top` means start (top of a left/right edge, left
+/// of a top/bottom edge), `Bottom` means end. `vertical_offset` is added on top
+/// of it, positive towards the end.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VerticalAlign {
@@ -231,7 +247,10 @@ pub struct Settings {
     pub theme: Theme,
     pub surface_style: SurfaceStyle,
     pub edge: Edge,
+    /// Position along the docked edge (see [`VerticalAlign`]).
     pub vertical_align: VerticalAlign,
+    /// Offset along the docked edge in px, positive towards its end (down on a
+    /// left/right edge, right on a top/bottom edge).
     pub vertical_offset: i32,
     pub monitor: Option<String>,
     pub auto_hide: bool,
@@ -449,7 +468,14 @@ pub struct AppInfo {
 pub struct PopoverRequest {
     pub provider: String,
     pub ring_index: usize,
+    /// Ring centre **y** in CSS px relative to the sidebar window. Used when
+    /// the bar is docked to a left/right edge.
     pub anchor_y: f64,
+    /// Ring centre **x** in CSS px relative to the sidebar window, used when
+    /// the bar is docked to a top/bottom edge. Absent in requests from older
+    /// frontends, which only ever ran with a vertical bar.
+    #[serde(default)]
+    pub anchor_x: Option<f64>,
     #[serde(default)]
     pub window_kind: Option<WindowKind>,
 }

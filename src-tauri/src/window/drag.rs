@@ -1,12 +1,12 @@
 //! Dragging the edge bar. [PLATFORM]
 //!
 //! The webview reports how far the pointer travelled since the drag began; the
-//! bar follows freely and, on release, snaps to the nearer vertical edge of the
-//! monitor it was dropped on. The drop is stored in the ordinary settings
-//! (`edge`, `monitor`, `verticalOffset`), so it survives restarts and the
-//! settings tab keeps telling the truth.
+//! bar follows freely and, on release, snaps to the nearest of the four edges
+//! of the monitor it was dropped on. The drop is stored in the ordinary
+//! settings (`edge`, `monitor`, `verticalOffset`), so it survives restarts and
+//! the settings tab keeps telling the truth.
 
-use crate::model::{windows, Edge, Settings, VerticalAlign};
+use crate::model::{windows, Edge, Settings};
 use crate::window::{self, monitors, monitors::LogicalRect, monitors::MonitorRect};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
@@ -20,13 +20,21 @@ pub enum DragPhase {
     Cancel,
 }
 
-/// Where a dropped bar ends up.
+/// Where a dropped bar ends up. `vertical_offset` is the offset **along** the
+/// chosen edge (`Settings::vertical_offset`): y for left/right, x for
+/// top/bottom.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Drop {
     pub monitor: String,
     pub edge: Edge,
     pub vertical_offset: i32,
 }
+
+/// How much closer another edge has to be before a drop moves the bar off the
+/// edge it is already on, as a fraction of the monitor's half extent. Without
+/// it a drop into a corner — where two edges are equally near — would flip
+/// between them on a single pixel of pointer travel.
+const EDGE_HYSTERESIS: f64 = 0.08;
 
 /// The monitor holding the centre of `rect`, else the closest one.
 fn monitor_at<'a>(all: &'a [MonitorRect], rect: &LogicalRect) -> Option<&'a MonitorRect> {
@@ -40,27 +48,54 @@ fn monitor_at<'a>(all: &'a [MonitorRect], rect: &LogicalRect) -> Option<&'a Moni
         .min_by(|a, b| distance(a).total_cmp(&distance(b)))
 }
 
-/// Pure snap maths: nearer edge of the drop monitor, and the offset that makes
-/// [`monitors::sidebar_rect`] reproduce the dropped `y` for the current align.
+/// The edge of `m` that the centre of `rect` is nearest to, keeping `current`
+/// when the difference is within [`EDGE_HYSTERESIS`].
+///
+/// Distances are normalised by the monitor's half width / half height, so the
+/// four zones meet at the monitor's diagonals: on a 3440×1440 ultrawide "near
+/// the top" must not mean "anywhere in the upper 720 px".
+fn nearest_edge(m: LogicalRect, rect: &LogicalRect, current: Edge) -> Edge {
+    // A bar dropped past the monitor is treated as dropped on its border.
+    let cx = rect.center_x().max(m.x).min(m.right());
+    let cy = rect.center_y().max(m.y).min(m.bottom());
+    let half_w = (m.w / 2.0).max(1.0);
+    let half_h = (m.h / 2.0).max(1.0);
+    let distances = [
+        (Edge::Left, (cx - m.x) / half_w),
+        (Edge::Right, (m.right() - cx) / half_w),
+        (Edge::Top, (cy - m.y) / half_h),
+        (Edge::Bottom, (m.bottom() - cy) / half_h),
+    ];
+    let (nearest, shortest) = distances
+        .iter()
+        .copied()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap_or((current, 0.0));
+    match distances.iter().find(|(edge, _)| *edge == current) {
+        Some((_, held)) if *held <= shortest + EDGE_HYSTERESIS => current,
+        _ => nearest,
+    }
+}
+
+/// Pure snap maths: nearest edge of the drop monitor, and the offset along it
+/// that makes [`monitors::sidebar_rect`] reproduce the dropped position for
+/// the current align.
 pub fn snap(all: &[MonitorRect], rect: &LogicalRect, settings: &Settings) -> Option<Drop> {
     let mon = monitor_at(all, rect)?;
     let m = mon.rect;
-    let edge = if rect.center_x() < m.center_x() {
-        Edge::Left
+    let edge = nearest_edge(m, rect, settings.edge);
+    // Everything below runs along the edge the bar snapped to.
+    let (dropped, len, min, span) = if edge.is_horizontal() {
+        (rect.x, rect.w.min(m.w), m.x, m.w)
     } else {
-        Edge::Right
+        (rect.y, rect.h.min(m.h), m.y, m.h)
     };
-    let height = rect.h.min(m.h);
-    let y = monitors::clamp_span(rect.y, height, m.y, m.h);
-    let base = match settings.vertical_align {
-        VerticalAlign::Top => m.y,
-        VerticalAlign::Center => m.y + (m.h - height) / 2.0,
-        VerticalAlign::Bottom => m.bottom() - height,
-    };
+    let along = monitors::clamp_span(dropped, len, min, span);
+    let base = monitors::align_start(settings.vertical_align, min, span, len);
     Some(Drop {
         monitor: mon.name.clone(),
         edge,
-        vertical_offset: (y - base).round() as i32,
+        vertical_offset: (along - base).round() as i32,
     })
 }
 
@@ -148,6 +183,7 @@ fn drop_at(app: &AppHandle, rect: LogicalRect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::VerticalAlign;
 
     fn desk() -> Vec<MonitorRect> {
         vec![
@@ -187,13 +223,93 @@ mod tests {
         };
         let drop = snap(
             &desk(),
-            &LogicalRect::new(-200.0, -500.0, 76.0, 200.0),
+            &LogicalRect::new(-200.0, 24.0, 76.0, 200.0),
             &settings,
         )
         .unwrap();
         assert_eq!(drop.monitor, "side");
         assert_eq!(drop.edge, Edge::Right);
         assert_eq!(drop.vertical_offset, 0);
+
+        // Dropped above that monitor: the top edge is the nearest one, and the
+        // stored offset now runs along x.
+        let drop = snap(
+            &desk(),
+            &LogicalRect::new(-200.0, -500.0, 76.0, 200.0),
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(drop.monitor, "side");
+        assert_eq!(drop.edge, Edge::Top);
+        assert_eq!(drop.vertical_offset, -200 + 1280);
+    }
+
+    #[test]
+    fn drop_snaps_to_the_nearest_of_the_four_edges() {
+        let desk = desk();
+        // main is 2560x1440: the zones meet at its diagonals, so a drop in the
+        // middle of the upper half belongs to the top edge, not to a side.
+        let cases = [
+            (1200.0, 40.0, Edge::Top),
+            (1200.0, 1200.0, Edge::Bottom),
+            (60.0, 700.0, Edge::Left),
+            (2400.0, 700.0, Edge::Right),
+        ];
+        for (x, y, expected) in cases {
+            let drop = snap(
+                &desk,
+                &LogicalRect::new(x, y, 76.0, 200.0),
+                &Settings::default(),
+            )
+            .unwrap();
+            assert_eq!(drop.edge, expected, "dropped at {x},{y}");
+        }
+    }
+
+    #[test]
+    fn a_drop_into_a_corner_keeps_the_edge_the_bar_is_on() {
+        let desk = desk();
+        // The top-left corner of `main` is equally near the left and the top
+        // edge; the bar must not flip edges on a pixel of pointer travel.
+        let corner = LogicalRect::new(0.0, 0.0, 76.0, 76.0);
+        for edge in [Edge::Left, Edge::Top] {
+            let settings = Settings {
+                edge,
+                ..Settings::default()
+            };
+            assert_eq!(snap(&desk, &corner, &settings).unwrap().edge, edge);
+        }
+        // Far enough past the diagonal the hysteresis is overruled.
+        let settings = Settings {
+            edge: Edge::Top,
+            ..Settings::default()
+        };
+        let low = LogicalRect::new(0.0, 400.0, 76.0, 200.0);
+        assert_eq!(snap(&desk, &low, &settings).unwrap().edge, Edge::Left);
+    }
+
+    #[test]
+    fn a_horizontal_drop_round_trips_through_sidebar_rect() {
+        let desk = desk();
+        let settings = Settings {
+            edge: Edge::Top,
+            ..Settings::default()
+        };
+        let dropped = LogicalRect::new(420.0, 30.0, 320.0, 76.0);
+        let drop = snap(&desk, &dropped, &settings).unwrap();
+        assert_eq!(drop.monitor, "main");
+        assert_eq!(drop.edge, Edge::Top);
+        assert_eq!(drop.vertical_offset, 420 - (2560 - 320) / 2);
+
+        // The stored offset reproduces the dropped x exactly; the bar itself
+        // goes flush with the edge again.
+        let persisted = Settings {
+            edge: drop.edge,
+            vertical_offset: drop.vertical_offset,
+            ..settings
+        };
+        let rect = monitors::sidebar_rect(&desk[0], &persisted, 320.0, 76.0, true);
+        assert_eq!((rect.x, rect.y), (420.0, 0.0));
     }
 
     #[test]
