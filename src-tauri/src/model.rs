@@ -39,6 +39,29 @@ impl WindowKind {
     }
 }
 
+/// How much the burn-rate estimate can be trusted (sample count + time span).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+/// "At this pace" projection for one quota window — see `forecast.rs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaForecast {
+    /// used percent expected at the reset; never below the current value and
+    /// deliberately *not* capped at 100 (the UI caps it where it must)
+    pub projected_percent_at_reset: f64,
+    /// RFC 3339 UTC, set only when 100 % is reached *before* the reset
+    pub exhausts_at: Option<String>,
+    /// current burn rate in percentage points per hour (always > 0)
+    pub rate_percent_per_hour: f64,
+    pub confidence: ForecastConfidence,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindow {
@@ -51,6 +74,9 @@ pub struct QuotaWindow {
     pub resets_at: Option<String>,
     pub scope: Option<String>,
     pub is_primary: bool,
+    /// Burn-rate projection; absent when there is not enough usable history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<QuotaForecast>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,6 +277,8 @@ pub struct Settings {
     pub colors: ColorSettings,
     pub sizes: SizeSettings,
     pub notifications: bool,
+    /// Warn when a window is on pace to run out before it resets.
+    pub forecast_notifications: bool,
     pub always_on_top: bool,
 }
 
@@ -300,6 +328,7 @@ impl Default for Settings {
             colors: ColorSettings::default(),
             sizes: SizeSettings::default(),
             notifications: false,
+            forecast_notifications: true,
             always_on_top: true,
         }
     }
