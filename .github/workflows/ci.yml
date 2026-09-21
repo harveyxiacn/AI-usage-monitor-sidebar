@@ -1,9 +1,28 @@
 name: CI
 
+# A typo in the README must not spend 45 minutes on three runners, so
+# documentation-only changes skip the build. The two lists below must stay
+# identical; GitHub Actions does not support YAML anchors, so they are spelled
+# out twice on purpose.
+#
+# NOTE: `paths-ignore` makes the whole workflow *not run*, which means its
+# checks never report at all. Do not mark them "required" in branch protection
+# without a companion always-runs job — see docs/RELEASING.md ("Docs-only
+# changes") for why and what to do instead.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'packaging/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'packaging/**'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +40,10 @@ env:
   # exactly this case. Consulted only on windows-x86_64 and only when NASM is
   # absent, so it is a no-op on Linux/macOS and on runners that do ship NASM.
   AWS_LC_SYS_PREBUILT_NASM: 1
+  # CI has no updater signing key (and forks never will), so the bundler must
+  # not try to sign updater artifacts. Releases decide this per run; see
+  # .github/workflows/release.yml and docs/RELEASING.md.
+  NO_UPDATER_CONFIG: --config src-tauri/updater-disabled.conf.json
 
 jobs:
   build:
@@ -60,7 +83,8 @@ jobs:
             curl \
             wget \
             file \
-            libssl-dev
+            libssl-dev \
+            libgtk-layer-shell0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -110,8 +134,25 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
 
+      # `native-smoke` dlopens libgtk-layer-shell.so.0 and resolves every
+      # symbol the Wayland docking path calls. It can only run where the
+      # library exists, which is why it is off by default.
+      - name: cargo test (gtk-layer-shell symbols)
+        if: matrix.platform == 'ubuntu-24.04'
+        working-directory: src-tauri
+        run: 'cargo test --locked --features native-smoke smoke::'
+
       - name: Build the app bundles
-        run: pnpm tauri build --ci -- --locked
+        run: pnpm tauri build --ci ${{ env.NO_UPDATER_CONFIG }} -- --locked
+
+      - name: Upload the Linux binary for the smoke test
+        if: matrix.platform == 'ubuntu-24.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          if-no-files-found: error
+          retention-days: 1
+          path: src-tauri/target/release/ai-usage-sidebar
 
       - name: Upload bundles
         uses: actions/upload-artifact@v4
@@ -127,3 +168,34 @@ jobs:
             src-tauri/target/release/bundle/macos/*.app
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
+
+  # Actually starts the binary. Unit and browser tests cannot see a start-up
+  # panic, a missing runtime library or a sidebar that never gets revealed.
+  smoke:
+    name: Linux start-up smoke test
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the runtime libraries and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 \
+            libayatana-appindicator3-1 \
+            librsvg2-2 \
+            xvfb \
+            dbus-x11
+
+      - name: Download the binary built above
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: bin
+
+      - name: Launch it and wait for `sidebar revealed`
+        run: |
+          chmod +x bin/ai-usage-sidebar
+          scripts/smoke-linux.sh "$PWD/bin/ai-usage-sidebar"
