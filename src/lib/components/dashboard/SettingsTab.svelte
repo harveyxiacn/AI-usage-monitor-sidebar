@@ -385,6 +385,15 @@
       />
     </Field>
 
+    <Field label={t('settings.forecastNotifications')}>
+      <Toggle
+        checked={s.forecastNotifications}
+        disabled={!s.notifications}
+        label={t('settings.forecastNotifications')}
+        onchange={(v) => void settings.patch({ forecastNotifications: v })}
+      />
+    </Field>
+
     <Field label={t('settings.warnThreshold')}>
       <input class="field num" type="number" min="1" max={s.thresholds.critical - 1} step="1"
         value={s.thresholds.warn} aria-label={t('settings.warnThreshold')}

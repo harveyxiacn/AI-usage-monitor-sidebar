@@ -1,6 +1,7 @@
 // Locale-aware formatting helpers. [FRONTEND]
 // Everything user-visible goes through t(), so these functions are reactive to
 // the language rune just like the templates that call them.
+import { forecastLine } from '$lib/forecast';
 import { intlLocale, t } from '$lib/i18n/i18n.svelte';
 import type { PercentMode, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
 
@@ -90,6 +91,20 @@ function absoluteReset(d: Date): string {
     hour12: true,
   }).format(d);
   return `${wd} ${hm}`;
+}
+
+/**
+ * "Runs out in ~40 min" / "On pace for 82% at reset" — the burn-rate line under
+ * a window, or null when the backend sent no forecast. The wording rules live
+ * in `forecast.ts`; this only localizes them.
+ */
+export function formatForecast(
+  w: QuotaWindow,
+  mode: PercentMode = 'used',
+  now: number = Date.now()
+): { text: string; tone: 'warn' | 'muted' } | null {
+  const line = forecastLine(w, mode, now);
+  return line && { text: t(line.key, line.params), tone: line.tone };
 }
 
 /** "12 s ago" / "12 秒前" */

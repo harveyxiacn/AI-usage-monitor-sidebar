@@ -45,11 +45,18 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: null,
+      // Forecasts mirror what src-tauri/src/forecast.rs would derive from the
+      // sample history below: the 5-hour window burns fast enough to run out
+      // before it resets, the weekly ones only drift upwards, and "Weekly ·
+      // Fable" is the idle window with no forecast at all.
       windows: [
-        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true },
-        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false },
+        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true,
+          forecast: { projectedPercentAtReset: 107.4, exhaustsAt: iso(now + 40 * 60_000), ratePercentPerHour: 40.5, confidence: 'high' } },
+        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false,
+          forecast: { projectedPercentAtReset: 74.2, exhaustsAt: null, ratePercentPerHour: 0.6, confidence: 'medium' } },
         { kind: 'seven_day', label: 'Weekly · Fable', windowSeconds: 604800, usedPercent: 24, resetsAt: iso(now + 3 * DAY), scope: 'Fable', isPrimary: false },
-        { kind: 'seven_day', label: 'Weekly · Opus', windowSeconds: 604800, usedPercent: 62, resetsAt: iso(now + 3 * DAY), scope: 'Opus', isPrimary: false },
+        { kind: 'seven_day', label: 'Weekly · Opus', windowSeconds: 604800, usedPercent: 62, resetsAt: iso(now + 3 * DAY), scope: 'Opus', isPrimary: false,
+          forecast: { projectedPercentAtReset: 95.6, exhaustsAt: null, ratePercentPerHour: 0.47, confidence: 'low' } },
       ],
     },
     {
@@ -64,8 +71,10 @@ export const mockSnapshot: AppSnapshot = {
       error: null,
       credits: { hasCredits: false, unlimited: false, balance: '0' },
       windows: [
-        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true },
-        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false },
+        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true,
+          forecast: { projectedPercentAtReset: 33.5, exhaustsAt: null, ratePercentPerHour: 6, confidence: 'medium' } },
+        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false,
+          forecast: { projectedPercentAtReset: 77.0, exhaustsAt: null, ratePercentPerHour: 0.3, confidence: 'high' } },
         { kind: 'other', label: 'GPT-5.3-Codex-Spark · 5-hour', windowSeconds: 18000, usedPercent: 4, resetsAt: iso(now + 4 * HOUR), scope: 'GPT-5.3-Codex-Spark', isPrimary: false },
         { kind: 'other', label: 'GPT-5.3-Codex-Spark · weekly', windowSeconds: 604800, usedPercent: 12, resetsAt: iso(now + 5 * DAY), scope: 'GPT-5.3-Codex-Spark', isPrimary: false },
       ],
@@ -99,6 +108,7 @@ export const mockSettings: Settings = {
   colors: { claude: '#ff5c1a', codex: '#10a37f', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
+  forecastNotifications: true,
   alwaysOnTop: true,
 };
 

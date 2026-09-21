@@ -22,9 +22,7 @@
 
 use crate::commands::providers::{clamp_percent, rfc3339_from_unix_ms};
 use crate::commands::store::Db;
-use crate::model::{
-    AppSnapshot, ForecastConfidence, ProviderStatus, QuotaForecast, WindowKind,
-};
+use crate::model::{AppSnapshot, ForecastConfidence, ProviderStatus, QuotaForecast, WindowKind};
 
 const MINUTE_MS: i64 = 60_000;
 const HOUR_MS: i64 = 60 * MINUTE_MS;
@@ -166,8 +164,7 @@ fn since_last_reset(samples: &[Sample], resets_at_ms: Option<i64>) -> &[Sample] 
     let mut start = samples.len();
     let mut newer_percent = f64::INFINITY;
     for (i, s) in samples.iter().enumerate().rev() {
-        let other_period =
-            matches!((s.resets_at_ms, resets_at_ms), (Some(a), Some(b)) if a != b);
+        let other_period = matches!((s.resets_at_ms, resets_at_ms), (Some(a), Some(b)) if a != b);
         if other_period || s.used_percent > newer_percent + RESET_DROP {
             break;
         }
@@ -227,7 +224,8 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-fn parse_ms(rfc3339: &str) -> Option<i64> {
+/// RFC 3339 → unix ms. Shared with the scheduler's predictive notification.
+pub fn parse_ms(rfc3339: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(rfc3339)
         .ok()
         .map(|d| d.timestamp_millis())
@@ -335,8 +333,10 @@ mod tests {
 
     #[test]
     fn bursty_usage_reads_as_its_average_pace() {
-        // Three 12-point bursts vs. a perfectly even ramp over the same 40 min:
-        // the median of the pairwise slopes sees through the step shape.
+        // Three 12-point bursts vs. a perfectly even ramp over the same 40 min.
+        // Between two consecutive samples the bursty series alternates between
+        // 0 %/h and 144 %/h; the median of the pairwise slopes lands near the
+        // 36 %/h the even ramp reports.
         let steady = series(
             &[0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0],
             5 * MINUTE_MS,
@@ -348,7 +348,11 @@ mod tests {
         let steady = forecast(&steady, &spec(FIVE_HOUR, 24.0, 2 * HOUR_MS), T0).unwrap();
         let bursty = forecast(&bursty, &spec(FIVE_HOUR, 24.0, 2 * HOUR_MS), T0).unwrap();
         assert_eq!(steady.rate_percent_per_hour, 36.0);
-        assert_eq!(bursty.rate_percent_per_hour, 36.0);
+        assert!(
+            (bursty.rate_percent_per_hour - 36.0).abs() < 12.0,
+            "bursty pace {} should stay near the 36 %/h average",
+            bursty.rate_percent_per_hour
+        );
     }
 
     #[test]
@@ -412,7 +416,10 @@ mod tests {
 
     #[test]
     fn samples_taken_against_another_reset_time_are_not_used() {
-        let mut samples = series(&[80.0, 90.0, 95.0, 2.0, 5.0, 8.0, 11.0, 14.0], 5 * MINUTE_MS);
+        let mut samples = series(
+            &[80.0, 90.0, 95.0, 2.0, 5.0, 8.0, 11.0, 14.0],
+            5 * MINUTE_MS,
+        );
         let old = Some(T0 - 2 * HOUR_MS);
         let new = Some(T0 + HOUR_MS);
         for (i, s) in samples.iter_mut().enumerate() {
@@ -456,8 +463,18 @@ mod tests {
     fn stale_history_gives_no_forecast() {
         let samples = series(&[0.0, 10.0, 20.0, 30.0, 40.0], 5 * MINUTE_MS);
         // 14 min after the newest row is still fresh, 20 min is not.
-        assert!(forecast(&samples, &spec(FIVE_HOUR, 40.0, HOUR_MS), T0 + 14 * MINUTE_MS).is_some());
-        assert!(forecast(&samples, &spec(FIVE_HOUR, 40.0, HOUR_MS), T0 + 20 * MINUTE_MS).is_none());
+        assert!(forecast(
+            &samples,
+            &spec(FIVE_HOUR, 40.0, HOUR_MS),
+            T0 + 14 * MINUTE_MS
+        )
+        .is_some());
+        assert!(forecast(
+            &samples,
+            &spec(FIVE_HOUR, 40.0, HOUR_MS),
+            T0 + 20 * MINUTE_MS
+        )
+        .is_none());
         assert!(forecast(&[], &spec(FIVE_HOUR, 40.0, HOUR_MS), T0).is_none());
     }
 
@@ -491,7 +508,10 @@ mod tests {
     #[test]
     fn the_horizon_follows_the_window_length() {
         assert_eq!(horizon_ms(WindowKind::FiveHour, Some(FIVE_HOUR)), 2_571_428);
-        assert_eq!(horizon_ms(WindowKind::SevenDay, Some(WEEKLY)), MAX_HORIZON_MS);
+        assert_eq!(
+            horizon_ms(WindowKind::SevenDay, Some(WEEKLY)),
+            MAX_HORIZON_MS
+        );
         // A one-minute window still gets the 30-minute floor.
         assert_eq!(horizon_ms(WindowKind::Other, Some(60)), MIN_HORIZON_MS);
         // Unknown lengths fall back to the kind.

@@ -41,8 +41,10 @@ struct Labels {
     quit: &'static str,
 }
 
-fn labels(settings: &Settings) -> Labels {
-    let chinese = match settings.language.as_str() {
+/// `Settings.language` resolved to a yes/no for the two catalogues the native
+/// side carries (tray menu, notifications). `auto` follows `LANG`/`LC_ALL`.
+pub fn prefers_chinese(settings: &Settings) -> bool {
+    match settings.language.as_str() {
         "zh-CN" | "zh" => true,
         "auto" => ["LC_ALL", "LC_MESSAGES", "LANG"]
             .into_iter()
@@ -50,8 +52,11 @@ fn labels(settings: &Settings) -> Labels {
             .map(|v| v.starts_with("zh"))
             .unwrap_or(false),
         _ => false,
-    };
-    if chinese {
+    }
+}
+
+fn labels(settings: &Settings) -> Labels {
+    if prefers_chinese(settings) {
         Labels {
             toggle: "显示 / 隐藏侧边栏",
             always_show: "始终显示侧边栏",

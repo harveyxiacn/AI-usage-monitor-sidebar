@@ -151,6 +151,17 @@ Key semantics:
 * `QuotaWindow.usedPercent` is **used** percent, 0‑100 (clamp). The UI derives
   "remaining" when the user prefers it.
 * `QuotaWindow.resetsAt` is RFC 3339 UTC or `null`.
+* `QuotaWindow.forecast` is optional (absent/`null` = no forecast) and is
+  filled when the snapshot is built, from the `quota_samples` history of that
+  exact provider/kind/scope since the window's last reset — see
+  `src-tauri/src/forecast.rs`. `projectedPercentAtReset` is clamped at the
+  current value and may exceed 100; `exhaustsAt` is set only when 100 % is
+  reached *before* `resetsAt`; `ratePercentPerHour` is always > 0;
+  `confidence` (`low|medium|high`) comes from the sample count and the share of
+  the estimation horizon they cover. Too few samples, too short or stale a
+  history, a flat/negative slope, an already-full window or a projection within
+  one percentage point of the current value all mean "no forecast". The UI only
+  marks the ring for `medium`/`high`.
 * `QuotaWindow.isPrimary`: exactly one window per provider is primary (the
   5‑hour window when the plan has one, else the weekly window).
   `ringMode = "concentric"` (default): one ring *group* per provider — outer
@@ -247,7 +258,10 @@ follow-up.
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
-autostart off, thresholds warn 70 / critical 90.
+autostart off, thresholds warn 70 / critical 90, `notifications=false` with
+`forecastNotifications=true` (the predictive warning is on by default but only
+fires while `notifications` is on, at most once per window per reset period and
+only for a `medium`/`high` confidence forecast).
 
 ### Colours and sizes
 

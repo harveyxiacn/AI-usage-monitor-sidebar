@@ -227,6 +227,7 @@ fn map_window(w: &Window, scope: Option<&str>) -> QuotaWindow {
         resets_at: w.reset_at.and_then(rfc3339_from_unix_secs),
         scope: scope.map(|s| s.to_string()),
         is_primary: false,
+        forecast: None,
     }
 }
 
@@ -343,6 +344,7 @@ impl LogWindow {
             resets_at: self.resets_at.and_then(rfc3339_from_unix_secs),
             scope: None,
             is_primary: false,
+            forecast: None,
         }
     }
 }

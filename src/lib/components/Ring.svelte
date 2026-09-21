@@ -22,6 +22,10 @@
   The logo shrinks as arcs are added (3 → 16px, 2 → 18px, 1 → 22px at the
   default 56px ring, scaled by ringSize/56 and capped to the inner disc) so it
   always clears the innermost stroke; the size is handed to the `logo` snippet.
+
+  An arc may also carry `projectedPercent`: a hairline tick across the stroke at
+  the "at this pace, here at the reset" angle (see forecast.ts). It is opt-in
+  per arc so a low-confidence guess never marks up a 56px ring.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
@@ -34,6 +38,12 @@
     percent: number | null;
     /** css colour expression before the threshold override */
     accent: string;
+    /**
+     * Projected used percent at the reset, 0..100 — draws a tick across the
+     * arc at that angle. Null (the default) draws nothing; the caller decides
+     * when a forecast is trustworthy enough, see `forecastTickPercent`.
+     */
+    projectedPercent?: number | null;
   }
 
   interface Props {
@@ -80,6 +90,23 @@
   const sw = $derived(clampSize('ringStroke', stroke ?? settings.value.sizes.ringStroke));
   const c = $derived(dim / 2);
 
+  /**
+   * Endpoints of the forecast tick on the arc of radius `r`: a short radial
+   * segment crossing the stroke at the projected angle. 0 % is 12 o'clock like
+   * the arcs, and the outer end stops exactly at the stroke edge so the
+   * outermost ring cannot spill out of the viewBox.
+   */
+  function tick(r: number, percent: number) {
+    const angle = ((clampPercent(percent) / 100) * 360 - 90) * (Math.PI / 180);
+    const [cosA, sinA] = [Math.cos(angle), Math.sin(angle)];
+    return {
+      x1: c + (r - sw / 2 - 1.5) * cosA,
+      y1: c + (r - sw / 2 - 1.5) * sinA,
+      x2: c + (r + sw / 2) * cosA,
+      y2: c + (r + sw / 2) * sinA,
+    };
+  }
+
   /** Geometry + resolved colour for every arc, outer → inner. */
   const drawn = $derived.by(() =>
     arcs.map((a, i) => {
@@ -94,6 +121,7 @@
         color: severityColor(a.accent, severityOf(a.percent, thresholds)),
         dashOffset: circumference * (1 - used / 100),
         known: a.percent != null,
+        projected: a.projectedPercent == null ? null : tick(r, a.projectedPercent),
       };
     })
   );
@@ -142,6 +170,11 @@
               stroke-dashoffset={d.dashOffset}
               transform="rotate(-90 {c} {c})"
             />
+          {/if}
+          <!-- forecast: where this arc lands at the reset -->
+          {#if !loading && d.known && d.projected}
+            <line class="tick-halo" {...d.projected} />
+            <line class="tick" {...d.projected} />
           {/if}
         {/each}
       {/if}
@@ -210,6 +243,27 @@
     transition:
       stroke-dashoffset var(--dur-ring) var(--ease-out),
       stroke var(--dur-ring) var(--ease-out);
+  }
+
+  /* Forecast tick: a hairline in the text colour on a band of the pill's own
+     background, so it stays legible over the track, over the value arc and in
+     all three surface styles without inventing a new palette entry. Butt caps
+     keep the halo from growing past the stroke it crosses. */
+  .tick,
+  .tick-halo {
+    stroke-linecap: butt;
+    transition: all var(--dur-ring) var(--ease-out);
+  }
+
+  .tick-halo {
+    stroke: rgb(var(--bar-bg-rgb) / 0.85);
+    stroke-width: 2.6;
+  }
+
+  .tick {
+    stroke: var(--text);
+    stroke-width: 1.1;
+    opacity: 0.85;
   }
 
   .center {
