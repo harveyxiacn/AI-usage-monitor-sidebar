@@ -7,6 +7,7 @@
 // (hover targeting, popover requests, the collapsed handle colour) works on the
 // group, so the sidebar loop is identical in all three modes.
 import { severityOf, worstSeverity, type Severity } from '$lib/format';
+import { altVar, rampVar } from '$lib/providers';
 import { settings } from './settings.svelte';
 import { snapshot } from './snapshot.svelte';
 import type { AppSnapshot, ProviderId, ProviderQuota, QuotaWindow, Settings } from '$lib/types';
@@ -39,28 +40,19 @@ export interface RingItem {
 /**
  * Concentric ramp (outer → inner) and the contrasting "alt" hue used by
  * ringMode="all", where two rings of one provider must be told apart rather
- * than read as one material. See theme.css.
+ * than read as one material. Both are built from the provider id instead of a
+ * hand-listed table, so a provider the frontend has never heard of still gets
+ * a ring — theme.css supplies `--accent-fallback*` behind every lookup.
  */
-const RAMP: Record<ProviderId, [string, string, string]> = {
-  claude: ['var(--accent-claude-1)', 'var(--accent-claude-2)', 'var(--accent-claude-3)'],
-  codex: ['var(--accent-codex-1)', 'var(--accent-codex-2)', 'var(--accent-codex-3)'],
-};
-
-const ALT: Record<ProviderId, [string, string]> = {
-  claude: ['var(--accent-claude)', 'var(--accent-claude-alt)'],
-  codex: ['var(--accent-codex)', 'var(--accent-codex-alt)'],
-};
 
 /** Accent for slot `slot` of a provider in ringMode "primary" / "all". */
 export function accentFor(provider: ProviderId, slot: number): string {
-  const pair = ALT[provider] ?? ALT.claude;
-  return slot === 0 ? pair[0] : pair[1];
+  return altVar(provider, slot);
 }
 
 /** Accent for depth `depth` (0 = outermost) of a concentric group. */
 export function rampFor(provider: ProviderId, depth: number): string {
-  const ramp = RAMP[provider] ?? RAMP.claude;
-  return ramp[Math.min(depth, ramp.length - 1)];
+  return rampVar(provider, depth);
 }
 
 /** primary window first, then the remaining account-wide windows in backend order. */

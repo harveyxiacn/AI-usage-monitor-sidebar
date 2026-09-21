@@ -1,7 +1,12 @@
 // Canonical shared types. Mirror of src-tauri/src/model.rs — keep in sync.
 // See docs/ARCHITECTURE.md §4.
 
-export type ProviderId = 'claude' | 'codex';
+/**
+ * A backend provider id. The two built-ins are spelled out so editors still
+ * autocomplete them, but the registry lives in Rust (`get_providers`) and the
+ * UI must render any id it is handed — see `$lib/providers`.
+ */
+export type ProviderId = 'claude' | 'codex' | (string & {});
 
 export type WindowKind = 'five_hour' | 'seven_day' | 'other';
 

@@ -7,6 +7,7 @@
 // per-theme value) takes over — that is why `setVar` accepts null.
 import { haloChannels, hexToRgbChannels, lighten, parseHex } from '$lib/colors';
 import { setLanguage } from '$lib/i18n/i18n.svelte';
+import { providerColor, providerColorKeys } from '$lib/providers';
 import { clampSize, defaultColors } from './settings.svelte';
 import type { ProviderId, Settings, SizeSettings } from '$lib/types';
 
@@ -43,10 +44,12 @@ function applyProviderRamp(
   color: string,
   theme: 'dark' | 'light'
 ): void {
-  const isDefault = color.toLowerCase() === defaultColors[provider].toLowerCase();
+  const fallback = providerColor(defaultColors, provider);
+  const isDefault = fallback != null && color.toLowerCase() === fallback.toLowerCase();
   const valid = parseHex(color) !== null;
   // A colour left at the contract default keeps theme.css in charge, so the
-  // hand-tuned light/dark ramps and the contrasting `-alt` hue survive.
+  // hand-tuned light/dark ramps (or, for a provider without them, the neutral
+  // `--accent-fallback*` ramp) and the contrasting `-alt` hue survive.
   if (isDefault || !valid) {
     for (const suffix of ['', '-1', '-2', '-3', '-alt']) {
       setVar(root, `--accent-${provider}${suffix}`, null);
@@ -93,8 +96,10 @@ export function applyTheme(s: Settings): void {
   root.style.setProperty('--surface-alpha', String(alpha));
   setLanguage(s.language);
 
-  applyProviderRamp(root, 'claude', s.colors.claude, theme);
-  applyProviderRamp(root, 'codex', s.colors.codex, theme);
+  // every provider that has an accent in Settings.colors, not a fixed pair
+  for (const provider of providerColorKeys(s.colors)) {
+    applyProviderRamp(root, provider, providerColor(s.colors, provider) ?? '', theme);
+  }
   setVar(root, '--warn', parseHex(s.colors.warn) ? s.colors.warn : null);
   setVar(root, '--critical', parseHex(s.colors.critical) ? s.colors.critical : null);
 

@@ -3,9 +3,12 @@
   These are deliberately *not* copies of the trademarked logos: the Claude mark
   is a generic 8-point asterisk/burst, the OpenAI mark a generic six-fold
   hexagonal rosette. Both are drawn from scratch in a 24×24 box and inherit
-  `currentColor`.
+  `currentColor`. Any other provider gets a neutral monogram — a ringed initial
+  — so the sidebar never renders an empty disc for a provider this file has not
+  been taught about (and so no future provider's trademark is imitated either).
 -->
 <script lang="ts">
+  import { providerDisplayName } from '$lib/providers';
   import type { ProviderId } from '$lib/types';
 
   interface Props {
@@ -18,6 +21,7 @@
   let { provider, size = 22, title }: Props = $props();
 
   const rem = $derived(`${size / 16}rem`);
+  const monogram = $derived(providerDisplayName(provider).charAt(0).toUpperCase() || '?');
 
   // --- Claude: 8 spokes, alternating long/short, from r=3.2 outwards. ---
   const spokes = Array.from({ length: 8 }, (_, i) => {
@@ -55,7 +59,7 @@
         <line x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke-width={s.w} />
       {/each}
     </g>
-  {:else}
+  {:else if provider === 'codex'}
     <g
       fill="none"
       stroke="currentColor"
@@ -68,6 +72,18 @@
       {/each}
       <circle r="2.1" />
     </g>
+  {:else}
+    <g fill="none" stroke="currentColor" stroke-width="1.35">
+      <circle cx="12" cy="12" r="9.2" />
+    </g>
+    <text
+      class="monogram"
+      x="12"
+      y="12"
+      text-anchor="middle"
+      dominant-baseline="central"
+      fill="currentColor">{monogram}</text
+    >
   {/if}
 </svg>
 
@@ -77,5 +93,12 @@
     flex: none;
     color: inherit;
     overflow: visible;
+  }
+
+  /* px inside a 24-unit viewBox, so the letter scales with the mark itself */
+  .monogram {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 600;
   }
 </style>

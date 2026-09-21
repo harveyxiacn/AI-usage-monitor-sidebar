@@ -11,6 +11,9 @@
   import { historyCsv, historyRange, localDateInput, projectLabels, projectName, type HistoryPreset } from '$lib/history';
   import { formatBucket, formatCost, formatInt, formatTokens } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { providerDisplayName } from '$lib/providers';
+  import { settings } from '$lib/stores/settings.svelte';
+  import { snapshot } from '$lib/stores/snapshot.svelte';
   import type {
     Bucket,
     HistoryResult,
@@ -247,7 +250,17 @@
   const metricValue = (tt: TokenTotals) =>
     metric === 'cost' ? formatCost(tt.estimatedCostUsd) : formatTokens(tt.totalTokens);
 
-  const providerName = (id: ProviderId) => (id === 'claude' ? 'Claude' : 'Codex');
+  /** Backend display name when the snapshot knows the provider, else a monogram-style label. */
+  const providerName = (id: ProviderId) =>
+    snapshot.value?.providers.find((p) => p.provider === id)?.displayName ?? providerDisplayName(id);
+
+  /** Filter options: every provider the backend knows or the settings list, in display order. */
+  const providerOptions = $derived.by(() => {
+    const cfg = settings.value.providers;
+    const ids = new Set<ProviderId>((snapshot.value?.providers ?? []).map((p) => p.provider));
+    for (const id of Object.keys(cfg)) ids.add(id);
+    return [...ids].sort((a, b) => (cfg[a]?.order ?? 0) - (cfg[b]?.order ?? 0));
+  });
 
   const PRESETS: Array<[HistoryPreset, string]> = [
     ['today', 'history.range.today'],
@@ -289,8 +302,9 @@
       <label class="ctl-label" for="provider">{t('history.provider')}</label>
       <select id="provider" class="field" bind:value={provider}>
         <option value="">{t('common.all')}</option>
-        <option value="claude">Claude</option>
-        <option value="codex">Codex</option>
+        {#each providerOptions as id (id)}
+          <option value={id}>{providerName(id)}</option>
+        {/each}
       </select>
 
       <label class="ctl-label" for="project">{t('history.project')}</label>

@@ -35,6 +35,13 @@
   --accent-codex: #10a37f;
   --accent-claude-alt: #ff9a6b;
   --accent-codex-alt: #8b7cf6;
+  /* `--accent-fallback*` is the ramp any *other* provider gets: the ring code
+   * asks for `var(--accent-<id>-1, var(--accent-fallback-1))`, so a provider
+   * without hand-tuned tokens is drawn in this neutral blue instead of
+   * disappearing. A provider with a user-chosen colour overrides it with an
+   * inline ramp (see applyProviderRamp in stores/theme.svelte.ts). */
+  --accent-fallback: #5b8def;
+  --accent-fallback-alt: #a78bfa;
 
   /* ---- threshold colours ---- */
   --warn: #f5c542;
@@ -87,6 +94,9 @@
   --accent-codex-1: #10a37f;
   --accent-codex-2: #3fd0aa;
   --accent-codex-3: #7fe3cb;
+  --accent-fallback-1: #5b8def;
+  --accent-fallback-2: #8fb1f5;
+  --accent-fallback-3: #bcd0f9;
 
   --ring-inner: #232329; /* disc behind the provider logo */
   --track: #2a2a30;
@@ -131,6 +141,9 @@
   --accent-codex-1: #10a37f;
   --accent-codex-2: #37b896;
   --accent-codex-3: #6fcfb4;
+  --accent-fallback-1: #5b8def;
+  --accent-fallback-2: #7ba4f0;
+  --accent-fallback-3: #9fbcf2;
 
   --ring-inner: #ececf1;
   --track: #dedee5;
