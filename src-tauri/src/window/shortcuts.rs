@@ -166,7 +166,9 @@ mod tests {
     #[test]
     fn a_normal_combination_parses() {
         let shortcut = parse("Ctrl+Alt+U").unwrap().expect("a shortcut");
-        assert_eq!(shortcut, "CommandOrControl+Alt+KeyU".parse().unwrap());
+        // `Control`, not `CommandOrControl`: the latter is Cmd on macOS, and the
+        // user typed Ctrl.
+        assert_eq!(shortcut, "Control+Alt+KeyU".parse().unwrap());
         assert!(parse("Shift+Super+D").unwrap().is_some());
     }
 

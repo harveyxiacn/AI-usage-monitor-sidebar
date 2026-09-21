@@ -1198,16 +1198,10 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The shared helper adds a counter: pid + nanoseconds alone collide on
+    /// macOS (microsecond clock), where two parallel tests then shared a
+    /// directory and read each other's session logs.
     pub(crate) fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "ai-usage-sidebar-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        crate::commands::test_support::tempdir()
     }
 }
