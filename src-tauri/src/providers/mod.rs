@@ -361,6 +361,7 @@ mod tests {
             resets_at: None,
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
+            forecast: None,
         }
     }
 

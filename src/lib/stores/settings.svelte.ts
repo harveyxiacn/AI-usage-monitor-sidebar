@@ -84,6 +84,7 @@ export const defaultSettings: Settings = {
   colors: structuredClone(defaultColors),
   sizes: structuredClone(defaultSizes),
   notifications: false,
+  forecastNotifications: true,
   alwaysOnTop: true,
 };
 

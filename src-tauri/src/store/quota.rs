@@ -76,6 +76,39 @@ pub fn insert_quota_samples(
     Ok(n)
 }
 
+/// Samples of exactly one window (provider + kind + scope) taken at or after
+/// `since` (unix ms), oldest first — the input of the burn-rate forecast.
+pub fn window_samples(
+    db: &Db,
+    provider: &str,
+    kind: WindowKind,
+    scope: Option<&str>,
+    since: i64,
+) -> Result<Vec<crate::commands::forecast::Sample>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare(
+        "SELECT ts, used_percent, resets_at FROM quota_samples
+         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+           AND ts >= ?4
+         ORDER BY ts",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![provider, kind.as_str(), scope, since],
+        |r| {
+            Ok(crate::commands::forecast::Sample {
+                ts_ms: r.get(0)?,
+                used_percent: r.get(1)?,
+                resets_at_ms: r.get(2)?,
+            })
+        },
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 /// Read stored samples in `[from, to)`, oldest first.
 pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSample>> {
     let (from, to) = super::usage::query_range(&q.from, &q.to)?;
@@ -126,6 +159,7 @@ mod tests {
             resets_at: Some("2026-09-18T20:00:00Z".into()),
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
+            forecast: None,
         }
     }
 
@@ -178,6 +212,62 @@ mod tests {
         assert!(claude_only
             .iter()
             .any(|s| s.scope.as_deref() == Some("Fable")));
+    }
+
+    #[test]
+    fn window_samples_are_scoped_to_one_window_and_start_at_since() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000i64;
+        for (i, ts) in [t0, t0 + 6 * 60_000, t0 + 12 * 60_000].iter().enumerate() {
+            let w = window(WindowKind::FiveHour, i as f64, None);
+            insert_quota_sample(&db, "claude", None, &w, *ts).unwrap();
+        }
+        // a different kind, a different scope and a different provider
+        insert_quota_sample(
+            &db,
+            "claude",
+            None,
+            &window(WindowKind::SevenDay, 9.0, None),
+            t0,
+        )
+        .unwrap();
+        insert_quota_sample(
+            &db,
+            "claude",
+            None,
+            &window(WindowKind::FiveHour, 9.0, Some("Fable")),
+            t0,
+        )
+        .unwrap();
+        insert_quota_sample(
+            &db,
+            "codex",
+            None,
+            &window(WindowKind::FiveHour, 9.0, None),
+            t0,
+        )
+        .unwrap();
+
+        let all = window_samples(&db, "claude", WindowKind::FiveHour, None, 0).unwrap();
+        assert_eq!(all.len(), 3, "only the non-scoped claude 5-hour window");
+        assert_eq!(all[0].ts_ms, t0);
+        assert_eq!(all[0].used_percent, 0.0);
+        assert_eq!(
+            all[0].resets_at_ms,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-09-18T20:00:00Z")
+                    .unwrap()
+                    .timestamp_millis()
+            )
+        );
+        assert_eq!(all[2].used_percent, 2.0, "oldest first");
+
+        let recent =
+            window_samples(&db, "claude", WindowKind::FiveHour, None, t0 + 6 * 60_000).unwrap();
+        assert_eq!(recent.len(), 2, "`since` is inclusive");
+
+        let scoped = window_samples(&db, "claude", WindowKind::FiveHour, Some("Fable"), 0).unwrap();
+        assert_eq!(scoped.len(), 1);
     }
 
     #[test]

@@ -295,6 +295,7 @@ fn map_limits(limits: &[LimitEntry]) -> Vec<QuotaWindow> {
                 resets_at,
                 scope: None,
                 is_primary: false,
+                forecast: None,
             }),
             "weekly_all" => out.push(QuotaWindow {
                 kind: WindowKind::SevenDay,
@@ -304,6 +305,7 @@ fn map_limits(limits: &[LimitEntry]) -> Vec<QuotaWindow> {
                 resets_at,
                 scope: None,
                 is_primary: false,
+                forecast: None,
             }),
             "weekly_scoped" => {
                 let scope = l
@@ -320,6 +322,7 @@ fn map_limits(limits: &[LimitEntry]) -> Vec<QuotaWindow> {
                     resets_at,
                     scope: Some(scope),
                     is_primary: false,
+                    forecast: None,
                 });
             }
             other => log::debug!("claude: ignoring unknown limit kind `{other}`"),
@@ -345,6 +348,7 @@ fn map_legacy(usage: &UsageResponse) -> Vec<QuotaWindow> {
             resets_at: w.resets_at.as_deref().and_then(normalize_rfc3339),
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
+            forecast: None,
         });
     };
     push(

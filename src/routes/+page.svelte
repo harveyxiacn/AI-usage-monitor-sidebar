@@ -44,6 +44,7 @@
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
+  import { forecastTickPercent } from '$lib/forecast';
   import { t } from '$lib/i18n/i18n.svelte';
   import { handleColorOf, rings, type RingItem } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
@@ -220,7 +221,11 @@
             }}
           >
             <Ring
-              arcs={item.arcs.map((a) => ({ percent: a.window.usedPercent, accent: a.accent }))}
+              arcs={item.arcs.map((a) => ({
+                percent: a.window.usedPercent,
+                accent: a.accent,
+                projectedPercent: forecastTickPercent(a.window),
+              }))}
               labelPercent={item.labelWindow?.usedPercent ?? null}
               thresholds={s.thresholds}
               showPercentLabel={s.sidebarItems.percentLabel}

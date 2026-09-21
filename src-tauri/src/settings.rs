@@ -572,6 +572,24 @@ mod tests {
     }
 
     #[test]
+    fn an_old_settings_file_keeps_the_predictive_notification_default() {
+        let dir = tempdir();
+        // written by a version that did not know about forecastNotifications
+        std::fs::write(settings_path(&dir), r#"{"notifications":true}"#).unwrap();
+        let loaded = load(&dir);
+        assert!(loaded.notifications);
+        assert!(
+            loaded.forecast_notifications,
+            "a missing field takes its default"
+        );
+
+        let merged = merge(&loaded, &json!({"forecastNotifications": false}));
+        assert!(!merged.forecast_notifications);
+        assert!(merged.notifications, "unrelated fields survive");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn persistence_failure_leaves_live_settings_unchanged() {
         let dir = tempdir();
         let impossible_dir = dir.join("plain-file");

@@ -54,6 +54,7 @@ quota is left, and when does it reset?*
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
 | Autostart | Optional login item (`--hidden`) |
 | Notifications | Optional warning when a window crosses your editable threshold |
+| Usage forecast | "Runs out in ~40 min" / "On pace for 82 % at reset" from the recorded quota samples, a tick on the ring where the projection lands, and an optional notification when a window is on pace to run out early |
 
 ## Providers
 
@@ -297,6 +298,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 费用估算 | 可选的 API 等价价格估算，界面明确标注仅作横向参考 |
 | 开机自启 | 可选登录项（带 `--hidden` 参数） |
 | 通知 | 额度超过可编辑阈值时可选提醒 |
+| 用量预测 | 依据已记录的额度样本给出「约 40 分钟后用尽」「重置时将达 82%」，在圆环上标出预计落点，并可在预计提前用尽时通知 |
 
 ## 支持的服务与套餐
 

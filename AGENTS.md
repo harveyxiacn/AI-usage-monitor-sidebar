@@ -152,6 +152,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
+| `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `autostart` | `false`, `true` | start at login |
 | `alwaysOnTop` | `true` | |
 | `opacity` | `1` (0.3 – 1) | |

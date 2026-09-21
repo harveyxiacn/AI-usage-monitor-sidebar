@@ -5,6 +5,20 @@ export type ProviderId = 'claude' | 'codex';
 
 export type WindowKind = 'five_hour' | 'seven_day' | 'other';
 
+/** How much the burn-rate estimate can be trusted (sample count + time span). */
+export type ForecastConfidence = 'low' | 'medium' | 'high';
+
+/** "At this pace" projection for one quota window — see src-tauri/src/forecast.rs. */
+export interface QuotaForecast {
+  /** used percent expected at the reset; never below the current value, may exceed 100 */
+  projectedPercentAtReset: number;
+  /** RFC 3339 UTC, set only when 100 % is reached *before* the reset */
+  exhaustsAt: string | null;
+  /** current burn rate in percentage points per hour (always > 0) */
+  ratePercentPerHour: number;
+  confidence: ForecastConfidence;
+}
+
 export interface QuotaWindow {
   kind: WindowKind;
   /** Human label, e.g. "5-hour", "Weekly", "Weekly · Fable", "GPT-5.3-Codex-Spark · 5-hour" */
@@ -18,6 +32,8 @@ export interface QuotaWindow {
   scope: string | null;
   /** Exactly one non-scoped window per provider is primary */
   isPrimary: boolean;
+  /** Burn-rate projection; absent/null when there is not enough usable history */
+  forecast?: QuotaForecast | null;
 }
 
 export type ProviderStatus = 'ok' | 'not_logged_in' | 'token_expired' | 'error' | 'disabled';
@@ -177,6 +193,8 @@ export interface Settings {
   colors: ColorSettings;
   sizes: SizeSettings;
   notifications: boolean;
+  /** warn when a window is on pace to run out before it resets */
+  forecastNotifications: boolean;
   alwaysOnTop: boolean;
 }
 
