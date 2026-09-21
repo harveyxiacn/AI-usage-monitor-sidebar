@@ -64,6 +64,10 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: { hasCredits: false, unlimited: false, balance: '0' },
+      extras: [
+        { kind: 'reset_credits', value: '2', detail: '0', severity: 'info' },
+        { kind: 'model_unavailable', value: '1', detail: 'gpt-5.3-codex-spark', severity: 'warn' },
+      ],
       windows: [
         { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true },
         { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false },

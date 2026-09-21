@@ -166,6 +166,17 @@ Key semantics:
   disabled`. Any status other than `ok` still returns the last known windows
   (from cache or local logs) if available, with `source` telling where they
   came from.
+* `ProviderQuota.extras` is an optional, provider-neutral list of facts that
+  are not rate-limit windows (credits, a spend limit that was hit, models the
+  plan cannot use right now). Each item is
+  `{kind, value: string|null, detail: string|null, severity: info|warn|critical}`.
+  `kind` is a stable machine id (`reset_credits`, `spend_limit_reached`,
+  `model_unavailable`, `rate_limit_reached`, `overage_limit_reached`,
+  `approx_local_messages`, `approx_cloud_messages`, `extra_usage`, …); the
+  frontend renders `extras.<kind>` as the label and falls back to the raw id,
+  so a new kind needs no frontend change. The backend never puts English prose
+  in `value`/`detail`, and never repeats what `credits` already says. Absent in
+  older cache files, so it deserializes as an empty list.
 * Times/timestamps in the DB are unix **milliseconds** (INTEGER).
 * `HistoryQuery.project` is optional: null/absent selects all projects, an
   empty string selects events whose `cwd` is null or empty, and any other

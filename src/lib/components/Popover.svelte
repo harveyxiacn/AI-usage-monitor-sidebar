@@ -12,6 +12,7 @@
 -->
 <script lang="ts">
   import ProviderLogo from './ProviderLogo.svelte';
+  import QuotaExtras from './QuotaExtras.svelte';
   import WindowRow from './WindowRow.svelte';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { formatAgo } from '$lib/format';
@@ -128,6 +129,10 @@
         </div>
       {/if}
     {/if}
+
+    <!-- provider extras (credits, spend limits, unavailable models …);
+         renders nothing when the provider reported none -->
+    <QuotaExtras extras={quota.extras} context="popover" />
 
     {#if creditsLine}
       <div class="line">

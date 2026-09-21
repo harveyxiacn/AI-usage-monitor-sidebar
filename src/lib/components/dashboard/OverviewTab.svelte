@@ -6,6 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
+  import QuotaExtras from '$lib/components/QuotaExtras.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
   import { getQuotaHistory } from '$lib/api';
@@ -177,6 +178,8 @@
               {/each}
             </div>
           {/if}
+
+          <QuotaExtras extras={q.extras} context="dashboard" />
 
           <footer class="foot">
             {#if credits}

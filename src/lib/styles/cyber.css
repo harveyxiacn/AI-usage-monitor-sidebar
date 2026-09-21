@@ -238,6 +238,15 @@ html[data-surface='cyber'] .surface .plan {
   letter-spacing: 0.08em;
 }
 
+/* extras read as HUD tags, like the plan pill */
+html[data-surface='cyber'] .surface .chip {
+  border-radius: 0;
+  border-color: rgb(var(--cy-a-rgb) / 0.4);
+  background: rgb(var(--cy-a-rgb) / 0.06);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 /* quota bars: squared, segmented, glowing in their own colour */
 html[data-surface='cyber'] .surface .track {
   border-radius: 0;
