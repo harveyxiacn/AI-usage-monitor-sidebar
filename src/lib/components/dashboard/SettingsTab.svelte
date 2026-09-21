@@ -182,8 +182,18 @@
 
   const THEMES: Theme[] = ['auto', 'dark', 'light'];
   const LANGUAGES: Language[] = ['auto', 'en', 'zh-CN'];
-  const EDGES: Edge[] = ['left', 'right'];
+  const EDGES: Edge[] = ['left', 'right', 'top', 'bottom'];
   const ALIGNS: VerticalAlign[] = ['top', 'center', 'bottom'];
+  /**
+   * `verticalAlign`/`verticalOffset` describe the position *along* the docked
+   * edge, so on a top/bottom edge they are horizontal. The wire values stay
+   * `top|center|bottom`; only the labels follow the orientation (top → left,
+   * bottom → right).
+   */
+  const alongIsHorizontal = $derived(s.edge === 'top' || s.edge === 'bottom');
+  const ALIGN_LABELS: Record<VerticalAlign, string> = { top: 'left', center: 'center', bottom: 'right' };
+  const alignLabel = (v: VerticalAlign) =>
+    alongIsHorizontal ? `settings.horizontalAlign.${ALIGN_LABELS[v]}` : `settings.verticalAlign.${v}`;
   const RING_MODES: RingMode[] = ['concentric', 'primary', 'all'];
   const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
@@ -286,20 +296,20 @@
       </select>
     </Field>
 
-    <Field label={t('settings.verticalAlign')}>
-      <select aria-label={t('settings.verticalAlign')} class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
-        {#each ALIGNS as v (v)}<option value={v}>{tDyn(`settings.verticalAlign.${v}`)}</option>{/each}
+    <Field label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')}>
+      <select aria-label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')} class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
+        {#each ALIGNS as v (v)}<option value={v}>{tDyn(alignLabel(v))}</option>{/each}
       </select>
     </Field>
 
-    <Field label={t('settings.verticalOffset')}>
+    <Field label={tDyn(alongIsHorizontal ? 'settings.horizontalOffset' : 'settings.verticalOffset')}>
       <input
         class="field num"
         type="number"
         step="1"
         value={s.verticalOffset}
         onchange={(e) => void settings.patch({ verticalOffset: Math.round(num(e)) })}
-        aria-label={t('settings.verticalOffset')}
+        aria-label={tDyn(alongIsHorizontal ? 'settings.horizontalOffset' : 'settings.verticalOffset')}
       />
     </Field>
 

@@ -58,7 +58,13 @@ export interface AppSnapshot {
 
 // ---------- settings ----------
 
-export type Edge = 'left' | 'right';
+/** left/right dock the bar as a vertical pill, top/bottom as a horizontal strip */
+export type Edge = 'left' | 'right' | 'top' | 'bottom';
+/**
+ * Position *along* the docked edge. The wire values are historical (the bar
+ * used to be vertical only): `top` = start (top of a left/right edge, left of
+ * a top/bottom edge), `bottom` = end.
+ */
 export type VerticalAlign = 'top' | 'center' | 'bottom';
 /** concentric: one ring group per provider (outer weekly, inner 5-hour, optional 3rd scoped ring); primary: single ring; all: one ring per window */
 export type RingMode = 'concentric' | 'primary' | 'all';
@@ -113,8 +119,9 @@ export interface Settings {
   theme: Theme;
   surfaceStyle: SurfaceStyle;
   edge: Edge;
+  /** position along the docked edge, see {@link VerticalAlign} */
   verticalAlign: VerticalAlign;
-  /** px offset applied after alignment (positive moves down) */
+  /** px offset applied after alignment, positive towards the end of the edge (down on left/right, right on top/bottom) */
   verticalOffset: number;
   /** monitor name, null = primary */
   monitor: string | null;
@@ -251,8 +258,10 @@ export interface PopoverRequest {
   provider: ProviderId;
   /** which ring (index within the sidebar list) */
   ringIndex: number;
-  /** y of the ring centre in CSS px relative to the sidebar window */
+  /** y of the ring centre in CSS px relative to the sidebar window (left/right edges) */
   anchorY: number;
+  /** x of the ring centre in CSS px relative to the sidebar window (top/bottom edges) */
+  anchorX?: number | null;
   /** optional window to highlight */
   windowKind: WindowKind | null;
 }

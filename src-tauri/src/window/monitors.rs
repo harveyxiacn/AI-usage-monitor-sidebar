@@ -262,12 +262,7 @@ pub fn popover_rect(
             sidebar.bottom() + gap
         };
         let x = sidebar.x + anchor - w / 2.0;
-        return LogicalRect::new(
-            clamp_span(x, w, m.x, m.w),
-            clamp_span(y, h, m.y, m.h),
-            w,
-            h,
-        );
+        return LogicalRect::new(clamp_span(x, w, m.x, m.w), clamp_span(y, h, m.y, m.h), w, h);
     }
 
     // The side facing the screen centre: a bar on the right half opens left.
@@ -385,7 +380,10 @@ mod tests {
             "positive offset moves towards the end of the edge"
         );
         s.vertical_offset = 100_000;
-        assert_eq!(sidebar_rect(&mon(), &s, 320.0, 76.0, true).x, 2560.0 - 320.0);
+        assert_eq!(
+            sidebar_rect(&mon(), &s, 320.0, 76.0, true).x,
+            2560.0 - 320.0
+        );
         s.vertical_offset = -100_000;
         assert_eq!(sidebar_rect(&mon(), &s, 320.0, 76.0, true).x, 0.0);
     }

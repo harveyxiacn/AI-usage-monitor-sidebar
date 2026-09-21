@@ -357,6 +357,7 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
                         provider: "claude".into(),
                         ring_index: 0,
                         anchor_y: 52.0,
+                        anchor_x: Some(52.0),
                         window_kind: None,
                     },
                 );

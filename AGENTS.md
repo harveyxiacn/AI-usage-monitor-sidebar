@@ -138,9 +138,9 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `language` | `"auto"`, `"en"`, `"zh-CN"` | UI and tray language |
 | `theme` | `"dark"`, `"light"`, `"auto"` | |
 | `surfaceStyle` | `"glass"`, `"solid"`, `"cyber"` | liquid glass (blurred backdrop where the OS has one), opaque, or a neon sci-fi HUD |
-| `edge` | `"right"`, `"left"` | screen edge (also set by dragging) |
-| `verticalAlign` | `"center"`, `"top"`, `"bottom"` | |
-| `verticalOffset` | `0` (px, positive = down) | also set by dragging |
+| `edge` | `"right"`, `"left"`, `"top"`, `"bottom"` | screen edge (also set by dragging). `top`/`bottom` make the bar a horizontal strip |
+| `verticalAlign` | `"center"`, `"top"`, `"bottom"` | position **along** the edge: `top` = its start (left end of a top/bottom edge), `bottom` = its end |
+| `verticalOffset` | `0` (px, positive = towards the end of the edge: down on left/right, right on top/bottom) | also set by dragging |
 | `monitor` | `null` = primary, or a monitor name | |
 | `autoHide` | `false`, `true` | collapse to a thin handle when idle |
 | `autoHideDelayMs` | `800` | |
