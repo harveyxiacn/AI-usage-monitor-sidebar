@@ -14,6 +14,8 @@
     window size (no resize feedback loop).
   * Hovering the bar reports `hover_report('bar', true|false)`; Rust owns the
     expand/collapse + popover-hide timers.
+  * Dragging the pill (past a 5px threshold) streams `sidebar_drag`; Rust moves
+    the window and snaps it to the nearer edge of the drop monitor on release.
   * Hovering a ring asks for the popover with the ring's centre y in CSS px
     relative to *this* window — which is the viewport, so
     `rect.top + rect.height / 2` is already the right number.
@@ -22,13 +24,14 @@
   import { onMount } from 'svelte';
   import Ring from '$lib/components/Ring.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
-  import { observeSize, type SizeReport } from '$lib/actions';
+  import { dragHandle, observeSize, type DragPhase, type SizeReport } from '$lib/actions';
   import {
     hoverReport,
     onSidebarState,
     openDashboard,
     popoverSetPinned,
     popoverShow,
+    sidebarDrag,
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
@@ -92,6 +95,22 @@
   // theme / scale / opacity / language follow the settings rune
   $effect(() => applyTheme(settings.value));
 
+  /** true while the user is carrying the bar to another edge / height */
+  let dragging = $state(false);
+
+  function onDrag(phase: DragPhase, dx: number, dy: number) {
+    dragging = phase === 'start' || phase === 'move';
+    if (phase === 'start') pinnedKey = null; // the platform force-hides the popover
+    void sidebarDrag(phase, dx, dy);
+  }
+
+  function reportHover(hovered: boolean) {
+    // The window trails the pointer during a drag; a stray leave must not
+    // start the auto-hide timer under the user's hand.
+    if (dragging && !hovered) return;
+    void hoverReport('bar', hovered);
+  }
+
   function anchorOf(el: HTMLElement): number {
     const r = el.getBoundingClientRect();
     return Math.round(r.top + r.height / 2);
@@ -107,6 +126,7 @@
   }
 
   function onRingEnter(item: RingItem, ev: MouseEvent) {
+    if (dragging) return;
     requestPopover(item, ev.currentTarget as HTMLElement);
   }
 
@@ -134,8 +154,8 @@
   data-edge={s.edge}
   use:observeSize={reportSize}
   oncontextmenu={(e) => e.preventDefault()}
-  onmouseenter={() => void hoverReport('bar', true)}
-  onmouseleave={() => void hoverReport('bar', false)}
+  onmouseenter={() => reportHover(true)}
+  onmouseleave={() => reportHover(false)}
   role="presentation"
 >
   {#if collapsed}
@@ -150,7 +170,7 @@
       title={t('app.name')}
     ></div>
   {:else}
-    <div class="pill surface" ondblclick={() => void openDashboard('overview')} role="presentation">
+    <div class="pill surface" use:dragHandle={onDrag} ondblclick={() => void openDashboard('overview')} role="presentation">
       {#if loading}
         {#each [0, 1] as i (i)}
           <div class="slot">
@@ -226,6 +246,10 @@
     /* background / border / shadow / glass layers come from the global
        `.surface` material in base.css so the popover bubble matches exactly */
     border-radius: var(--r-pill);
+  }
+
+  .pill:global([data-dragging]) {
+    cursor: grabbing;
   }
 
   .stage[data-edge='right'] .pill {

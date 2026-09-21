@@ -26,6 +26,10 @@ pub fn current_rect(app: &AppHandle) -> Option<LogicalRect> {
 
 /// Resize + reposition the bar. `expanded` decides the width only.
 pub fn place_sidebar(app: &AppHandle, expanded: bool) -> Option<LogicalRect> {
+    // While the user holds the bar, timers and relayouts must not yank it back.
+    if window::snapshot(app)?.drag_origin.is_some() {
+        return None;
+    }
     let (rect, scale) = desired_rect(app, expanded)?;
     let Some(win) = app.get_webview_window(windows::SIDEBAR) else {
         log::warn!("sidebar window is gone, cannot place it");
@@ -131,6 +135,10 @@ fn check_geometry(app: &AppHandle) {
     };
     if !state.revealed {
         reveal(app);
+        return;
+    }
+    // The user is holding the bar; snapping it back would fight the drag.
+    if state.drag_origin.is_some() {
         return;
     }
     // A layer surface has no position of its own: `outer_position` reports

@@ -122,6 +122,17 @@ pub fn target_monitor(app: &AppHandle, settings: &Settings) -> Option<MonitorRec
     monitors.first().map(MonitorRect::from_monitor)
 }
 
+/// Every monitor the OS reports, reduced to placement geometry.
+pub fn all_monitors(app: &AppHandle) -> Vec<MonitorRect> {
+    match app.available_monitors() {
+        Ok(m) => m.iter().map(MonitorRect::from_monitor).collect(),
+        Err(e) => {
+            log::warn!("available_monitors() failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// `get_monitors` payload. Position/size are **physical** pixels as reported by
 /// the OS (with `scaleFactor` alongside), which is what a settings UI wants to
 /// show; the placement maths above uses the logical derivation instead.

@@ -97,6 +97,7 @@ pub fn run() {
             // platform
             window::sidebar_set_expanded,
             window::sidebar_relayout,
+            window::sidebar_drag,
             window::popover_show,
             window::popover_relayout,
             window::popover_hide,

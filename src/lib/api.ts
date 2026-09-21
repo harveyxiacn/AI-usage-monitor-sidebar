@@ -75,6 +75,8 @@ export async function exportUsageCsv(csv: string, suggestedName: string): Promis
 // ---- platform ----
 export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_set_expanded', { expanded });
 export const sidebarRelayout = (width: number, height: number) => invoke<void>('sidebar_relayout', { width, height });
+/** dx/dy: CSS px the pointer travelled since the drag started */
+export const sidebarDrag = (phase: 'start' | 'move' | 'end' | 'cancel', dx = 0, dy = 0) => invoke<void>('sidebar_drag', { phase, dx, dy });
 export const popoverShow = (req: PopoverRequest) => invoke<void>('popover_show', { req });
 export const popoverHide = () => invoke<void>('popover_hide');
 export const popoverRelayout = (width: number, height: number) => invoke<void>('popover_relayout', { width, height });

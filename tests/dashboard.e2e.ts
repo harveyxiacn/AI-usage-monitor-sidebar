@@ -121,3 +121,29 @@ test('popover expands scoped windows and sidebar can pin via keyboard', async ({
   await claude.press('Enter');
   await expect(claude).not.toHaveClass(/pinned/);
 });
+
+test('dragging the bar is not a click, and a small press still pins', async ({ page }) => {
+  await page.goto('/');
+  const claude = page.getByRole('button', { name: /^Claude:/ });
+  const pill = page.locator('.pill');
+  const box = (await claude.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 2, y + 1);
+  await expect(pill).not.toHaveAttribute('data-dragging', '');
+  await page.mouse.up();
+  await expect(claude).toHaveClass(/pinned/);
+  await claude.click();
+  await expect(claude).not.toHaveClass(/pinned/);
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x - 4, y + 30, { steps: 4 });
+  await expect(pill).toHaveAttribute('data-dragging', '');
+  await page.mouse.up();
+  await expect(pill).not.toHaveAttribute('data-dragging', '');
+  await expect(claude).not.toHaveClass(/pinned/);
+});

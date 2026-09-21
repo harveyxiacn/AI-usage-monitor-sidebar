@@ -6,6 +6,7 @@
 //! * [`sidebar`]  — placement / expand / collapse of the edge bar
 //! * [`popover`]  — the detail bubble anchored to a ring
 //! * [`hover`]    — the hover state machine and its cancellable timers
+//! * [`drag`]     — dragging the bar to another edge / height / monitor
 //! * [`dashboard`]— the normal window (settings + history)
 //! * [`tray`]     — tray icon and menu
 //! * [`linux`]    — Wayland layer-shell docking and the KDE X11 blur hint
@@ -14,6 +15,7 @@
 //! `docs/PLATFORM.md`.
 
 pub mod dashboard;
+pub mod drag;
 pub mod hover;
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -66,6 +68,8 @@ pub struct Inner {
     /// Bumped on every hover event; pending timers with an older generation
     /// are stale and do nothing when they wake up.
     pub generation: u64,
+    /// Where the bar was when the current drag began; `None` when idle.
+    pub drag_origin: Option<monitors::LogicalRect>,
 }
 
 impl Default for Inner {
@@ -81,6 +85,7 @@ impl Default for Inner {
             popover_visible: false,
             revealed: false,
             generation: 0,
+            drag_origin: None,
         }
     }
 }
@@ -473,6 +478,17 @@ pub async fn sidebar_set_expanded(app: AppHandle, expanded: bool) -> Result<(), 
 #[tauri::command]
 pub async fn sidebar_relayout(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     sidebar::relayout(&app, width, height);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sidebar_drag(
+    app: AppHandle,
+    phase: drag::DragPhase,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
+    drag::drag(&app, phase, dx, dy);
     Ok(())
 }
 
