@@ -66,7 +66,7 @@ export type PercentMode = 'used' | 'remaining';
 export type Theme = 'dark' | 'light' | 'auto';
 export type Language = 'auto' | 'en' | 'zh-CN';
 /** glass: translucent "liquid glass" surface with specular highlights; solid: opaque dark/light pill */
-export type SurfaceStyle = 'glass' | 'solid';
+export type SurfaceStyle = 'glass' | 'solid' | 'cyber';
 
 export interface ProviderSettings {
   enabled: boolean;

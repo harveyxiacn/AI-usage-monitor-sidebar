@@ -338,6 +338,37 @@ pub fn place(win: &WebviewWindow, rect: LogicalRect) -> bool {
     true
 }
 
+/// Declare the overlays as `_NET_WM_WINDOW_TYPE_DOCK` on X11.
+///
+/// They were ordinary `NORMAL` toplevels, which is what every compositor
+/// add-on targets: GNOME's "Rounded Window Corners" clips them with its own
+/// shader and puts a *white* shadow actor underneath — invisible below an
+/// opaque window, but it replaced our translucent bar with a blank white pill.
+/// Window animations and per-application blur make the same assumption. A dock
+/// is what the bar is, those add-ons skip it, and mutter neither focuses a dock
+/// on click nor constrains its position. Must run before the window is mapped.
+pub fn mark_as_dock(app: &AppHandle) {
+    if is_active() {
+        return; // a layer surface is not an xdg/X11 toplevel at all
+    }
+    for label in [windows::SIDEBAR, windows::POPOVER] {
+        let Some(win) = app.get_webview_window(label) else {
+            continue;
+        };
+        let Ok(native) = win.gtk_window() else {
+            continue;
+        };
+        if native.display().type_().name() != "GdkX11Display" {
+            continue;
+        }
+        if native.is_visible() {
+            log::warn!("overlay {label} is already mapped, leaving its window type alone");
+            continue;
+        }
+        native.set_type_hint(gdk::WindowTypeHint::Dock);
+    }
+}
+
 /// KWin's X11 blur protocol: an empty `CARDINAL` region means "blur the whole
 /// window". Other X11 compositors ignore the property, and `solid` removes it.
 ///
@@ -370,7 +401,7 @@ pub fn apply_blur(win: &WebviewWindow, style: SurfaceStyle) {
                     gdk::PropMode::Replace,
                     gdk::ChangeData::ULongs(&[]),
                 ),
-                SurfaceStyle::Solid => gdk::property_delete(&surface, &atom),
+                SurfaceStyle::Solid | SurfaceStyle::Cyber => gdk::property_delete(&surface, &atom),
             }
         };
         if native.is_realized() {

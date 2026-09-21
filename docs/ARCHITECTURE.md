@@ -246,7 +246,7 @@ follow-up.
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
-`refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque), language `auto`, ingestion enabled,
+`refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90.
 
 ### Colours and sizes
