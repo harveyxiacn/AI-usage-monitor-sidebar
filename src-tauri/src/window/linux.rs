@@ -359,6 +359,45 @@ pub fn place(win: &WebviewWindow, rect: LogicalRect) -> bool {
     true
 }
 
+/// Report "the pointer left" from GTK instead of from the DOM.
+///
+/// On XWayland, WebKitGTK delivers `mouseenter` and `mousemove` to the overlay
+/// webviews but **never** `mouseleave` (verified in the hover debug log: not
+/// one `false` report in either window, not even when the pointer moves from
+/// the bar into the popover). The hover state machine then believes the
+/// pointer is still there and neither the popover nor the auto-hide bar ever
+/// goes away. `leave-notify-event` is the windowing system's own crossing
+/// event and does not depend on WebKit's synthesised DOM event.
+pub fn watch_pointer_leave(app: &AppHandle) {
+    for (label, source) in [(windows::SIDEBAR, "bar"), (windows::POPOVER, "popover")] {
+        let Some(win) = app.get_webview_window(label) else {
+            continue;
+        };
+        let handle = app.clone();
+        let result = win.with_webview(move |webview| {
+            // The crossing event goes to the innermost GdkWindow: the web view.
+            webview.inner().connect_leave_notify_event(move |_, event| {
+                // `Inferior`: the pointer moved into a child window of ours.
+                // A non-normal mode is a grab starting/ending (a drag), not a
+                // real exit.
+                if event.detail() != gdk::NotifyType::Inferior
+                    && event.mode() == gdk::CrossingMode::Normal
+                {
+                    let handle = handle.clone();
+                    // Never run window operations inside a GTK signal handler.
+                    tauri::async_runtime::spawn(async move {
+                        super::hover::report(&handle, source, false);
+                    });
+                }
+                gtk::glib::Propagation::Proceed
+            });
+        });
+        if let Err(e) = result {
+            log::warn!("cannot watch pointer crossings on `{label}`: {e}");
+        }
+    }
+}
+
 /// Declare the overlays as `_NET_WM_WINDOW_TYPE_DOCK` on X11.
 ///
 /// They were ordinary `NORMAL` toplevels, which is what every compositor

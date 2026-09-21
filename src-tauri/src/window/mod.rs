@@ -292,6 +292,8 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     }
     #[cfg(target_os = "linux")]
     linux::mark_as_dock(app);
+    #[cfg(target_os = "linux")]
+    linux::watch_pointer_leave(app);
 
     let settings = settings_of(app);
     log::info!(
