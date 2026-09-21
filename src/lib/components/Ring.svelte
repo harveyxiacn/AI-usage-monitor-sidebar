@@ -125,7 +125,7 @@
       {:else}
         {#each drawn as d, i (i)}
           <!-- track -->
-          <circle cx={c} cy={c} r={d.r} fill="none" stroke="var(--surface-track)" stroke-width={sw} />
+          <circle class="ring-track" cx={c} cy={c} r={d.r} fill="none" stroke="var(--surface-track)" stroke-width={sw} />
           <!-- value arc -->
           {#if !loading && d.known}
             <circle
@@ -135,6 +135,7 @@
               r={d.r}
               fill="none"
               stroke={d.color}
+              style:color={d.color}
               stroke-width={sw}
               stroke-linecap="round"
               stroke-dasharray={d.circumference}

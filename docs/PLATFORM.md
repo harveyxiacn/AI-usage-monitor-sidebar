@@ -293,3 +293,14 @@ and the dashboard hides, so the app keeps living in the tray. A second launch
 * **macOS** windows are not notarised yet; `set_focusable(false)` cannot unfocus
   an already-focused window (an OS limitation), which is why the popover is made
   non-focusable *before* it is ever shown.
+
+## Overlay window type (X11)
+
+The sidebar and the popover are `_NET_WM_WINDOW_TYPE_DOCK` windows, set in
+`linux::mark_as_dock` before they are first mapped. As `NORMAL` toplevels they
+were picked up by compositor add-ons that assume an opaque application window:
+GNOME's *Rounded Window Corners* clips every normal window with its own shader
+and puts a white shadow actor underneath, which turned the translucent bar into
+a blank white pill (the X pixmap stayed correct, only the composited result was
+wrong). Window animations and per-application blur make the same assumption and
+skip docks as well. Geometry, `ABOVE` and `STICKY` are unaffected.

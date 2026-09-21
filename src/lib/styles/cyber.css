@@ -1,0 +1,263 @@
+/*
+ * Surface style "cyber" — a dark sci-fi HUD. [FRONTEND]
+ *
+ * Everything is painted by the webview, so it looks the same on every OS (the
+ * platform layer turns native vibrancy / acrylic off for this style). The look
+ * is the same in the dark and the light theme: a HUD is dark by definition.
+ *
+ * Ingredients, all inside the element because the overlay windows are sized to
+ * exactly the painted box (an outer glow would be cut off by the window edge):
+ *   - near-black translucent plate with scanlines, a faint grid and two corner
+ *     glows (cyan top-left, magenta bottom-right)
+ *   - chamfered corners (clip-path) with the cut edges redrawn as neon lines
+ *   - a cyan → magenta hairline rim and an inner glow
+ *   - ring tracks as tick marks, value arcs with a glow in their own colour
+ *   - monospace numerals, spaced uppercase labels, segmented quota bars
+ *   - a scan sweep that only runs while hovered: a permanent animation would
+ *     keep an always-on widget repainting all day
+ *
+ * The tokens are set on the widget windows' root *and* on every `.surface`, so
+ * the settings preview inside the (opaque, possibly light) dashboard gets the
+ * HUD palette too without the rest of the dashboard changing colour.
+ */
+:root[data-surface='cyber']:not([data-win='dashboard']),
+:root[data-surface='cyber'] .surface {
+  --cy-a: #00e5ff;
+  --cy-a-rgb: 0 229 255;
+  --cy-b: #ff2bd6;
+  --cy-b-rgb: 255 43 214;
+
+  --surface-fill: rgb(5 9 17 / calc(0.82 * var(--surface-alpha, 1)));
+  --bar-border: rgb(var(--cy-a-rgb) / 0.28);
+  --hover: rgb(var(--cy-a-rgb) / 0.1);
+  --surface-track: rgb(var(--cy-a-rgb) / 0.22);
+  --ring-inner: rgb(var(--cy-a-rgb) / 0.07);
+  --text: #dffaff;
+  --muted: #9bdcec;
+  --faint: #6fb2c6;
+  --logo: #dffaff;
+  --text-halo-rgb: 0 6 12;
+  --text-halo-strength: 1;
+  --text-halo:
+    0 0 1px rgb(var(--text-halo-rgb) / 0.95),
+    0 0 3px rgb(var(--text-halo-rgb) / 0.75),
+    0 0 8px rgb(var(--cy-a-rgb) / 0.35);
+  --label-shadow: 0 0 1px rgb(var(--text-halo-rgb) / 0.95), 0 0 6px rgb(var(--cy-a-rgb) / 0.75);
+  /* depth of the corner cut; follows the user's corner-radius setting */
+  --cut: clamp(6px, calc(var(--r-pill, 1.625rem) * 0.42), 14px);
+}
+
+html[data-surface='cyber'] .surface {
+  color: var(--text);
+  text-shadow: var(--text-halo);
+  border: 1px solid transparent;
+  border-radius: 0;
+  background-color: var(--surface-fill);
+  background-image:
+    /* the two cut edges, redrawn: a clip-path removes the border there */
+    linear-gradient(135deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(315deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 0% 0%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 100% 100%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    /* scanlines, then a faint vertical grid */
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, repeat, repeat;
+  background-size:
+    var(--cut) var(--cut),
+    var(--cut) var(--cut),
+    100% 100%,
+    100% 100%,
+    auto,
+    auto;
+  background-position:
+    top left,
+    bottom right,
+    center,
+    center,
+    center,
+    center;
+  background-origin: border-box;
+  box-shadow:
+    inset 0 0 0.875rem rgb(var(--cy-a-rgb) / 0.16),
+    inset 0 0 0.125rem rgb(var(--cy-a-rgb) / 0.5);
+  clip-path: polygon(
+    var(--cut) 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    0 100%,
+    0 var(--cut)
+  );
+}
+
+html[data-surface='cyber'] .surface > * {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-surface='cyber'] .surface::before,
+html[data-surface='cyber'] .surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* hairline rim: paint a gradient, keep only the 1px padding ring */
+html[data-surface='cyber'] .surface::after {
+  z-index: 2;
+  padding: 1px;
+  background: linear-gradient(160deg, var(--cy-a) 0%, rgb(var(--cy-a-rgb) / 0.25) 38%, rgb(var(--cy-b-rgb) / 0.25) 62%, var(--cy-b) 100%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+
+/* scan sweep, hover only */
+html[data-surface='cyber'] .surface::before {
+  z-index: 0;
+  background: linear-gradient(180deg, transparent 0%, rgb(var(--cy-a-rgb) / 0.16) 48%, rgb(var(--cy-a-rgb) / 0.32) 50%, transparent 56%);
+  background-size: 100% 60%;
+  background-repeat: no-repeat;
+  background-position: 0 -150%;
+  opacity: 0;
+}
+
+html[data-surface='cyber'] .surface:hover::before {
+  opacity: 1;
+  animation: cyber-sweep 2.6s linear infinite;
+}
+
+@keyframes cyber-sweep {
+  from {
+    background-position: 0 -150%;
+  }
+  to {
+    background-position: 0 250%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-surface='cyber'] .surface:hover::before {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* The docked bar: cut the two corners that face the screen, keep the docked
+   side square and rimless like the other styles do. */
+html[data-surface='cyber'] .stage[data-edge='right'] .pill.surface {
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)), 0 var(--cut));
+  background-image:
+    linear-gradient(135deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(45deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 0% 0%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 0% 100%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-position:
+    top left,
+    bottom left,
+    center,
+    center,
+    center,
+    center;
+}
+
+html[data-surface='cyber'] .stage[data-edge='left'] .pill.surface {
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    0 100%
+  );
+  background-image:
+    linear-gradient(225deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(315deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 100% 0%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 100% 100%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-position:
+    top right,
+    bottom right,
+    center,
+    center,
+    center,
+    center;
+}
+
+/* ---- rings ------------------------------------------------------------ */
+
+/* tracks become tick marks; butt caps read as instrument segments */
+html[data-surface='cyber'] .surface .ring-track {
+  stroke-dasharray: 1.4 2.6;
+}
+
+html[data-surface='cyber'] .surface .arc {
+  stroke-linecap: butt;
+  filter: drop-shadow(0 0 2.5px currentColor);
+}
+
+html[data-surface='cyber'] .surface .logo {
+  filter: drop-shadow(0 0 3px rgb(var(--cy-a-rgb) / 0.7));
+}
+
+html[data-surface='cyber'] .surface .pct {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ---- popover ---------------------------------------------------------- */
+
+html[data-surface='cyber'] .surface :is(h1, h2, h3, .label) {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+html[data-surface='cyber'] .surface :is(.pct, .reset, .updated, .plan, .details, .count, .v, .k) {
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+html[data-surface='cyber'] .surface .plan {
+  border-radius: 0;
+  border-color: rgb(var(--cy-a-rgb) / 0.5);
+  background: rgb(var(--cy-a-rgb) / 0.08);
+  color: var(--cy-a);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* quota bars: squared, segmented, glowing in their own colour */
+html[data-surface='cyber'] .surface .track {
+  border-radius: 0;
+  background: rgb(var(--cy-a-rgb) / 0.12);
+  overflow: visible;
+}
+
+html[data-surface='cyber'] .surface .fill {
+  border-radius: 0;
+  min-width: 2px;
+  box-shadow: 0 0 0.5rem -0.0625rem currentColor;
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px);
+  mask-image: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px);
+}
+
+html[data-surface='cyber'] .surface footer {
+  border-top-color: rgb(var(--cy-a-rgb) / 0.25);
+}
+
+/* the tail is a border triangle in the fill colour; tint its shadow neon */
+html[data-surface='cyber'] .tail {
+  filter: drop-shadow(0 0 0.1875rem rgb(var(--cy-a-rgb) / 0.8));
+}
