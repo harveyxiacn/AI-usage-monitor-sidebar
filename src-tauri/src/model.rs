@@ -351,6 +351,7 @@ pub struct Thresholds {
 pub struct ColorSettings {
     pub claude: String,
     pub codex: String,
+    pub copilot: String,
     pub warn: String,
     pub critical: String,
     pub surface: String,
@@ -362,6 +363,7 @@ impl Default for ColorSettings {
         ColorSettings {
             claude: "#ff5c1a".into(),
             codex: "#10a37f".into(),
+            copilot: "#8250df".into(),
             warn: "#f5c542".into(),
             critical: "#ff3b30".into(),
             surface: "".into(),
@@ -461,23 +463,21 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
+        // one entry per registered provider (providers::DEFAULT_PROVIDER_ORDER)
         let mut providers = BTreeMap::new();
-        providers.insert(
-            "claude".to_string(),
-            ProviderSettings {
-                enabled: true,
-                show_in_sidebar: true,
-                order: 0,
-            },
-        );
-        providers.insert(
-            "codex".to_string(),
-            ProviderSettings {
-                enabled: true,
-                show_in_sidebar: true,
-                order: 1,
-            },
-        );
+        for (order, id) in crate::commands::providers::DEFAULT_PROVIDER_ORDER
+            .iter()
+            .enumerate()
+        {
+            providers.insert(
+                (*id).to_string(),
+                ProviderSettings {
+                    enabled: crate::commands::providers::enabled_by_default(id),
+                    show_in_sidebar: true,
+                    order: order as i32,
+                },
+            );
+        }
         Settings {
             version: 1,
             language: "auto".into(),
@@ -722,6 +722,10 @@ pub struct ProviderInfo {
     pub credential_path: Option<String>,
     pub log_path: Option<String>,
     pub plan_label: Option<String>,
+    /// Quota source implemented from the tool's published source but never
+    /// verified against a live account; the UI badges it as such.
+    #[serde(default)]
+    pub experimental: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

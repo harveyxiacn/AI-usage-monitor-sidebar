@@ -1,7 +1,12 @@
 // Canonical shared types. Mirror of src-tauri/src/model.rs — keep in sync.
 // See docs/ARCHITECTURE.md §4.
 
-export type ProviderId = 'claude' | 'codex';
+/**
+ * A backend provider id. The two built-ins are spelled out so editors still
+ * autocomplete them, but the registry lives in Rust (`get_providers`) and the
+ * UI must render any id it is handed — see `$lib/providers`.
+ */
+export type ProviderId = 'claude' | 'codex' | (string & {});
 
 export type WindowKind = 'five_hour' | 'seven_day' | 'other';
 
@@ -164,6 +169,7 @@ export interface ColorSettings {
   /** provider accents; the concentric ramp (-1/-2/-3) is derived by lightening */
   claude: string;
   codex: string;
+  copilot: string;
   warn: string;
   critical: string;
   /** tint of the glass / solid surface, alpha comes from `opacity` */
@@ -392,6 +398,8 @@ export interface ProviderInfo {
   credentialPath: string | null;
   logPath: string | null;
   planLabel: string | null;
+  /** quota source implemented from published source, never verified live */
+  experimental: boolean;
 }
 
 export interface PricingEntry {

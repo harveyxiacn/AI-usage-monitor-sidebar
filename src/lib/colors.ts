@@ -1,6 +1,7 @@
 // Colour helpers. [FRONTEND]
 // The design system lives in CSS custom properties; chart.js needs concrete
 // colour strings, so anything handed to a canvas goes through resolveColor().
+import { accentVar } from './providers';
 import type { ProviderId } from './types';
 
 const VAR_RE = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.*?))?\)$/;
@@ -11,18 +12,25 @@ export function cssVar(name: string, fallback = '#8a8a93'): string {
   return v || fallback;
 }
 
-/** "var(--accent-claude)" → "#ff5c1a"; plain colours pass through untouched. */
+/**
+ * "var(--accent-claude)" → "#ff5c1a"; plain colours pass through untouched.
+ * The fallback may itself be a `var()` — providers without hand-tuned tokens
+ * are addressed as `var(--accent-<id>, var(--accent-fallback))` — so an
+ * unresolved variable is resolved again rather than handed to a canvas.
+ */
 export function resolveColor(color: string, fallback = '#8a8a93'): string {
   const m = VAR_RE.exec(color.trim());
   if (!m) return color;
-  return cssVar(m[1], m[2]?.trim() || fallback);
+  const nested = m[2]?.trim();
+  const value = cssVar(m[1], '');
+  if (value) return value;
+  return nested ? resolveColor(nested, fallback) : fallback;
 }
 
-/** Same hue pair as the sidebar rings, but as resolvable css variables. */
-export const PROVIDER_ACCENT: Record<ProviderId, string> = {
-  claude: 'var(--accent-claude)',
-  codex: 'var(--accent-codex)',
-};
+/** Same base hue as the sidebar rings, as a resolvable css variable. */
+export function providerAccent(provider: ProviderId): string {
+  return accentVar(provider);
+}
 
 /**
  * "How much" hue — one sequential violet, deliberately neither provider accent

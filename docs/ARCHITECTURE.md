@@ -101,6 +101,54 @@ other Linux distros, Windows. Stack: **Tauri 2 (Rust)** + **SvelteKit / Svelte 5
   `input_tokens` **excludes** cache tokens. Normalise: store
   `input_tokens` = non-cached input for both providers.
 
+### GitHub Copilot (experimental, unverified — 2026-09)
+
+Added from published source only: **nothing below was checked against a live
+Copilot account**, which is why `ProviderInfo.experimental` is `true` for it,
+the settings row carries an "Experimental" badge, and the provider starts
+switched off unless its credentials are already on disk
+(`providers::enabled_by_default`). Full citations: **docs/PROVIDERS.md §1**.
+
+* Credentials: the OAuth token the Copilot editor plugins write to
+  `<config>/github-copilot/apps.json` (older `hosts.json`), where `<config>` is
+  `$XDG_CONFIG_HOME`, `%LOCALAPPDATA%` on Windows, else `~/.config` (also on
+  macOS — *not* `~/Library/Application Support`). The file is an object keyed
+  by host, `"github.com"` or `"github.com:<appId>"`, each value carrying
+  `oauth_token`. Only github.com keys are used: an Enterprise entry's token
+  must never be sent to api.github.com. The GitHub CLI's own token is
+  deliberately **not** used as a fallback.
+* Usage endpoint: `GET https://api.github.com/copilot_internal/user` with
+  `Authorization: token <oauth_token>` (the `token` scheme, **not** `Bearer`),
+  `Accept: application/json`, `Editor-Version`, `Editor-Plugin-Version`,
+  `User-Agent`, `X-Github-Api-Version: 2025-04-01`. Response (from source):
+  ```json
+  {"copilot_plan":"pro","access_type_sku":"…","quota_reset_date":"2099-01-15T00:00:00Z",
+   "token_based_billing":false,
+   "quota_snapshots":{"premium_interactions":{"entitlement":300,"remaining":123,
+       "percent_remaining":41,"unlimited":false,"overage_permitted":false,"overage_count":0,
+       "quota_id":"premium","quota_remaining":123},
+     "chat":{…},"completions":{…}}}
+  ```
+* Buckets report percent **remaining**; `usedPercent = 100 - percent_remaining`.
+  Suppress a bucket that is `unlimited`, that uses the `-1` sentinel, or whose
+  `entitlement` is `0` (an org-managed placeholder, or `premium_interactions`
+  on a free seat) — a suppressed bucket is not "0 % used". Older free-tier
+  responses predate `quota_snapshots` and carry `limited_user_quotas`
+  (remaining) against `monthly_quotas` (total), read only when
+  `quota_snapshots` produced nothing.
+* The quota period is a **calendar month**: every window is `kind: "other"`
+  with `windowSeconds: null`. Copilot has no 5-hour or weekly window.
+* `quota_reset_date` (or `limited_user_reset_date`) is sometimes a bare date
+  (`"2099-07-01"`), sometimes an ISO-8601 datetime; both are accepted.
+* No Copilot client is known to write local session logs with token counts, so
+  there is no ingestion and no history for this provider (`logPath: null`).
+
+Researched and **rejected**: Google Gemini CLI (its credentials moved into the
+OS keychain, with an AES-256-GCM-obfuscated file as the fallback) and Cursor
+(ToS §1.5(viii), Enterprise-only official API, bot-protected endpoints). Both
+are written up with sources in **docs/PROVIDERS.md** §2 and §3 so the question
+is not re-opened without new information.
+
 ## 3. Repository layout & ownership
 
 ```
@@ -120,7 +168,8 @@ src-tauri/
   src/commands.rs         backend commands (thin wrappers)        [BACKEND]
   src/state.rs            AppState (settings, snapshot cache, db) [BACKEND]
   src/settings.rs         load/save settings.json                 [BACKEND]
-  src/providers/          claude.rs, codex.rs, mod.rs (trait)     [BACKEND]
+  src/providers/          claude.rs, codex.rs, copilot.rs, mod.rs (trait, registry) [BACKEND]
+  lib/providers.ts        provider-agnostic frontend helpers      [FRONTEND]
   src/ingest/             jsonl parsers, incremental ingestion     [BACKEND]
   src/store/              sqlite schema + queries                  [BACKEND]
   src/pricing.rs          default pricing table + cost estimation [BACKEND]
@@ -411,7 +460,22 @@ documented in `docs/RELEASING.md`.
 
 ### Colours and sizes
 
-`Settings.colors` (hex strings; `surface`/`text` empty = theme default) and
+There is no fixed provider list in the frontend. `providers::DEFAULT_PROVIDER_ORDER`
+is the single registry: `Settings::default()` and `settings::clamp` seed one
+`ProviderSettings` entry per id (enabled per `providers::enabled_by_default`,
+so an experimental provider stays off until its credentials exist), and the UI
+renders whatever `get_providers` / the snapshot report. A provider whose
+`Provider::experimental()` is true and which is switched off is left out of
+`AppSnapshot` entirely (no ring, no "disabled" card) while still being listed
+by `get_providers`, so it can be switched on; a *verified* provider that is
+switched off keeps its `disabled` entry exactly as before. A provider accent is
+addressed as `var(--accent-<id>-N, var(--accent-fallback-N))`, so an id with no
+hand-tuned tokens in `theme.css` still gets a ring; `ProviderLogo.svelte` draws
+a monogram when it has no mark for the id.
+
+`Settings.colors` (hex strings; one per provider that has a user-tunable
+accent, plus the fixed `warn`/`critical`/`surface`/`text`; `surface`/`text`
+empty = theme default) and
 `Settings.sizes` (px at scale 1: `ringSize` 40–96, `ringStroke` 3–8, `barGap`
 6–40, `barPadding` 4–24, `cornerRadius` 8–40, `labelSize` 9–18) are applied by
 the frontend as CSS custom properties; the backend only clamps and persists

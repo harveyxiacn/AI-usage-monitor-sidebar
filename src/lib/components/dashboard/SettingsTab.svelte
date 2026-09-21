@@ -13,6 +13,7 @@
     getAppInfo,
     getMonitors,
     getPricing,
+    getProviders,
     getShortcutStatus,
     isTauri,
     quitApp,
@@ -22,6 +23,7 @@
   } from '$lib/api';
   import { formatAgo } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { providerDisplayName } from '$lib/providers';
   import { shortcutProblem } from '$lib/shortcuts';
   import { defaultSidebarItems, settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -36,6 +38,7 @@
     PricingEntry,
     PricingTable,
     ProviderId,
+    ProviderInfo,
     RingMode,
     ShortcutStatus,
     SidebarItems,
@@ -49,6 +52,7 @@
   const s = $derived(settings.value);
 
   let monitors = $state<MonitorInfo[]>([]);
+  let providerInfos = $state<ProviderInfo[]>([]);
   let appInfo = $state<AppInfo | null>(null);
   let pricing = $state<PricingTable | null>(null);
   let pricingSaved = $state(false);
@@ -64,15 +68,20 @@
   /** Why a global shortcut is not active, as reported by the backend. */
   let shortcuts = $state<ShortcutStatus>({ toggleSidebar: null, openDashboard: null });
 
-  /** Provider rows: known providers from the snapshot, ordered by settings. */
+  /** Provider rows: every provider the backend reports, ordered by settings. */
   const providerRows = $derived.by(() => {
     const ids = new Set<ProviderId>((snapshot.value?.providers ?? []).map((p) => p.provider));
+    for (const info of providerInfos) ids.add(info.id);
     for (const id of Object.keys(s.providers)) ids.add(id as ProviderId);
     return [...ids].sort((a, b) => (s.providers[a]?.order ?? 0) - (s.providers[b]?.order ?? 0));
   });
 
+  /** `get_providers` is the authority on which providers exist and their state. */
+  const providerInfoOf = (id: ProviderId) => providerInfos.find((p) => p.id === id) ?? null;
+
   onMount(() => {
     const disposeUpdate = update.init();
+    void getProviders().then((p) => (providerInfos = p)).catch((e) => (actionError = String(e)));
     void getMonitors().then((m) => (monitors = m)).catch((e) => (actionError = String(e)));
     void getAppInfo().then((i) => (appInfo = i)).catch((e) => (actionError = String(e)));
     void loadPricing();
@@ -122,7 +131,8 @@
 
   const providerName = (id: ProviderId) =>
     snapshot.value?.providers.find((p) => p.provider === id)?.displayName ??
-    (id === 'claude' ? 'Claude' : 'Codex');
+    providerInfos.find((p) => p.id === id)?.displayName ??
+    providerDisplayName(id);
 
   /** Swap the `order` of two adjacent providers. */
   async function move(id: ProviderId, delta: -1 | 1) {
@@ -566,9 +576,15 @@
   <article class="card group">
     <h3>{t('settings.providers')}</h3>
     {#each providerRows as id, i (id)}
+      {@const info = providerInfoOf(id)}
       <div class="prow">
         <span class="plogo"><ProviderLogo provider={id} size={20} /></span>
         <span class="pname">{providerName(id)}</span>
+        {#if info?.experimental}
+          <span class="badge" title={t('settings.provider.experimental.hint')}>
+            {t('settings.provider.experimental')}
+          </span>
+        {/if}
         <button class="btn icon" disabled={i === 0} onclick={() => void move(id, -1)} aria-label={t('common.up')}>↑</button>
         <button class="btn icon" disabled={i === providerRows.length - 1} onclick={() => void move(id, 1)} aria-label={t('common.down')}>↓</button>
         <span class="pcol" title={t('settings.providerEnabled')}>
@@ -843,6 +859,20 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* "experimental": the provider's quota source could not be verified against
+     a live account, so the row says so rather than the README alone */
+  .badge {
+    flex: none;
+    padding: 0.0625rem 0.375rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--warn);
     white-space: nowrap;
   }
 

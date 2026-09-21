@@ -113,6 +113,11 @@ login of its own.
 - Claude Code: the user runs `claude` and signs in (`/login`).
 - Codex: the user runs `codex login` (ChatGPT sign-in). API-key mode has no
   quota windows, so the ring shows "not signed in" — that is expected.
+- GitHub Copilot: **experimental and unverified** (see `docs/PROVIDERS.md`). It
+  reads the token the Copilot editor plugins leave in
+  `~/.config/github-copilot/apps.json` and is switched off unless that file
+  already holds a github.com token. Do not enable it for a user without saying
+  it was never tested against a live account.
 - Non-default locations are honoured through `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
 
 A ring in an error state has its message in the popover and in the log.
@@ -153,7 +158,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
 | `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |
 | `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
-| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only |
+| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` is **experimental** (never verified against a live account) and only turns itself on when its credentials are found |
 | `pricingUrl` | `""` | optional https URL of a price list, refreshed at most daily. Empty = no third-party request is ever made |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |

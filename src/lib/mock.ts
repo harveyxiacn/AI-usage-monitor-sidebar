@@ -124,6 +124,9 @@ export const mockSettings: Settings = {
   providers: {
     claude: { enabled: true, showInSidebar: true, order: 0 },
     codex: { enabled: true, showInSidebar: true, order: 1 },
+    // copilot is experimental: off until its credentials are found (see
+    // providers::enabled_by_default), which the browser preview mirrors.
+    copilot: { enabled: false, showInSidebar: true, order: 2 },
   },
   ingestEnabled: true,
   pricingUrl: '',
@@ -135,7 +138,7 @@ export const mockSettings: Settings = {
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
-  colors: { claude: '#ff5c1a', codex: '#10a37f', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
+  colors: { claude: '#ff5c1a', codex: '#10a37f', copilot: '#8250df', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
@@ -151,6 +154,7 @@ export const mockProviders: ProviderInfo[] = [
     credentialPath: '~/.claude/.credentials.json',
     logPath: '~/.claude/projects/**/*.jsonl',
     planLabel: 'Claude Max 5x',
+    experimental: false,
   },
   {
     id: 'codex',
@@ -159,6 +163,17 @@ export const mockProviders: ProviderInfo[] = [
     credentialPath: '~/.codex/auth.json',
     logPath: '~/.codex/sessions/**/*.jsonl',
     planLabel: 'ChatGPT Plus',
+    experimental: false,
+  },
+  // Signed out on purpose: the only Copilot state that was ever verified.
+  {
+    id: 'copilot',
+    displayName: 'GitHub Copilot',
+    loggedIn: false,
+    credentialPath: '~/.config/github-copilot/apps.json',
+    logPath: null,
+    planLabel: null,
+    experimental: true,
   },
 ];
 

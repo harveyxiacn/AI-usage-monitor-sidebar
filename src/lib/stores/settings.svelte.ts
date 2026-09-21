@@ -12,6 +12,7 @@ export { defaultSidebarItems };
 export const defaultColors: ColorSettings = {
   claude: '#ff5c1a',
   codex: '#10a37f',
+  copilot: '#8250df',
   warn: '#f5c542',
   critical: '#ff3b30',
   surface: '',
