@@ -165,7 +165,7 @@
  */
 :root[data-surface='glass'],
 :root[data-surface='glass'][data-theme='dark'] {
-  --surface-fill: rgb(18 18 22 / calc(0.55 * var(--surface-alpha)));
+  --surface-fill: rgb(18 18 22 / calc(0.66 * var(--surface-alpha)));
   /* top rim light and the gradient stroke, bright top-left → faint bottom-right */
   --glass-rim: rgb(255 255 255 / 0.35);
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / 0.55) 0%, rgb(255 255 255 / 0.18) 38%, rgb(255 255 255 / 0.08) 100%);
@@ -177,10 +177,30 @@
   --bar-shadow: 0 0.5rem 2rem rgb(0 0 0 / 0.35), 0 0.0625rem 0.125rem rgb(0 0 0 / 0.25);
   /* the neutral track would disappear into the translucent fill */
   --surface-track: rgb(255 255 255 / 0.18);
+  --text-halo-rgb: 0 0 0;
+  --text-halo-strength: 1;
+}
+
+/*
+ * Legibility on glass. The widget windows are translucent and no platform
+ * lets an ordinary app look at the pixels behind its own window (Wayland has
+ * no API at all, macOS wants the Screen Recording permission), so the text
+ * cannot follow the wallpaper or the window underneath. Instead it is made
+ * independent of them: over a white page even the 66 % dark fill composites to
+ * a mid grey (#62626a) where the stock --muted has a contrast of 2:1. The
+ * secondary tones are therefore pushed towards the text colour here, and
+ * base.css adds a halo in the opposite tone around every glyph — the same
+ * trick subtitles use. The dashboard is an opaque window and keeps its palette.
+ */
+:root[data-surface='glass']:not([data-win='dashboard']),
+:root[data-surface='glass'][data-theme='dark']:not([data-win='dashboard']) {
+  --muted: #dcdce3;
+  --faint: #c4c4ce;
+  --label-shadow: var(--text-halo);
 }
 
 :root[data-surface='glass'][data-theme='light'] {
-  --surface-fill: rgb(255 255 255 / calc(0.45 * var(--surface-alpha)));
+  --surface-fill: rgb(255 255 255 / calc(0.6 * var(--surface-alpha)));
   --glass-rim: rgb(255 255 255 / 0.85);
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / 0.95) 0%, rgb(255 255 255 / 0.45) 38%, rgb(0 0 0 / 0.08) 100%);
   --glass-sheen: linear-gradient(135deg, rgb(255 255 255 / 0.5) 0%, rgb(255 255 255 / 0.12) 35%, transparent 60%);
@@ -189,4 +209,13 @@
   --bar-shadow: 0 0.5rem 2rem rgb(0 0 0 / 0.18), 0 0.0625rem 0.125rem rgb(0 0 0 / 0.12);
   /* white-on-white is invisible here, so the track goes dark instead */
   --surface-track: rgb(20 20 25 / 0.14);
+  --text-halo-rgb: 255 255 255;
+  /* a bright halo washes out small dark glyphs, and the light fill already
+     composites to a light grey over anything: a hint is enough here */
+  --text-halo-strength: 0.4;
+}
+
+:root[data-surface='glass'][data-theme='light']:not([data-win='dashboard']) {
+  --muted: #26262e;
+  --faint: #3a3a44;
 }

@@ -144,3 +144,17 @@ test('CSV preserves delimiters, unknown cost and neutralizes formula cells', () 
   expect(historyCsv([{ ...row, project: null }])).toContain(',claude,"模型,example",,100,');
   expect(csv.split('\r\n')).toHaveLength(3);
 });
+
+test('the legibility halo opposes the text colour, whatever the theme says', async () => {
+  const { contrastRatio, haloChannels, parseHex } = await import('../src/lib/colors');
+  expect(haloChannels('#f5f5f7')).toBe('0 0 0');
+  expect(haloChannels('#16161a')).toBe('255 255 255');
+  expect(haloChannels('#ffd60a')).toBe('0 0 0'); // a bright custom colour on the dark theme
+  expect(haloChannels('not-a-colour')).toBeNull();
+  expect(contrastRatio(parseHex('#000000')!, parseHex('#ffffff')!)).toBeCloseTo(21, 5);
+  // the glass secondary tones must stay readable on the worst-case composite
+  // (66 % dark fill over a white page ≈ #62626a) once the halo darkens the edge
+  const worst = parseHex('#62626a')!;
+  expect(contrastRatio(parseHex('#f5f5f7')!, worst)).toBeGreaterThan(4.5);
+  expect(contrastRatio(parseHex('#dcdce3')!, worst)).toBeGreaterThan(contrastRatio(parseHex('#9a9aa3')!, worst) * 1.6);
+});

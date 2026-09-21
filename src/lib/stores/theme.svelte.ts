@@ -5,7 +5,7 @@
 // therefore beat every rule in theme.css. A setting left at its contract
 // default removes the inline property again so the stylesheet (and with it the
 // per-theme value) takes over — that is why `setVar` accepts null.
-import { hexToRgbChannels, lighten, parseHex } from '$lib/colors';
+import { haloChannels, hexToRgbChannels, lighten, parseHex } from '$lib/colors';
 import { setLanguage } from '$lib/i18n/i18n.svelte';
 import { clampSize, defaultColors } from './settings.svelte';
 import type { ProviderId, Settings, SizeSettings } from '$lib/types';
@@ -98,11 +98,11 @@ export function applyTheme(s: Settings): void {
   setVar(root, '--warn', parseHex(s.colors.warn) ? s.colors.warn : null);
   setVar(root, '--critical', parseHex(s.colors.critical) ? s.colors.critical : null);
 
-  // Surface tint: the alpha is the *material's* (0.55 for glass, 1 for solid)
+  // Surface tint: the alpha is the *material's* (theme.css glass fill, 1 for solid)
   // multiplied by Settings.opacity, exactly like the stylesheet does it.
   const tint = s.colors.surface ? hexToRgbChannels(s.colors.surface) : null;
   if (tint) {
-    const base = s.surfaceStyle === 'glass' ? 0.55 : 1;
+    const base = s.surfaceStyle !== 'glass' ? 1 : theme === 'light' ? 0.6 : 0.66;
     setVar(root, '--surface-fill', `rgb(${tint} / calc(${base} * var(--surface-alpha)))`);
     // the ring/percent badge halo is keyed off the surface colour too
     setVar(root, '--bar-bg-rgb', tint);
@@ -116,6 +116,9 @@ export function applyTheme(s: Settings): void {
   const text = s.colors.text && parseHex(s.colors.text) ? s.colors.text : null;
   setVar(root, '--text', windowKind === 'dashboard' ? null : text);
   setVar(root, '--logo', windowKind === 'dashboard' ? null : text);
+  // A custom text colour may be the opposite of the theme's (dark text on the
+  // dark theme); the legibility halo has to follow the text, not the theme.
+  setVar(root, '--text-halo-rgb', windowKind === 'dashboard' || !text ? null : haloChannels(text));
 
   applySizes(root, s.sizes);
 

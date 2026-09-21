@@ -136,3 +136,31 @@ export function hexToRgbChannels(hex: string): string | null {
   const rgb = parseHex(hex);
   return rgb ? `${rgb.r} ${rgb.g} ${rgb.b}` : null;
 }
+
+/** WCAG relative luminance, 0 (black) .. 1 (white). */
+export function relativeLuminance({ r, g, b }: Rgb): number {
+  const lin = (c: number) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/** WCAG contrast ratio, 1 .. 21. */
+export function contrastRatio(a: Rgb, b: Rgb): number {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/**
+ * The widget is translucent and cannot see what is behind it, so its text
+ * carries its own backdrop: a halo in whichever of black / white contrasts
+ * more with the text colour. Returns CSS rgb channels ("0 0 0").
+ */
+export function haloChannels(textHex: string): string | null {
+  const rgb = parseHex(textHex);
+  if (!rgb) return null;
+  const black = { r: 0, g: 0, b: 0 };
+  const white = { r: 255, g: 255, b: 255 };
+  return contrastRatio(rgb, black) >= contrastRatio(rgb, white) ? '0 0 0' : '255 255 255';
+}
