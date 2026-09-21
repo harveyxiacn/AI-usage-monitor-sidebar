@@ -150,6 +150,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `refreshIntervalSec` | `60` | quota polling period |
 | `providers` | `{"claude":{"enabled":true,"order":0},"codex":{"enabled":true,"order":1}}` | hide or reorder a provider |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
+| `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `autostart` | `false`, `true` | start at login |
 | `alwaysOnTop` | `true` | |

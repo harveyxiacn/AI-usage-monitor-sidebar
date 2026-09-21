@@ -70,6 +70,7 @@ export const defaultSettings: Settings = {
   refreshIntervalSec: 60,
   providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
   ingestEnabled: true,
+  monthlyBudgetUsd: 0,
   autostart: false,
   opacity: 1,
   scale: 1,

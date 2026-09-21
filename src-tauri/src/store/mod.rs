@@ -15,9 +15,7 @@ use rusqlite::Connection;
 use std::path::Path;
 
 pub use quota::{insert_quota_sample, query_quota_history};
-pub use usage::{
-    insert_usage_events, query_calendar, query_history, query_sessions, UsageEvent,
-};
+pub use usage::{insert_usage_events, query_calendar, query_history, query_sessions, UsageEvent};
 
 /// Bumped whenever the schema changes; migrations live in [`migrate`].
 pub const SCHEMA_VERSION: i64 = 1;

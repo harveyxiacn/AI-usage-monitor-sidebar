@@ -51,7 +51,10 @@ quota is left, and when does it reset?*
 | Themes | Dark / light / follow the system |
 | i18n | English and 简体中文 (tray menu included) |
 | History | Incremental ingestion of session logs into SQLite; per-model, per-day/-week/-month totals; native CSV save and clipboard copy |
+| Activity heatmap | 26 weeks of local days (or a weekday × hour punch card); pick a day to narrow the range. Every cell is focusable and labelled |
+| Session drill-down | Per-session totals — provider, project, first/last activity, duration, requests, tokens, models — sortable and exportable. Counters and identifiers only, never prompt or response text |
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
+| Monthly budget | `monthlyBudgetUsd` draws the month-to-date *estimate* against your budget, with the percentage used and the pace. Estimates only — subscriptions do not bill per token |
 | Autostart | Optional login item (`--hidden`) |
 | Notifications | Optional warning when a window crosses your editable threshold |
 

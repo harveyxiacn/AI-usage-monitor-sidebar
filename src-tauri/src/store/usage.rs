@@ -327,11 +327,7 @@ struct SessionAcc {
 /// empty-string session of their provider, mirroring the unassigned-project
 /// rule. First/last activity and the duration only cover events **inside** the
 /// range, which is what the surrounding history view shows.
-pub fn query_sessions(
-    db: &Db,
-    q: &SessionQuery,
-    pricing: &PricingTable,
-) -> Result<SessionsResult> {
+pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Result<SessionsResult> {
     let (from, to) = query_range(&q.from, &q.to)?;
     let limit = q
         .limit
@@ -369,13 +365,13 @@ pub fn query_sessions(
             let session_id: String = row.get(9)?;
             let project: String = row.get(10)?;
             let cost = pricing::estimate_cost(pricing, &model, &t);
-            let entry = sessions.entry((provider, session_id)).or_insert_with(|| {
-                SessionAcc {
+            let entry = sessions
+                .entry((provider, session_id))
+                .or_insert_with(|| SessionAcc {
                     first_ts: ts,
                     last_ts: ts,
                     ..SessionAcc::default()
-                }
-            });
+                });
             entry.first_ts = entry.first_ts.min(ts);
             // rows arrive in `ts` order, so the last write wins for the cwd
             entry.last_ts = entry.last_ts.max(ts);
@@ -1054,8 +1050,22 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         // 2026-09-15 is a Tuesday (weekday 1), 2026-09-20 a Sunday (weekday 6).
         let events = [
-            event("claude", "claude-opus-4-5", ms("2026-09-15T09:30:00"), "a", 1_000_000, 0),
-            event("claude", "claude-opus-4-5", ms("2026-09-15T23:59:59"), "b", 10, 0),
+            event(
+                "claude",
+                "claude-opus-4-5",
+                ms("2026-09-15T09:30:00"),
+                "a",
+                1_000_000,
+                0,
+            ),
+            event(
+                "claude",
+                "claude-opus-4-5",
+                ms("2026-09-15T23:59:59"),
+                "b",
+                10,
+                0,
+            ),
             event("codex", "gpt-5", ms("2026-09-15T09:05:00"), "c", 20, 0),
             event("codex", "who-knows", ms("2026-09-20T13:00:00"), "d", 30, 0),
         ];
@@ -1105,18 +1115,33 @@ mod tests {
         let end = ms("2026-09-16T00:00:00");
         let path = r"C:\Work\O'Reilly, Inc\项目";
         let events = [
-            in_project(event("codex", "gpt-5", start - 1, "before", 10, 0), Some(path)),
-            in_project(event("codex", "gpt-5", start, "at-start", 10, 0), Some(path)),
-            in_project(event("codex", "gpt-5", end - 1, "last-ms", 10, 0), Some(path)),
+            in_project(
+                event("codex", "gpt-5", start - 1, "before", 10, 0),
+                Some(path),
+            ),
+            in_project(
+                event("codex", "gpt-5", start, "at-start", 10, 0),
+                Some(path),
+            ),
+            in_project(
+                event("codex", "gpt-5", end - 1, "last-ms", 10, 0),
+                Some(path),
+            ),
             in_project(event("codex", "gpt-5", end, "at-end", 10, 0), Some(path)),
-            in_project(event("codex", "gpt-5", start, "other", 10, 0), Some("/other")),
+            in_project(
+                event("codex", "gpt-5", start, "other", 10, 0),
+                Some("/other"),
+            ),
             in_project(event("codex", "gpt-5", start, "none", 10, 0), None),
         ];
         insert_usage_events(&db, &events).unwrap();
         let table = pricing::default_table();
 
         let all = query_calendar(&db, &calendar("2026-09-15", "2026-09-16"), &table).unwrap();
-        assert_eq!(all.totals.requests, 4, "[from, to) excludes the end instant");
+        assert_eq!(
+            all.totals.requests, 4,
+            "[from, to) excludes the end instant"
+        );
 
         let filtered = query_calendar(
             &db,
@@ -1151,20 +1176,41 @@ mod tests {
         let events = [
             in_session(
                 in_project(
-                    event("claude", "claude-opus-4-5", ms(&format!("{day}09:00:00")), "a", 1_000_000, 0),
+                    event(
+                        "claude",
+                        "claude-opus-4-5",
+                        ms(&format!("{day}09:00:00")),
+                        "a",
+                        1_000_000,
+                        0,
+                    ),
                     Some("/home/dev/api"),
                 ),
                 Some("sess-1"),
             ),
             in_session(
                 in_project(
-                    event("claude", "claude-haiku-4-5", ms(&format!("{day}11:30:00")), "b", 10, 5),
+                    event(
+                        "claude",
+                        "claude-haiku-4-5",
+                        ms(&format!("{day}11:30:00")),
+                        "b",
+                        10,
+                        5,
+                    ),
                     Some("/home/dev/api-moved"),
                 ),
                 Some("sess-1"),
             ),
             in_session(
-                event("claude", "claude-opus-4-5", ms(&format!("{day}10:00:00")), "c", 200_000, 0),
+                event(
+                    "claude",
+                    "claude-opus-4-5",
+                    ms(&format!("{day}10:00:00")),
+                    "c",
+                    200_000,
+                    0,
+                ),
                 Some("sess-2"),
             ),
             // same session id, different provider: never merged
@@ -1173,7 +1219,14 @@ mod tests {
                 Some("sess-1"),
             ),
             in_session(
-                event("codex", "who-knows", ms(&format!("{day}12:30:00")), "e", 50, 0),
+                event(
+                    "codex",
+                    "who-knows",
+                    ms(&format!("{day}12:30:00")),
+                    "e",
+                    50,
+                    0,
+                ),
                 None,
             ),
             in_session(
@@ -1185,7 +1238,10 @@ mod tests {
         let table = pricing::default_table();
         let r = query_sessions(&db, &sessions("2026-09-15", "2026-09-16"), &table).unwrap();
 
-        assert_eq!(r.total_sessions, 4, "claude/sess-1, claude/sess-2, codex/sess-1, codex/unassigned");
+        assert_eq!(
+            r.total_sessions, 4,
+            "claude/sess-1, claude/sess-2, codex/sess-1, codex/unassigned"
+        );
         assert!(!r.truncated);
         assert_eq!(r.totals.requests, 6);
         assert_eq!(r.rows.len(), 4);
@@ -1197,7 +1253,10 @@ mod tests {
         assert!(r.rows[0].last_ts.starts_with("2026-09-15T11:30:00"));
         assert_eq!(
             r.rows[0].models,
-            vec!["claude-haiku-4-5".to_string(), "claude-opus-4-5".to_string()]
+            vec![
+                "claude-haiku-4-5".to_string(),
+                "claude-opus-4-5".to_string()
+            ]
         );
         assert_eq!(
             r.rows[0].project, "/home/dev/api-moved",

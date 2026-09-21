@@ -179,6 +179,19 @@ Key semantics:
   time/provider range, ignoring the current project filter. It includes an
   empty string when unassigned events exist. UI labels may shorten paths,
   but selection, series identity and CSV preserve the complete value.
+* `CalendarResult.days` has one entry per **local** calendar day that has
+  activity; days without events are omitted, so the UI can tell an empty day
+  (inside the window, zero usage) from a missing one (outside it).
+  `CalendarResult.slots` folds the same range into weekday × hour-of-day cells
+  with Monday = 0 and local hours, for the punch-card view.
+* A session is `(provider, sessionId)`; `SessionRow.sessionId` is an empty
+  string for events that carry none, mirroring the unassigned-project rule.
+  `firstTs`/`lastTs`/`durationMs` only cover events **inside** the query range,
+  and `project` is the cwd of the session's latest event in range (exact path).
+  `SessionsResult.rows` is capped server-side (`limit`, default 200, clamped to
+  1..1000) to the largest sessions by total tokens, while `totalSessions` and
+  `totals` always describe the whole range. Session rows carry counters and
+  identifiers only — never prompt or response text.
 
 ## 5. Tauri commands
 
@@ -194,6 +207,8 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_settings` | – | `Settings` |
 | `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
 | `get_usage_history` | `query: HistoryQuery` | `HistoryResult` |
+| `get_usage_calendar` | `query: CalendarQuery` | `CalendarResult` (local-day calendar **and** weekday × hour punch card from one scan) |
+| `get_usage_sessions` | `query: SessionQuery` | `SessionsResult` (top `limit` sessions by tokens + the full-range count/totals) |
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
@@ -247,7 +262,12 @@ follow-up.
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
-autostart off, thresholds warn 70 / critical 90.
+autostart off, thresholds warn 70 / critical 90, `monthlyBudgetUsd=0`.
+
+`monthlyBudgetUsd` (0 – 1 000 000, 0 = off) is an **estimated** monthly cost
+budget. When it is set and the History tab shows cost, the tab draws the
+month-to-date cumulative estimate against it and states the percentage used
+and the linear pace. It never affects quotas, notifications or billing.
 
 ### Colours and sizes
 
@@ -290,6 +310,14 @@ refresh when the percent changed or ≥ 5 min passed; cached/offline values
 never acquire a new sample timestamp. History ranges use `[from, to)` and
 local calendar buckets.
 
+`get_usage_history`, `get_usage_calendar` and `get_usage_sessions` each run a
+single range-scan over `idx_usage_ts` and aggregate in Rust — one query per
+panel, never one per day/session, and only the aggregates cross into the
+webview. Bucketing stays in Rust (not in SQL `localtime`) so all three views
+agree on the same DST-aware local calendar. No extra index is warranted: the
+`(?N IS NULL OR col = ?N)` filters cannot be used as index prefixes, and the
+cost of these queries is reading the rows in range, which no index removes.
+
 ## 9. Cost estimation
 
 `pricing.rs` ships an API-equivalent price list (USD per 1M tokens: input,
@@ -313,6 +341,12 @@ tracked in the normalized counters. Cache writes use the published rate
 where available, otherwise the base input rate.
 
 ## 10. History export and verification
+
+The History tab also carries a 26-week activity heatmap (local days, or the
+same range as a weekday × hour punch card) whose cells are keyboard-focusable
+and labelled with their date and value; picking a day narrows the range below
+to that single local day. The session drill-down and the bucket table share
+the copy/export buttons, so the CSV always matches the visible view.
 
 History presets include today and count local calendar days. Custom ranges
 end at midnight after the final selected day, including DST transitions;

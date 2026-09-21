@@ -376,6 +376,32 @@ mod tests {
     }
 
     #[test]
+    fn the_monthly_budget_is_optional_non_negative_and_capped() {
+        let base = Settings::default();
+        assert_eq!(base.monthly_budget_usd, 0.0, "no budget by default");
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": 250})).monthly_budget_usd,
+            250.0
+        );
+        // a typo must not blow the chart's axis out or go negative
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": -5})).monthly_budget_usd,
+            0.0
+        );
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": 1e12})).monthly_budget_usd,
+            1_000_000.0
+        );
+        // a settings.json written before the field existed still loads
+        let dir = tempdir();
+        std::fs::write(settings_path(&dir), r#"{"edge":"left"}"#).unwrap();
+        let old = load(&dir);
+        assert_eq!(old.edge, Edge::Left);
+        assert_eq!(old.monthly_budget_usd, 0.0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn thresholds_stay_ordered_and_in_range() {
         let base = Settings::default();
         let m = merge(
