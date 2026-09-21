@@ -87,6 +87,8 @@ export type Theme = 'dark' | 'light' | 'auto';
 export type Language = 'auto' | 'en' | 'zh-CN';
 /** glass: translucent "liquid glass" surface with specular highlights; solid: opaque dark/light pill */
 export type SurfaceStyle = 'glass' | 'solid' | 'cyber';
+/** Neon pair the cyber surface is painted with; ignored by the other styles. */
+export type CyberAccent = 'neon' | 'matrix' | 'amber' | 'ice' | 'synthwave';
 
 export interface ProviderSettings {
   enabled: boolean;
@@ -132,6 +134,8 @@ export interface Settings {
   language: Language;
   theme: Theme;
   surfaceStyle: SurfaceStyle;
+  /** Only meaningful while `surfaceStyle` is 'cyber'. */
+  cyberAccent: CyberAccent;
   edge: Edge;
   verticalAlign: VerticalAlign;
   /** px offset applied after alignment (positive moves down) */

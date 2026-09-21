@@ -218,6 +218,22 @@ pub enum SurfaceStyle {
     Cyber,
 }
 
+/// Neon pair the `cyber` surface is painted with. Ignored by the other styles.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CyberAccent {
+    /// cyan → magenta (the original HUD)
+    Neon,
+    /// phosphor green → lime
+    Matrix,
+    /// amber → orange, like an amber CRT
+    Amber,
+    /// ice blue → near-white
+    Ice,
+    /// purple → hot pink
+    Synthwave,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettings {
@@ -290,6 +306,8 @@ pub struct Settings {
     pub language: String,
     pub theme: Theme,
     pub surface_style: SurfaceStyle,
+    /// Only meaningful while `surface_style` is `cyber`.
+    pub cyber_accent: CyberAccent,
     pub edge: Edge,
     pub vertical_align: VerticalAlign,
     pub vertical_offset: i32,
@@ -338,6 +356,7 @@ impl Default for Settings {
             language: "auto".into(),
             theme: Theme::Dark,
             surface_style: SurfaceStyle::Glass,
+            cyber_accent: CyberAccent::Neon,
             edge: Edge::Right,
             vertical_align: VerticalAlign::Center,
             vertical_offset: 0,

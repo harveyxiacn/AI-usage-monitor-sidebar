@@ -23,6 +23,7 @@
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import type {
     AppInfo,
+    CyberAccent,
     Edge,
     Language,
     MonitorInfo,
@@ -186,6 +187,7 @@
   const ALIGNS: VerticalAlign[] = ['top', 'center', 'bottom'];
   const RING_MODES: RingMode[] = ['concentric', 'primary', 'all'];
   const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
+  const CYBER_ACCENTS: CyberAccent[] = ['neon', 'matrix', 'amber', 'ice', 'synthwave'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
 </script>
 
@@ -273,6 +275,15 @@
         {#each SURFACE_STYLES as v (v)}<option value={v}>{tDyn(`settings.surfaceStyle.${v}`)}</option>{/each}
       </select>
     </Field>
+
+    <!-- the accent pair only paints the cyber HUD, so it only exists there -->
+    {#if s.surfaceStyle === 'cyber'}
+      <Field label={t('settings.cyberAccent')}>
+        <select aria-label={t('settings.cyberAccent')} class="field" value={s.cyberAccent} onchange={(e) => void settings.patch({ cyberAccent: e.currentTarget.value as CyberAccent })}>
+          {#each CYBER_ACCENTS as v (v)}<option value={v}>{tDyn(`settings.cyberAccent.${v}`)}</option>{/each}
+        </select>
+      </Field>
+    {/if}
   </article>
 
   <SizeColourGroup />

@@ -56,6 +56,7 @@ export const defaultSettings: Settings = {
   language: 'auto',
   theme: 'dark',
   surfaceStyle: 'glass',
+  cyberAccent: 'neon',
   edge: 'right',
   verticalAlign: 'center',
   verticalOffset: 0,

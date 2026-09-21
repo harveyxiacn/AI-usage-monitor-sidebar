@@ -138,6 +138,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `language` | `"auto"`, `"en"`, `"zh-CN"` | UI and tray language |
 | `theme` | `"dark"`, `"light"`, `"auto"` | |
 | `surfaceStyle` | `"glass"`, `"solid"`, `"cyber"` | liquid glass (blurred backdrop where the OS has one), opaque, or a neon sci-fi HUD |
+| `cyberAccent` | `"neon"`, `"matrix"`, `"amber"`, `"ice"`, `"synthwave"` | neon pair the `cyber` HUD is painted with; ignored by the other surfaces |
 | `edge` | `"right"`, `"left"` | screen edge (also set by dragging) |
 | `verticalAlign` | `"center"`, `"top"`, `"bottom"` | |
 | `verticalOffset` | `0` (px, positive = down) | also set by dragging |

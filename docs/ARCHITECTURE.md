@@ -258,7 +258,13 @@ follow-up.
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
-autostart off, thresholds warn 70 / critical 90.
+autostart off, thresholds warn 70 / critical 90, `cyberAccent="neon"`.
+
+`cyberAccent` (`neon` | `matrix` | `amber` | `ice` | `synthwave`) picks the
+neon pair the `cyber` surface is painted with. `applyTheme` stamps it on
+`<html>` as `data-cyber`; `src/lib/styles/cyber.css` keys the pair, the plate
+tint and the text tokens off it, and everything else in that file is written
+in terms of `--cy-a` / `--cy-b`. The other surface styles ignore it.
 
 `hideAccountEmail` (default false) is a privacy switch for screenshots and
 screen sharing: every place that renders an account address — card text,
