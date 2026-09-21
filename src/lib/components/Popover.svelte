@@ -20,7 +20,7 @@
   import QuotaExtras from './QuotaExtras.svelte';
   import WindowRow from './WindowRow.svelte';
   import { accentFor } from '$lib/stores/rings.svelte';
-  import { formatAgo } from '$lib/format';
+  import { formatAgo, staleHint } from '$lib/format';
   import { t, tDyn, hasKey } from '$lib/i18n/i18n.svelte';
   import type { Edge, PercentMode, ProviderQuota, Thresholds, WindowKind } from '$lib/types';
 
@@ -63,6 +63,8 @@
 
   const statusHint = $derived.by(() => {
     if (quota.status === 'ok') return null;
+    // Being rate-limited is a schedule, not a fault: explain the staleness.
+    if (quota.status === 'rate_limited') return staleHint(quota);
     if (quota.error) return quota.error;
     const specific = `status.hint.${quota.provider}.${quota.status}`;
     const generic = `status.hint.${quota.status}`;

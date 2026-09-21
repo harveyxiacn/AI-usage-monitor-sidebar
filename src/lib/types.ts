@@ -36,7 +36,14 @@ export interface QuotaWindow {
   forecast?: QuotaForecast | null;
 }
 
-export type ProviderStatus = 'ok' | 'not_logged_in' | 'token_expired' | 'error' | 'disabled';
+/** `rate_limited` is not an error: the last known windows are only getting stale. */
+export type ProviderStatus =
+  | 'ok'
+  | 'not_logged_in'
+  | 'token_expired'
+  | 'rate_limited'
+  | 'error'
+  | 'disabled';
 export type DataSource = 'api' | 'local_log' | 'cache';
 
 export interface AccountInfo {
@@ -85,6 +92,8 @@ export interface ProviderQuota {
   credits: CreditsInfo | null;
   /** Extras beyond the windows; empty when the provider reported none. */
   extras: QuotaExtra[];
+  /** Only for `rate_limited`: RFC 3339 UTC of the scheduler's next attempt */
+  nextAttemptAt: string | null;
 }
 
 export interface AppSnapshot {
@@ -206,8 +215,12 @@ export interface Settings {
   /** what the floating bar may draw; hidden items are still tracked */
   sidebarItems: SidebarItems;
   refreshIntervalSec: number;
+  /** Poll a provider less often while its session logs are quiet (10 min → ×2, 30 min → ×5, capped at 10 min) */
+  adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
   ingestEnabled: boolean;
+  /** Opt-in https URL of a pricing table; empty = no third-party request is ever made */
+  pricingUrl: string;
   autostart: boolean;
   /** 0.3 .. 1 */
   opacity: number;
@@ -267,6 +280,8 @@ export interface HistoryResult {
   byProvider: Record<string, TokenTotals>;
   /** Projects in the time/provider range, independent of the project filter. */
   projects: string[];
+  /** At least one cost came from an approximate family match (§9). */
+  costApproximate: boolean;
 }
 
 export interface QuotaHistoryQuery {

@@ -756,6 +756,20 @@ impl Provider for CodexProvider {
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return from_local_logs(&self.ctx, ProviderStatus::TokenExpired, EXPIRED_MESSAGE);
         }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = super::retry_after_of(resp.headers());
+            log::warn!(
+                "codex usage API answered HTTP 429 (Retry-After: {})",
+                retry_after.map_or("absent".to_string(), |s| format!("{s}s"))
+            );
+            let mut q = from_local_logs(
+                &self.ctx,
+                ProviderStatus::RateLimited,
+                "ChatGPT is rate-limiting the usage endpoint (HTTP 429); showing the last known values until the next attempt",
+            );
+            q.next_attempt_at = super::next_attempt_at(retry_after);
+            return q;
+        }
         if !status.is_success() {
             return from_local_logs(
                 &self.ctx,

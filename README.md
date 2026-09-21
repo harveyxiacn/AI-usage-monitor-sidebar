@@ -107,6 +107,11 @@ session logs those CLIs leave on disk.
 > service. Session JSONL records are parsed locally; only usage counters,
 > model/session identifiers and project paths are retained. Prompt and response
 > text is not stored in the usage database or sent by this app.
+>
+> The one exception is opt-in and off by default: if *you* put an https URL in
+> **Settings → Data → Pricing table URL**, the app downloads that price list
+> once a day (see "Keeping prices up to date"). While the field is empty no
+> third-party request is ever made.
 
 ## Install
 
@@ -202,6 +207,43 @@ Useful environment variables:
 Details, including the geometry maths and the hover state machine, are in
 [`docs/PLATFORM.md`](docs/PLATFORM.md). The module and command contracts are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Keeping prices up to date
+
+The cost column is an *estimate* for comparing providers and plans —
+subscriptions do not bill per token. Prices come from a built-in table
+(checked 2026-09-20). Model names drift fast, so:
+
+* A model the table does not know is priced from its **closest known family**
+  (`gpt-5.3-codex-spark` → `gpt-5.3-codex`, `claude-opus-4-99` →
+  `claude-opus-4`). Those numbers are approximate and the dashboard says so.
+  A model from an unrelated family stays unpriced and shows "—".
+* You can edit any row, add your own prefixes and delete rows in
+  **Settings → Data**. Your table wins over everything else.
+* **Optional, off by default:** put an `https://` URL in **Pricing table URL**
+  and the app refreshes the built-in list from it at most once a day (plus a
+  "Refresh prices now" button). The download is capped in size, validated
+  strictly and cached in the app data directory; anything unexpected is
+  rejected and the bundled table keeps being used.
+
+The file must use the same schema as [`pricing.json`](pricing.json) in this
+repository, which you can host yourself:
+
+```json
+{
+  "updatedAt": "2026-09-20T00:00:00Z",
+  "entries": [
+    { "modelPattern": "gpt-5.3-codex", "inputPerM": 1.75, "outputPerM": 14.0,
+      "cacheWritePerM": 1.75, "cacheReadPerM": 0.175 }
+  ]
+}
+```
+
+Rates are USD per 1M tokens. To follow this project's own list:
+
+```
+https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json
+```
 
 ## Where your configuration lives
 
@@ -349,6 +391,10 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 > 本来就会访问的那两个）之外，你的 token 不会离开本机。没有遥测、没有统计上报、
 > 没有任何第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
 > 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
+>
+> 唯一的例外需要你自己开启，默认关闭：只有当你在**设置 → 数据 → 价格表地址**里
+> 填入一个 https 地址时，应用才会每天最多拉取一次该价格表（见“让价格保持最新”）。
+> 该字段为空时，不会向任何第三方发起请求。
 
 ## 安装
 
@@ -434,6 +480,37 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 
 更多细节（几何计算、悬停状态机）见 [`docs/PLATFORM.md`](docs/PLATFORM.md)；
 模块与命令契约见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 让价格保持最新
+
+费用一栏只是用于横向比较服务与套餐的**估算值**——订阅制并不按 token 计费。价格来自
+内置价目表（2026-09-20 核对）。模型名字更新很快，所以：
+
+* 表里没有的模型会按**最接近的同系列模型**计价（`gpt-5.3-codex-spark` →
+  `gpt-5.3-codex`，`claude-opus-4-99` → `claude-opus-4`）。这类数字是近似值，
+  仪表盘会明确标注；完全不沾边的模型仍然显示“—”。
+* 在**设置 → 数据**里可以改价、添加自己的前缀、删除行；你保存的表优先级最高。
+* **可选，默认关闭**：在**价格表地址**里填入 `https://` 地址后，应用每天最多从该地址
+  更新一次内置价目表（也可以点“立即更新价格”）。下载有体积上限、经过严格校验，
+  并缓存在应用数据目录；只要有任何异常就整份丢弃，继续用内置表。
+
+文件格式与本仓库的 [`pricing.json`](pricing.json) 一致，你也可以自己托管一份：
+
+```json
+{
+  "updatedAt": "2026-09-20T00:00:00Z",
+  "entries": [
+    { "modelPattern": "gpt-5.3-codex", "inputPerM": 1.75, "outputPerM": 14.0,
+      "cacheWritePerM": 1.75, "cacheReadPerM": 0.175 }
+  ]
+}
+```
+
+价格单位是每百万 token 的美元数。想直接跟随本项目维护的价目表：
+
+```
+https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json
+```
 
 ## 配置文件位置
 

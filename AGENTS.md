@@ -120,9 +120,10 @@ A ring in an error state has its message in the popover and in the log.
 
 ## 5. Configure
 
-Settings live in one JSON file. The app reads it **at start-up** and rewrites
-it when the user changes something in the dashboard, so: quit the app (tray →
-Quit, or kill the process), edit, start it again.
+Settings live in one JSON file. The app **watches** it: save your edit and it
+applies within about a second — no restart, no quitting. (It also rewrites the
+file when the user changes something in the dashboard; a half-written file is
+ignored until it parses, so write it atomically or in one go.)
 
 | Platform | Path |
 |---|---|
@@ -149,8 +150,10 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `percentMode` | `"used"`, `"remaining"` | |
 | `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |
 | `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
-| `refreshIntervalSec` | `60` | quota polling period |
+| `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |
+| `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
 | `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only |
+| `pricingUrl` | `""` | optional https URL of a price list, refreshed at most daily. Empty = no third-party request is ever made |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |

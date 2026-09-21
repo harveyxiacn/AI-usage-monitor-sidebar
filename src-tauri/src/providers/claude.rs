@@ -6,7 +6,7 @@
 
 use super::{
     clamp_percent, degraded, empty_quota, mark_primary, normalize_rfc3339, now_rfc3339,
-    write_cache, Provider, ProviderCtx, CLAUDE_ID,
+    rate_limited, retry_after_of, write_cache, Provider, ProviderCtx, CLAUDE_ID,
 };
 use crate::model::{
     AccountInfo, CreditsInfo, DataSource, ExtraSeverity, ProviderInfo, ProviderQuota,
@@ -609,14 +609,20 @@ impl Provider for ClaudeProvider {
             );
         }
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // The usage endpoint itself is rate-limited; the scheduler backs off
-            // and the last good windows stay on screen meanwhile.
-            return degraded(
+            // The usage endpoint itself is rate-limited — and the OAuth token
+            // is shared with Claude Code's own calls, so this is not an error
+            // of ours. Keep the last good windows and obey `Retry-After`.
+            let retry_after = retry_after_of(resp.headers());
+            log::warn!(
+                "claude usage API answered HTTP 429 (Retry-After: {})",
+                retry_after.map_or("absent".to_string(), |s| format!("{s}s"))
+            );
+            return rate_limited(
                 &self.ctx,
                 CLAUDE_ID,
                 DISPLAY_NAME,
-                ProviderStatus::Error,
-                "Anthropic usage API is rate-limiting requests (HTTP 429); showing the last known values and retrying later",
+                retry_after,
+                "Anthropic is rate-limiting the usage endpoint (HTTP 429); showing the last known values until the next attempt",
             );
         }
         if !status.is_success() {

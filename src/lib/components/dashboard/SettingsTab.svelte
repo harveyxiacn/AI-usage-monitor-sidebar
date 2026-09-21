@@ -15,6 +15,7 @@
     getPricing,
     isTauri,
     quitApp,
+    refreshPricing,
     reingestLogs,
     setPricing,
   } from '$lib/api';
@@ -50,6 +51,7 @@
   let pricingSaving = $state(false);
   let pricingError = $state<string | null>(null);
   let pricingDirty = $state(false);
+  let pricingFetching = $state(false);
   let actionError = $state<string | null>(null);
   let rescanResult = $state<string | null>(null);
   let rescanning = $state(false);
@@ -118,6 +120,20 @@
       savedTimer = setTimeout(() => (pricingSaved = false), 1500);
     } catch (e) { pricingError = String(e); }
     finally { pricingSaving = false; }
+  }
+
+  /** Opt-in: only ever reaches the network when `pricingUrl` is set. */
+  async function fetchPrices() {
+    if (pricingFetching) return;
+    pricingFetching = true;
+    pricingError = null;
+    try {
+      pricing = await refreshPricing();
+      pricingSaved = true;
+      clearTimeout(savedTimer);
+      savedTimer = setTimeout(() => (pricingSaved = false), 1500);
+    } catch (e) { pricingError = String(e); }
+    finally { pricingFetching = false; }
   }
 
   function addPricingRow() {
@@ -386,7 +402,7 @@
       />
     </Field>
 
-    <Field label={t('settings.refreshIntervalSec')}>
+    <Field label={t('settings.refreshIntervalSec')} hint={t('settings.refreshIntervalSec.hint')}>
       <input
         class="field num"
         type="number"
@@ -396,6 +412,14 @@
         value={s.refreshIntervalSec}
         onchange={(e) => void settings.patch({ refreshIntervalSec: Math.round(num(e)) })}
         aria-label={t('settings.refreshIntervalSec')}
+      />
+    </Field>
+
+    <Field label={t('settings.adaptiveRefresh')} hint={t('settings.adaptiveRefresh.hint')}>
+      <Toggle
+        checked={s.adaptiveRefresh}
+        label={t('settings.adaptiveRefresh')}
+        onchange={(v) => void settings.patch({ adaptiveRefresh: v })}
       />
     </Field>
 
@@ -485,6 +509,18 @@
       />
     </Field>
 
+    <Field label={t('settings.pricingUrl')} hint={t('settings.pricingUrl.hint')} wide>
+      <input
+        class="field url"
+        type="url"
+        inputmode="url"
+        placeholder="https://…/pricing.json"
+        value={s.pricingUrl}
+        onchange={(e) => void settings.patch({ pricingUrl: (e.currentTarget as HTMLInputElement).value.trim() })}
+        aria-label={t('settings.pricingUrl')}
+      />
+    </Field>
+
     <Field label={t('history.rescan')}>
       <button class="btn" disabled={rescanning} onclick={() => void rescan()}>
         {rescanning ? t('history.ingestRunning') : t('history.rescan')}
@@ -562,6 +598,14 @@
 
       <div class="pricing-actions">
         {#if pricingDirty}<span class="muted small">{t('settings.pricing.unsaved')}</span>{/if}
+        <button
+          class="btn"
+          onclick={() => void fetchPrices()}
+          disabled={pricingSaving || pricingFetching || !s.pricingUrl.trim()}
+          title={s.pricingUrl.trim() ? undefined : t('settings.pricingUrl.hint')}
+        >
+          {pricingFetching ? t('common.refreshing') : t('settings.pricing.refresh')}
+        </button>
         <button class="btn" onclick={addPricingRow} disabled={!pricing || pricingSaving}>{t('settings.pricing.add')}</button>
         <button class="btn btn-primary" onclick={() => void savePricing()} disabled={!pricing || pricingSaving}>
           {pricingSaving ? t('common.saving') : pricingSaved ? t('common.saved') : t('settings.pricing.save')}
@@ -752,6 +796,11 @@
   .pattern {
     width: 100%;
     min-width: 10rem;
+  }
+
+  .url {
+    width: 100%;
+    min-width: 0;
   }
 
   .price {

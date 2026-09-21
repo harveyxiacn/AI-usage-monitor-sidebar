@@ -63,6 +63,7 @@ function result(provider: ProviderId, totalTokens: number): HistoryResult {
     totals,
     byProvider: { [provider]: totals },
     projects: [],
+    costApproximate: false,
   };
 }
 

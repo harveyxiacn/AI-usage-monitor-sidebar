@@ -73,11 +73,13 @@ export const defaultSettings: Settings = {
   showPercentLabel: true,
   sidebarItems: structuredClone(defaultSidebarItems),
   refreshIntervalSec: 60,
+  adaptiveRefresh: true,
   providers: {
     claude: { enabled: true, showInSidebar: true, order: 0 },
     codex: { enabled: true, showInSidebar: true, order: 1 },
   },
   ingestEnabled: true,
+  pricingUrl: '',
   autostart: false,
   opacity: 1,
   scale: 1,

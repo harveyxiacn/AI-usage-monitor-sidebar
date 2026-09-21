@@ -173,10 +173,13 @@ Key semantics:
   threshold colours override per ring. The percent label shows the primary
   window. `ringMode = "primary"`: one plain ring per provider (primary window).
   `ringMode = "all"`: one ring per non-scoped window.
-* `ProviderQuota.status`: `ok | not_logged_in | token_expired | error |
-  disabled`. Any status other than `ok` still returns the last known windows
-  (from cache or local logs) if available, with `source` telling where they
-  came from.
+* `ProviderQuota.status`: `ok | not_logged_in | token_expired | rate_limited |
+  error | disabled`. Any status other than `ok` still returns the last known
+  windows (from cache or local logs) if available, with `source` telling where
+  they came from. `rate_limited` (`HTTP 429`) is **not** an error: the numbers
+  are merely ageing, the UI presents them as stale, and
+  `ProviderQuota.nextAttemptAt` (RFC 3339 UTC, else null) says when the
+  scheduler will try again.
 * `ProviderQuota.extras` is an optional, provider-neutral list of facts that
   are not rate-limit windows (credits, a spend limit that was hit, models the
   plan cannot use right now). Each item is
@@ -219,6 +222,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
+| `refresh_pricing` | – | `PricingTable` (downloads `settings.pricingUrl` now; errors when it is empty — no network call is ever made without it) |
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
@@ -276,7 +280,7 @@ relabels the controls ("Horizontal align / offset") on a horizontal edge.
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member on, `percentMode="used"`,
-`refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
+`refreshIntervalSec=60`, `adaptiveRefresh=true`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90, `notifications=false` with
 `forecastNotifications=true` (the predictive warning is on by default but only
 fires while `notifications` is on, at most once per window per reset period and
@@ -331,14 +335,54 @@ screen sharing: every place that renders an account address — card text,
 `src/lib/privacy.ts`, which masks it as `h•••@g•••.com`. The backend keeps
 sending the real address; only the rendering changes.
 
+### Polling schedule (`scheduler.rs`)
+
+`refreshIntervalSec` is the *steady-state* interval of a provider that is
+being used. On top of it the scheduler applies, per provider, the **longest**
+of these waits — the decision functions (`poll_interval_secs`,
+`next_poll_due_ms`, `should_poll`, `should_force_poll`) are pure and unit
+tested:
+
+* **floor** — Claude is never polled more often than every 120 s
+  (`CLAUDE_MIN_INTERVAL_SEC`). `/api/oauth/usage` shares its budget with
+  Claude Code's own calls and a 5-hour window only moves ~1 % per 3 min, so a
+  shorter interval buys nothing and earns `HTTP 429`. Codex uses the
+  configured value (minimum 15 s).
+* **idle stretch** (`adaptiveRefresh`) — the log watcher records when each
+  provider's session logs last changed; after ~10 min of quiet the interval
+  doubles, after ~30 min it is ×5, capped at 10 min. Fresh log activity, the
+  tray's "Refresh now", `refresh_now` and opening the dashboard end the
+  stretch at once.
+* **learned stretch (AIMD)** — every `429` doubles a per-provider multiplier
+  (cap ×8 and 15 min) which halves again only after five consecutive good
+  polls, so one success cannot put the app back on the cadence that caused
+  the limit.
+* **gates** — the exponential error backoff (cap 5 min) and, for a `429`, the
+  server's `Retry-After` (delta-seconds or HTTP-date, clamped to 30 s–1 h,
+  default 5 min). An explicit refresh ignores the schedule and the error
+  backoff but still honours `Retry-After`.
+
+The learned multiplier and both gates are persisted in
+`<data_dir>/cache/poll-state.json`, and the cached snapshot's `fetchedAt`
+counts as the last poll, so restarting the app does not produce a burst of
+requests.
+
 ### Colours and sizes
 
 `Settings.colors` (hex strings; `surface`/`text` empty = theme default) and
 `Settings.sizes` (px at scale 1: `ringSize` 40–96, `ringStroke` 3–8, `barGap`
 6–40, `barPadding` 4–24, `cornerRadius` 8–40, `labelSize` 9–18) are applied by
 the frontend as CSS custom properties; the backend only clamps and persists
-them. `update_settings` merges `colors`, `sizes`, `thresholds` and each
-provider's fields individually. Invalid nested members do not discard valid
+them. `settings.json` is watched (`settings::watch`, `notify` on the config
+*directory*, 300 ms debounce): an external edit — by the user or by an AI
+agent — is re-read, merged and clamped exactly like start-up, swapped into
+`AppState.settings` and published as `settings-updated`, so no restart is
+needed. The decision is the pure `settings::reload_action`: our own atomic
+save is recognised by its bytes and ignored, a file that is missing or does
+not parse yet is waited out rather than treated as empty, and the comparison
+always uses the file and the memory *as they are now*, so a late event cannot
+clobber a newer in-memory change. `update_settings` merges `colors`, `sizes`,
+`thresholds` and each provider's fields individually. Invalid nested members do not discard valid
 siblings. Backend read/merge/write/event emission is serialized, and memory
 changes only after a successful disk write. Each frontend window serializes
 its own saves and keeps newer optimistic edits visible while earlier saves finish.
@@ -376,10 +420,28 @@ local calendar buckets.
 
 `pricing.rs` ships an API-equivalent price list (USD per 1M tokens: input,
 output, cache write, cache read). Built-in model names match exactly after
-case/date normalization; new custom entries support longest-prefix matching.
-Unknown variants must not inherit a similarly named model's built-in price.
-Any group containing an unknown model has `estimatedCostUsd = null`, rather
-than a misleading partial total. Subscription users do not pay per token;
+case/date normalization; new custom entries support longest-prefix matching
+(`find_entry`).
+
+A model that matches nothing exactly falls back to the **closest known
+family** (`find_family_entry`): among the entries sharing the longest run of
+leading `-`/`.` components — at least two — the most generic one wins, so
+`gpt-5.3-codex-spark` is priced as `gpt-5.3-codex` and `gpt-5.9` as `gpt-5`,
+while `llama-9` stays unpriced. Such a price is an approximation, never an
+exact match: `find_match` / `estimate_cost_kind` report it as
+`MatchKind::Family` and `HistoryResult.costApproximate` tells the UI to say
+so. A model with no family at all still yields `estimatedCostUsd = null` for
+every group it touches, rather than a misleading partial total.
+
+The effective table is layered: the user's saved `pricing.json` wins; below
+it sits the cached remote list, and below that the bundled defaults. The
+remote layer is **opt-in** — nothing is downloaded unless the user sets
+`settings.pricingUrl` to an `https` URL. It is then fetched at most once a
+day (or on `refresh_pricing`), limited to 256 KiB and 2000 entries,
+validated for plausible names and rates, and cached as
+`<data_dir>/pricing-remote.json`; any failure keeps the previous table.
+`pricing.json` at the repository root is the same schema, so the project can
+host its own list over raw.githubusercontent. Subscription users do not pay per token;
 the estimate is a *comparison indicator* and is labelled as such in the UI.
 The saved user table is authoritative (including removed rows or an empty
 table); defaults apply only when no valid saved table exists.

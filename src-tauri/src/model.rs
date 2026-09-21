@@ -85,6 +85,9 @@ pub enum ProviderStatus {
     Ok,
     NotLoggedIn,
     TokenExpired,
+    /// The provider answered `HTTP 429`. Not an error: the last known windows
+    /// are simply getting stale until `ProviderQuota.next_attempt_at`.
+    RateLimited,
     Error,
     Disabled,
 }
@@ -186,6 +189,11 @@ pub struct ProviderQuota {
     /// `default` so a cache file written by an older build still deserializes.
     #[serde(default)]
     pub extras: Vec<QuotaExtra>,
+    /// Only for `rate_limited`: when a new attempt is allowed (RFC 3339 UTC).
+    /// The provider fills in what the server asked for (`Retry-After`); the
+    /// scheduler replaces it with the time it will actually try again.
+    #[serde(default)]
+    pub next_attempt_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -416,8 +424,14 @@ pub struct Settings {
     pub show_percent_label: bool,
     pub sidebar_items: SidebarItems,
     pub refresh_interval_sec: u64,
+    /// Stretch the polling period for providers whose session logs have been
+    /// quiet for a while (see `scheduler::poll_interval_secs`).
+    pub adaptive_refresh: bool,
     pub providers: BTreeMap<String, ProviderSettings>,
     pub ingest_enabled: bool,
+    /// Opt-in https URL of a pricing table to refresh from (empty = off; the
+    /// app makes no third-party request while it is empty).
+    pub pricing_url: String,
     pub autostart: bool,
     pub opacity: f64,
     pub scale: f64,
@@ -470,8 +484,10 @@ impl Default for Settings {
             show_percent_label: true,
             sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
+            adaptive_refresh: true,
             providers,
             ingest_enabled: true,
+            pricing_url: String::new(),
             autostart: false,
             opacity: 1.0,
             scale: 1.0,
@@ -552,6 +568,10 @@ pub struct HistoryResult {
     /// Projects in the selected time/provider range, before project filtering.
     #[serde(default)]
     pub projects: Vec<String>,
+    /// At least one cost came from an approximate family match, not from a
+    /// price for that exact model (ARCHITECTURE §9).
+    #[serde(default)]
+    pub cost_approximate: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
