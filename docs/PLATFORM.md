@@ -73,10 +73,14 @@ Once active (`window::layer_shell_active()`):
 
 * `window::place_overlay()` — the single place a computed rectangle reaches the
   OS — routes to `linux::place()`, which sets the layer (`TOP` when
-  `alwaysOnTop`, else `BOTTOM`), anchors to top + the configured edge, and
-  translates the rectangle into **output-local** margins, then applies the
-  documented `set_size_request()` + `resize(1, 1)` sequence. Margins are
-  monitor-local logical px, so negative-origin and mixed-DPI layouts work.
+  `alwaysOnTop`, else `BOTTOM`), anchors to the configured edge plus the start
+  of the axis the bar runs along (left/right → also top, top/bottom → also
+  left), and translates the rectangle into **output-local** margins, then
+  applies the documented `set_size_request()` + `resize(1, 1)` sequence.
+  Margins are monitor-local logical px, so negative-origin and mixed-DPI
+  layouts work. The top/bottom mapping is a straight extension of the
+  left/right one and is covered by unit tests, but it has **not** been run on
+  a layer-shell compositor.
 * The exclusive zone is 0: the bar never reserves desktop space.
 * Keyboard interactivity is `NONE` where the symbol exists
   (`gtk_layer_set_keyboard_mode` is only in gtk-layer-shell ≥ 0.6, so it is
@@ -141,37 +145,69 @@ monitor scale when moving between monitors. The pure functions live in
 **Target monitor** — `settings.monitor` by name, else the primary monitor, else
 the first monitor the OS reports.
 
-**Sidebar** — `sidebar_rect(mon, settings, content_w, content_h, expanded)`:
+**Edges and axes** — `edge` is one of `left | right | top | bottom`. Left and
+right make the bar a vertical pill, top and bottom a horizontal strip. Every
+formula below has an *across* axis (flush with the edge) and an *along* axis
+(the one the bar runs along); `verticalAlign` and `verticalOffset` always
+describe the position **along** the edge, whichever axis that is:
+`top` = start of the span, `bottom` = end, offset positive towards the end.
+The wire names are historical and deliberately unchanged, so settings files
+written by older versions keep their exact meaning.
+
+**Sidebar** — `sidebar_rect(mon, settings, content_w, content_h, expanded)`,
+for a left/right edge:
 
 ```
 width  = expanded ? content_w : settings.collapsedWidth      (clamped to mon.w)
 height = content_h                                           (clamped to mon.h)
 x      = edge == right ? mon.x + mon.w - width : mon.x
-y      = { top:    mon.y
-           center: mon.y + (mon.h - height) / 2
-           bottom: mon.y + mon.h - height } + settings.verticalOffset
+y      = align_start(verticalAlign, mon.y, mon.h, height) + settings.verticalOffset
 y      = clamp(y, mon.y, mon.y + mon.h - height)
 ```
 
-`content_w/h` is what the webview measured and sent through `sidebar_relayout`;
-until then the defaults `76 × 160` apply. Collapsing only changes the width, so
-the bar keeps its vertical position and the rings stay where they were.
-
-**Popover** — `popover_rect(mon, sidebar, w, h, anchor_y, gap = 10)`:
+and, for a top/bottom edge, with the axes swapped:
 
 ```
-open_left = sidebar.center_x >= mon.center_x        // open towards screen centre
+height = expanded ? content_h : settings.collapsedWidth      (clamped to mon.h)
+width  = content_w                                           (clamped to mon.w)
+y      = edge == bottom ? mon.y + mon.h - height : mon.y
+x      = align_start(verticalAlign, mon.x, mon.w, width) + settings.verticalOffset
+x      = clamp(x, mon.x, mon.x + mon.w - width)
+```
+
+where `align_start` is `{ top: min, center: min + (span - len) / 2,
+bottom: min + span - len }`. `collapsedWidth` is the *thickness* of the
+collapsed handle, so on a horizontal edge it is its height.
+
+`content_w/h` is what the webview measured and sent through `sidebar_relayout`;
+until then the defaults `76 × 160` apply. Collapsing only changes the thickness,
+so the bar keeps its position along the edge and the rings stay where they were.
+
+**Popover** — `popover_rect(mon, sidebar, w, h, anchor, gap = 10, edge)`:
+
+```
+// left/right bar — open towards the screen centre, centred on the ring
+open_left = sidebar.center_x >= mon.center_x
 x = open_left ? sidebar.x - gap - w : sidebar.right + gap
-y = sidebar.y + anchor_y - h / 2                    // centred on the hovered ring
+y = sidebar.y + anchor - h / 2
+
+// top/bottom bar — same, one quarter turn
+open_up = sidebar.center_y >= mon.center_y
+y = open_up ? sidebar.y - gap - h : sidebar.bottom + gap
+x = sidebar.x + anchor - w / 2
+
 x, y are then clamped inside the monitor
 ```
 
-`anchor_y` is the ring centre in CSS px **relative to the sidebar window**, which
-is what the frontend can measure without knowing anything about screen
-coordinates. The bubble's tail is drawn by the frontend at `anchor_y`; because
-the popover is vertically centred on the ring and clamped afterwards, the
-frontend is also told the request it is rendering (`popover-target`) and can
-offset the tail when clamping moved the window.
+`anchor` is the ring centre in CSS px **relative to the sidebar window**, along
+the bar's own axis — which is what the frontend can measure without knowing
+anything about screen coordinates. It arrives as `PopoverRequest.anchorY` for a
+vertical bar and `PopoverRequest.anchorX` for a horizontal one; the frontend
+sends both, and `anchorX` is optional so requests from older frontends (which
+only ever had a vertical bar) still deserialize. The bubble's tail is drawn by
+the frontend at that anchor; because the popover is centred on the ring and
+clamped afterwards, the frontend is also told the request it is rendering
+(`popover-target`) and can offset the tail when clamping moved the window.
 
 **When placement runs**
 
@@ -242,11 +278,45 @@ menu:
 | Refresh now | Emits `refresh-requested`, which the scheduler consumes |
 | Open dashboard | `open_dashboard(None)` |
 | Settings… | `open_dashboard(Some("settings"))` |
+| Check for updates / Update x.y.z available… | One item with two faces (`tray::update_label`): a manual `updater::check()` while nothing is on offer, and `open_dashboard(Some("settings"))` once there is |
 | Quit | `app.exit(0)` |
 
 Labels follow `settings.language` (English / 简体中文, `auto` reads `LANG`).
 On macOS and Windows a left-click on the icon toggles the dashboard; on Linux
 the AppIndicator protocol has no click event, so the menu is all there is.
+
+## 4b. Global shortcuts (`window/shortcuts.rs`)
+
+Because the overlays are dock windows (see the last section) they never take
+keyboard focus, so nothing about the widget can be reached from the keyboard.
+Two optional, desktop-wide shortcuts fill that gap:
+
+| Setting | Action |
+|---|---|
+| `shortcutToggleSidebar` | `tray::toggle_sidebar` — shows/hides the bar window |
+| `shortcutOpenDashboard` | `dashboard::open(None)` |
+
+Both default to the **empty string**, which registers nothing: a widget has no
+business taking a key combination the user did not ask it to take. They are
+(re-)registered in `window::setup` and again from `apply_settings`, i.e. on
+every `settings-updated`. `shortcuts::parse` refuses a combination without a
+modifier — a bare `U` would be swallowed in every application on the desktop —
+and whatever fails to parse or to register is reported through the
+`get_shortcut_status` command and shown under the field in Settings.
+
+**Where this works.** The plugin uses `global-hotkey`, which grabs keys with
+`XGrabKey` on X11, `RegisterHotKey` on Windows and a Carbon event handler on
+macOS. Linux runs on XWayland by default, so the X11 path applies and the
+shortcut works. On a **native Wayland session** (`AI_USAGE_SIDEBAR_BACKEND=wayland`)
+there is no protocol that lets an application grab a global key: some
+compositors expose `org.freedesktop.portal.GlobalShortcuts`, several do not,
+and the plugin does not use the portal. Treat global shortcuts as an X11
+feature and bind the equivalent in the compositor's own keybinding
+configuration on native Wayland.
+
+macOS additionally requires Accessibility permission for some combinations,
+and a shortcut another application already owns simply fails to register —
+which is exactly what the settings field then says.
 
 ## 5. Windows and their lifecycle
 
@@ -293,6 +363,14 @@ and the dashboard hides, so the app keeps living in the tray. A second launch
 * **macOS** windows are not notarised yet; `set_focusable(false)` cannot unfocus
   an already-focused window (an OS limitation), which is why the popover is made
   non-focusable *before* it is ever shown.
+* **macOS full-screen Spaces.** tao's `set_visible_on_all_workspaces(true)`
+  only sets `NSWindowCollectionBehaviorCanJoinAllSpaces`, which covers ordinary
+  Spaces but not the Space another app creates when it goes full screen — the
+  overlays vanished there. `window::apply_stacking` therefore ORs
+  `NSWindowCollectionBehaviorFullScreenAuxiliary` (1 << 8) into the NSWindow's
+  `collectionBehavior` on the main thread, through the `objc2-app-kit` that
+  tao/wry already pull in. Compiled only in CI; not verified on real hardware
+  by the author of that code.
 
 ## Overlay window type (X11)
 

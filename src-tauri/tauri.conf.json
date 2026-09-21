@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Usage Sidebar",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "identifier": "io.github.harveyxiacn.ai-usage-sidebar",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -72,8 +72,17 @@
       "tooltip": "AI Usage Sidebar"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFMzhCREY2RjI4MzI2RUUKUldUdUpvUHk5cjA0bnJVV1JOS2pxQTA3SXlFMm40b2lvM0Y1Y1FMSTY2Z3NhNFF6ei9OVVpnL0YK"
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["deb", "rpm", "appimage", "dmg", "app", "nsis", "msi"],
     "category": "DeveloperTool",
     "publisher": "Harvey Xia",

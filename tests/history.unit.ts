@@ -158,3 +158,16 @@ test('the legibility halo opposes the text colour, whatever the theme says', asy
   expect(contrastRatio(parseHex('#f5f5f7')!, worst)).toBeGreaterThan(4.5);
   expect(contrastRatio(parseHex('#dcdce3')!, worst)).toBeGreaterThan(contrastRatio(parseHex('#9a9aa3')!, worst) * 1.6);
 });
+
+test('the pointer heartbeat is throttled on its leading edge', async () => {
+  const { throttle } = await import('../src/lib/actions');
+  let calls = 0;
+  const beat = throttle(() => calls++, 50);
+  beat();
+  beat();
+  beat();
+  expect(calls).toBe(1);
+  await new Promise((r) => setTimeout(r, 60));
+  beat();
+  expect(calls).toBe(2);
+});

@@ -1,8 +1,14 @@
 // Locale-aware formatting helpers. [FRONTEND]
 // Everything user-visible goes through t(), so these functions are reactive to
 // the language rune just like the templates that call them.
+import { forecastLine } from '$lib/forecast';
 import { intlLocale, t } from '$lib/i18n/i18n.svelte';
-import type { PercentMode, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
+import { clampPercent } from '$lib/severity';
+import type { PercentMode, ProviderQuota, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
+
+// Threshold helpers live in `$lib/severity` (no i18n import, so pure modules
+// and unit tests can use them); they stay part of this module's surface.
+export { clampPercent, severityColor, severityOf, worstSeverity, type Severity } from '$lib/severity';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -30,12 +36,6 @@ export function formatCost(usd: number | null | undefined): string {
 
 export function formatInt(n: number): string {
   return n.toLocaleString(intlLocale());
-}
-
-/** Clamped 0..100 used percent. */
-export function clampPercent(p: number | null | undefined): number {
-  if (p == null || !Number.isFinite(p)) return 0;
-  return Math.min(100, Math.max(0, p));
 }
 
 /** "73% Used" / "已用 73%" — or the remaining variant. */
@@ -92,6 +92,29 @@ function absoluteReset(d: Date): string {
   return `${wd} ${hm}`;
 }
 
+/**
+ * "Runs out in ~40 min" / "On pace for 82% at reset" — the burn-rate line under
+ * a window, or null when the backend sent no forecast. The wording rules live
+ * in `forecast.ts`; this only localizes them.
+ */
+export function formatForecast(
+  w: QuotaWindow,
+  mode: PercentMode = 'used',
+  now: number = Date.now()
+): { text: string; tone: 'warn' | 'muted' } | null {
+  const line = forecastLine(w, mode, now);
+  return line && { text: t(line.key, line.params), tone: line.tone };
+}
+
+/** "2 h 05 m" / "45 min" / "38 s" — an elapsed span, not a countdown. */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < MINUTE) return t('duration.s', { s: Math.round(ms / 1000) });
+  const totalMin = Math.round(ms / MINUTE);
+  if (totalMin < 60) return t('duration.m', { m: totalMin });
+  return t('duration.hm', { h: Math.floor(totalMin / 60), m: pad2(totalMin % 60) });
+}
+
 /** "12 s ago" / "12 秒前" */
 export function formatAgo(iso: string | null, now: number = Date.now()): string {
   if (!iso) return t('reset.unknown');
@@ -103,6 +126,29 @@ export function formatAgo(iso: string | null, now: number = Date.now()): string 
   if (diff < HOUR) return t('ago.minutes', { n: Math.floor(diff / MINUTE) });
   if (diff < DAY) return t('ago.hours', { n: Math.floor(diff / HOUR) });
   return t('ago.days', { n: Math.floor(diff / DAY) });
+}
+
+/** "in 4 min" / "4 分钟后" — the wait until an upcoming moment. */
+export function formatIn(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return t('in.unknown');
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return t('in.unknown');
+  const diff = ts - now;
+  if (diff < MINUTE) return t('in.soon');
+  if (diff < HOUR) return t('in.minutes', { n: Math.round(diff / MINUTE) });
+  return t('in.hours', { n: Math.round(diff / HOUR) });
+}
+
+/**
+ * Why a rate-limited provider shows old numbers. The provider is not broken —
+ * it asked us to stop polling — so the message says how stale the data is and
+ * when the app will look again.
+ */
+export function staleHint(q: ProviderQuota, now: number = Date.now()): string {
+  return t('status.hint.rate_limited', {
+    ago: formatAgo(q.fetchedAt, now),
+    next: formatIn(q.nextAttemptAt, now),
+  });
 }
 
 /** Short date/time label for a history bucket, tuned per bucket size. */
@@ -147,27 +193,3 @@ export function windowLabel(w: QuotaWindow, context: LabelContext = 'popover'): 
   return w.scope ? t('window.scoped', { kind: base, scope: w.scope }) : base;
 }
 
-// ------------------------------------------------------------ thresholds ----
-
-export type Severity = 'normal' | 'warn' | 'critical';
-
-export function severityOf(usedPercent: number | null, th: Thresholds): Severity {
-  if (usedPercent == null) return 'normal';
-  const p = clampPercent(usedPercent);
-  if (p >= th.critical) return 'critical';
-  if (p >= th.warn) return 'warn';
-  return 'normal';
-}
-
-/** Accent unless the window crossed a threshold, then amber / red. */
-export function severityColor(accent: string, severity: Severity): string {
-  if (severity === 'critical') return 'var(--critical)';
-  if (severity === 'warn') return 'var(--warn)';
-  return accent;
-}
-
-const SEVERITY_RANK: Record<Severity, number> = { normal: 0, warn: 1, critical: 2 };
-
-export function worstSeverity(list: Severity[]): Severity {
-  return list.reduce<Severity>((acc, s) => (SEVERITY_RANK[s] > SEVERITY_RANK[acc] ? s : acc), 'normal');
-}

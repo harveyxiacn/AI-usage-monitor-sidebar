@@ -9,11 +9,13 @@ use super::{
     window_label, write_cache, Provider, ProviderCtx, CODEX_ID,
 };
 use crate::model::{
-    CreditsInfo, DataSource, ProviderInfo, ProviderQuota, ProviderStatus, QuotaWindow, WindowKind,
+    CreditsInfo, DataSource, ExtraSeverity, ProviderInfo, ProviderQuota, ProviderStatus,
+    QuotaExtra, QuotaWindow, WindowKind,
 };
 use async_trait::async_trait;
 use base64::Engine;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const DISPLAY_NAME: &str = "Codex";
@@ -145,6 +147,14 @@ where
         .and_then(|n| T::try_from(n).ok()))
 }
 
+/// A flag that reads as "no statement" unless it really is a JSON boolean.
+fn lenient_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|v| v.as_bool()))
+}
+
 /// `balance` has been seen as a string; tolerate a bare number as well.
 fn string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -168,6 +178,15 @@ pub struct UsageResponse {
     #[serde(deserialize_with = "null_default")]
     pub additional_rate_limits: Vec<AdditionalRateLimit>,
     pub credits: Option<Credits>,
+    pub spend_control: Option<SpendControl>,
+    /// Which limit tripped, e.g. `"primary"`. Null while nothing is exhausted.
+    pub rate_limit_reached_type: Option<String>,
+    pub rate_limit_reset_credits: Option<ResetCredits>,
+    /// model id → availability, kept raw and parsed per entry (see
+    /// `unavailable_models`): this is the only block whose *values* are
+    /// objects, so one unreadable entry must not discard the response.
+    #[serde(deserialize_with = "null_default")]
+    pub model_usage: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -207,6 +226,48 @@ pub struct Credits {
     pub unlimited: bool,
     #[serde(deserialize_with = "string_or_number")]
     pub balance: Option<String>,
+    #[serde(deserialize_with = "null_default")]
+    pub overage_limit_reached: bool,
+    /// Approximate number of messages the remaining credits still buy. The
+    /// API sends a list (one entry per tier); we show the largest.
+    #[serde(deserialize_with = "null_default")]
+    pub approx_local_messages: Vec<serde_json::Value>,
+    #[serde(deserialize_with = "null_default")]
+    pub approx_cloud_messages: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct SpendControl {
+    #[serde(deserialize_with = "null_default")]
+    pub reached: bool,
+    /// The user's own cap, when they set one. Seen as a number and as a string.
+    #[serde(deserialize_with = "string_or_number")]
+    pub individual_limit: Option<String>,
+}
+
+/// Credits that would let a reached rate limit continue right now.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct ResetCredits {
+    #[serde(deserialize_with = "lenient_int")]
+    pub available_count: Option<i64>,
+    #[serde(deserialize_with = "lenient_int")]
+    pub applicable_available_count: Option<i64>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct ModelUsage {
+    /// Absent, null or not a boolean means "no statement"; only an explicit
+    /// `false` marks the model unavailable.
+    #[serde(deserialize_with = "lenient_bool")]
+    pub available: Option<bool>,
+    /// RFC 3339, when the model becomes available again.
+    #[serde(deserialize_with = "string_or_number")]
+    pub available_at: Option<String>,
+    #[serde(deserialize_with = "lenient_bool")]
+    pub credits_would_enable: Option<bool>,
 }
 
 // ---------- mapping ----------
@@ -227,6 +288,7 @@ fn map_window(w: &Window, scope: Option<&str>) -> QuotaWindow {
         resets_at: w.reset_at.and_then(rfc3339_from_unix_secs),
         scope: scope.map(|s| s.to_string()),
         is_primary: false,
+        forecast: None,
     }
 }
 
@@ -271,8 +333,11 @@ pub fn plan_label(plan_type: Option<&str>) -> Option<String> {
     }
     Some(match raw {
         "plus" => "ChatGPT Plus".to_string(),
-        "pro" => "ChatGPT Pro".to_string(),
-        "prolite" => "ChatGPT Pro Lite".to_string(),
+        // The API only reports a tier id, never a multiplier. OpenAI sells the
+        // two Pro tiers as "Pro 5x" (id `prolite`) and "Pro 20x" (id `pro`), as
+        // confirmed by the maintainer on a live `prolite` account.
+        "pro" => "ChatGPT Pro 20x".to_string(),
+        "prolite" => "ChatGPT Pro 5x".to_string(),
         "free" => "ChatGPT Free".to_string(),
         "team" => "ChatGPT Team".to_string(),
         "business" => "ChatGPT Business".to_string(),
@@ -289,6 +354,120 @@ fn credits_from(c: &Option<Credits>) -> Option<CreditsInfo> {
         unlimited: c.unlimited,
         balance: c.balance.clone(),
     })
+}
+
+/// Largest number in an `approx_*_messages` list; non-numeric entries (a shape
+/// we have not seen) are ignored rather than failing the response.
+fn max_count(list: &[serde_json::Value]) -> Option<i64> {
+    list.iter()
+        .filter_map(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)))
+        .max()
+}
+
+/// Everything the usage response carries besides the rate-limit windows, as
+/// provider-neutral `QuotaExtra` items. The credit *balance* stays in
+/// `ProviderQuota.credits` (the popover already has a line for it), so nothing
+/// here repeats it.
+pub fn map_extras(usage: &UsageResponse) -> Vec<QuotaExtra> {
+    let mut out = Vec::new();
+
+    if let Some(kind) = usage
+        .rate_limit_reached_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(QuotaExtra::value(
+            "rate_limit_reached",
+            kind,
+            ExtraSeverity::Critical,
+        ));
+    }
+
+    if let Some(spend) = &usage.spend_control {
+        if spend.reached {
+            out.push(
+                QuotaExtra::flag("spend_limit_reached", ExtraSeverity::Critical)
+                    .with_detail(spend.individual_limit.clone()),
+            );
+        }
+    }
+
+    if let Some(c) = &usage.credits {
+        if c.overage_limit_reached {
+            out.push(QuotaExtra::flag(
+                "overage_limit_reached",
+                ExtraSeverity::Warn,
+            ));
+        }
+        // Only worth showing while there actually are credits to spend.
+        for (kind, list) in [
+            ("approx_local_messages", &c.approx_local_messages),
+            ("approx_cloud_messages", &c.approx_cloud_messages),
+        ] {
+            if let Some(n) = max_count(list).filter(|n| *n > 0) {
+                out.push(QuotaExtra::value(kind, n.to_string(), ExtraSeverity::Info));
+            }
+        }
+    }
+
+    if let Some(reset) = &usage.rate_limit_reset_credits {
+        if let Some(available) = reset.available_count.filter(|n| *n > 0) {
+            // `applicable_available_count` is the subset usable for the limit
+            // that is currently reached; show it only when it differs.
+            let detail = reset
+                .applicable_available_count
+                .filter(|n| *n != available)
+                .map(|n| n.to_string());
+            out.push(
+                QuotaExtra::value("reset_credits", available.to_string(), ExtraSeverity::Info)
+                    .with_detail(detail),
+            );
+        }
+    }
+
+    let unavailable = unavailable_models(usage);
+    if !unavailable.is_empty() {
+        out.push(
+            QuotaExtra::value(
+                "model_unavailable",
+                unavailable.len().to_string(),
+                ExtraSeverity::Warn,
+            )
+            .with_detail(Some(join_capped(&unavailable, 3))),
+        );
+    }
+
+    out
+}
+
+/// Model ids the plan cannot use right now. An entry whose shape we cannot
+/// read at all is skipped, not treated as unavailable.
+pub fn unavailable_models(usage: &UsageResponse) -> Vec<&str> {
+    usage
+        .model_usage
+        .iter()
+        .filter(|(_, raw)| {
+            serde_json::from_value::<ModelUsage>((*raw).clone())
+                .map(|m| m.available == Some(false))
+                .unwrap_or(false)
+        })
+        .map(|(id, _)| id.as_str())
+        .collect()
+}
+
+/// `"a, b, c +2"` — a short, bounded name list for a tooltip-sized detail.
+fn join_capped(items: &[&str], max: usize) -> String {
+    let head = items
+        .iter()
+        .take(max)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    match items.len().saturating_sub(max) {
+        0 => head,
+        rest => format!("{head} +{rest}"),
+    }
 }
 
 // ---------- local-log fallback ----------
@@ -343,6 +522,7 @@ impl LogWindow {
             resets_at: self.resets_at.and_then(rfc3339_from_unix_secs),
             scope: None,
             is_primary: false,
+            forecast: None,
         }
     }
 }
@@ -460,6 +640,12 @@ fn from_local_logs(ctx: &ProviderCtx, status: ProviderStatus, message: &str) -> 
     q.plan = rl.plan_type.clone();
     q.plan_label = plan_label(rl.plan_type.as_deref());
     q.credits = credits_from(&rl.credits);
+    // The log line carries the same `credits` block as the API, so the
+    // credit-derived extras survive an expired token / an offline machine.
+    q.extras = map_extras(&UsageResponse {
+        credits: rl.credits.clone(),
+        ..UsageResponse::default()
+    });
     q.source = DataSource::LocalLog;
     q.fetched_at = rl
         .observed_at
@@ -516,6 +702,7 @@ impl Provider for CodexProvider {
             credential_path: credentials_path().map(|p| p.display().to_string()),
             log_path: log_root().map(|p| p.display().to_string()),
             plan_label: claims.and_then(|c| plan_label(c.plan_type.as_deref())),
+            experimental: false,
         }
     }
 
@@ -573,6 +760,20 @@ impl Provider for CodexProvider {
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return from_local_logs(&self.ctx, ProviderStatus::TokenExpired, EXPIRED_MESSAGE);
         }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = super::retry_after_of(resp.headers());
+            log::warn!(
+                "codex usage API answered HTTP 429 (Retry-After: {})",
+                retry_after.map_or("absent".to_string(), |s| format!("{s}s"))
+            );
+            let mut q = from_local_logs(
+                &self.ctx,
+                ProviderStatus::RateLimited,
+                "ChatGPT is rate-limiting the usage endpoint (HTTP 429); showing the last known values until the next attempt",
+            );
+            q.next_attempt_at = super::next_attempt_at(retry_after);
+            return q;
+        }
         if !status.is_success() {
             return from_local_logs(
                 &self.ctx,
@@ -616,6 +817,7 @@ impl Provider for CodexProvider {
             name: None,
         });
         quota.credits = credits_from(&usage.credits);
+        quota.extras = map_extras(&usage);
         quota.source = DataSource::Api;
         quota.fetched_at = now_rfc3339();
         write_cache(&self.ctx, &quota);
@@ -686,6 +888,133 @@ mod tests {
         assert_eq!(windows[0].used_percent, 4.0);
     }
 
+    /// The full shape the endpoint sent on 2026-09-21 (values anonymised),
+    /// including every block the parser only learned about afterwards.
+    const FULL: &str = r#"{
+      "plan_type":"prolite","email":"user@example.com",
+      "rate_limit":{"allowed":true,"limit_reached":false,
+        "primary_window":{"used_percent":12,"limit_window_seconds":604800,"reset_at":1789807722},
+        "secondary_window":null},
+      "credits":{"has_credits":false,"unlimited":false,"overage_limit_reached":false,
+                 "balance":"0","approx_local_messages":[0],"approx_cloud_messages":[0]},
+      "spend_control":{"reached":false,"individual_limit":null},
+      "rate_limit_reached_type":null,
+      "rate_limit_reset_credits":{"available_count":2,"applicable_available_count":0},
+      "model_usage":{"gpt-5.3-codex":{"available":true,"available_at":null,"credits_would_enable":false}},
+      "code_review_rate_limit":null,"additional_rate_limits":null,"promo":null
+    }"#;
+
+    #[test]
+    fn the_full_verified_response_parses_and_maps_its_extras() {
+        let usage: UsageResponse = serde_json::from_str(FULL).unwrap();
+        assert_eq!(map_windows(&usage).len(), 1);
+        assert!(usage.model_usage.contains_key("gpt-5.3-codex"));
+
+        let extras = map_extras(&usage);
+        // Nothing is reached and there are no credits, so the only extra is
+        // the pair of reset credits — and its applicable count differs.
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "reset_credits");
+        assert_eq!(extras[0].value.as_deref(), Some("2"));
+        assert_eq!(extras[0].detail.as_deref(), Some("0"));
+        assert_eq!(extras[0].severity, ExtraSeverity::Info);
+    }
+
+    #[test]
+    fn extras_report_reached_limits_credits_and_unavailable_models() {
+        let usage: UsageResponse = serde_json::from_str(
+            r#"{
+              "credits":{"has_credits":true,"unlimited":false,"balance":12.5,
+                         "overage_limit_reached":true,
+                         "approx_local_messages":[40,120],"approx_cloud_messages":[7]},
+              "spend_control":{"reached":true,"individual_limit":25},
+              "rate_limit_reached_type":"primary",
+              "rate_limit_reset_credits":{"available_count":3,"applicable_available_count":3},
+              "model_usage":{
+                "gpt-5.3-codex":{"available":true},
+                "model-b":{"available":false,"available_at":"2026-09-22T00:00:00Z"},
+                "model-a":{"available":false,"credits_would_enable":true},
+                "model-c":{"available":false},
+                "model-d":{"available":false}}
+            }"#,
+        )
+        .unwrap();
+        let extras = map_extras(&usage);
+        let by_kind = |k: &str| extras.iter().find(|e| e.kind == k).expect(k);
+
+        assert_eq!(
+            by_kind("rate_limit_reached").value.as_deref(),
+            Some("primary")
+        );
+        assert_eq!(
+            by_kind("rate_limit_reached").severity,
+            ExtraSeverity::Critical
+        );
+        let spend = by_kind("spend_limit_reached");
+        assert_eq!(spend.value, None, "a flag needs no value");
+        assert_eq!(spend.detail.as_deref(), Some("25"));
+        assert_eq!(
+            by_kind("overage_limit_reached").severity,
+            ExtraSeverity::Warn
+        );
+        assert_eq!(
+            by_kind("approx_local_messages").value.as_deref(),
+            Some("120")
+        );
+        assert_eq!(by_kind("approx_cloud_messages").value.as_deref(), Some("7"));
+        // equal applicable count carries no extra information
+        assert_eq!(by_kind("reset_credits").detail, None);
+        let models = by_kind("model_unavailable");
+        assert_eq!(models.value.as_deref(), Some("4"));
+        assert_eq!(
+            models.detail.as_deref(),
+            Some("model-a, model-b, model-c +1")
+        );
+    }
+
+    #[test]
+    fn extras_stay_empty_when_every_new_block_is_null_or_missing() {
+        for body in [
+            "{}",
+            r#"{"credits":null,"spend_control":null,"rate_limit_reached_type":null,
+                "rate_limit_reset_credits":null,"model_usage":null}"#,
+            // typed drift: counts as strings/floats, flags as null, a model
+            // entry that is not an object at all.
+            r#"{"credits":{"has_credits":null,"overage_limit_reached":null,
+                           "approx_local_messages":["nope"],"approx_cloud_messages":null},
+                "spend_control":{"reached":null,"individual_limit":null},
+                "rate_limit_reached_type":"   ",
+                "rate_limit_reset_credits":{"available_count":0.0,"applicable_available_count":null}}"#,
+        ] {
+            let usage: UsageResponse = serde_json::from_str(body).unwrap();
+            assert!(
+                map_extras(&usage).is_empty(),
+                "unexpected extras for {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_model_usage_map_with_odd_entries_never_discards_the_response() {
+        // `model_usage` is the one field whose *values* are objects; a future
+        // shape there must not blank the ring.
+        let usage: UsageResponse = serde_json::from_str(
+            r#"{"rate_limit":{"primary_window":{"used_percent":9,"limit_window_seconds":18000}},
+                "model_usage":{"m1":{"available":false,"available_at":123},
+                               "m2":{"available":"maybe"},
+                               "m3":"not-an-object",
+                               "m4":{"available":null,"brand_new":{"x":1}}}}"#,
+        )
+        .expect("an unreadable model entry must not fail the response");
+        assert_eq!(map_windows(&usage).len(), 1, "the window survives");
+        // Only m1 states `available: false`; the rest say nothing readable.
+        assert_eq!(unavailable_models(&usage), ["m1"]);
+        let extras = map_extras(&usage);
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "model_unavailable");
+        assert_eq!(extras[0].value.as_deref(), Some("1"));
+    }
+
     #[test]
     fn prolite_weekly_is_primary_and_scoped_windows_never_are() {
         let usage: UsageResponse = serde_json::from_str(PROLITE).unwrap();
@@ -708,7 +1037,7 @@ mod tests {
 
         assert_eq!(
             plan_label(usage.plan_type.as_deref()).as_deref(),
-            Some("ChatGPT Pro Lite")
+            Some("ChatGPT Pro 5x")
         );
         let c = credits_from(&usage.credits).unwrap();
         assert!(!c.has_credits);
@@ -749,8 +1078,8 @@ mod tests {
     fn plan_labels() {
         for (raw, want) in [
             ("plus", "ChatGPT Plus"),
-            ("pro", "ChatGPT Pro"),
-            ("prolite", "ChatGPT Pro Lite"),
+            ("pro", "ChatGPT Pro 20x"),
+            ("prolite", "ChatGPT Pro 5x"),
             ("free", "ChatGPT Free"),
             ("team", "ChatGPT Team"),
             ("business", "ChatGPT Business"),
@@ -872,16 +1201,10 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The shared helper adds a counter: pid + nanoseconds alone collide on
+    /// macOS (microsecond clock), where two parallel tests then shared a
+    /// directory and read each other's session logs.
     pub(crate) fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "ai-usage-sidebar-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+        crate::commands::test_support::tempdir()
     }
 }

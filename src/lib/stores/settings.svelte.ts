@@ -2,13 +2,17 @@
 // One instance per window (each Tauri window is its own page load); the
 // `settings-updated` event keeps the three windows in sync.
 import { applyWindowSettings, getSettings, onSettingsUpdated, updateSettings, type Unlisten } from '$lib/api';
+import { defaultSidebarItems } from '$lib/sidebar-items';
 import type { ColorSettings, Settings, SizeSettings } from '$lib/types';
 import { SettingsWriter, type SettingsPatch } from '$lib/settings-writer';
+
+export { defaultSidebarItems };
 
 /** Contract defaults for the user-tunable palette (empty = keep the theme's). */
 export const defaultColors: ColorSettings = {
   claude: '#ff5c1a',
   codex: '#10a37f',
+  copilot: '#8250df',
   warn: '#f5c542',
   critical: '#ff3b30',
   surface: '',
@@ -56,27 +60,41 @@ export const defaultSettings: Settings = {
   language: 'auto',
   theme: 'dark',
   surfaceStyle: 'glass',
+  cyberAccent: 'neon',
   edge: 'right',
   verticalAlign: 'center',
   verticalOffset: 0,
   monitor: null,
   autoHide: false,
   autoHideDelayMs: 800,
+  popoverTimeoutSec: 10,
   collapsedWidth: 6,
   ringMode: 'concentric',
   showScopedRing: true,
   percentMode: 'used',
   showPercentLabel: true,
+  sidebarItems: structuredClone(defaultSidebarItems),
   refreshIntervalSec: 60,
-  providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
+  adaptiveRefresh: true,
+  providers: {
+    claude: { enabled: true, showInSidebar: true, order: 0 },
+    codex: { enabled: true, showInSidebar: true, order: 1 },
+  },
   ingestEnabled: true,
+  pricingUrl: '',
+  monthlyBudgetUsd: 0,
   autostart: false,
+  autoUpdateCheck: true,
+  shortcutToggleSidebar: '',
+  shortcutOpenDashboard: '',
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
   colors: structuredClone(defaultColors),
   sizes: structuredClone(defaultSizes),
   notifications: false,
+  forecastNotifications: true,
+  hideAccountEmail: false,
   alwaysOnTop: true,
 };
 
@@ -160,7 +178,10 @@ class SettingsStore {
   }
 
   /** Convenience for the per-provider record (shallow-merged by the backend). */
-  async patchProvider(id: string, next: { enabled?: boolean; order?: number }): Promise<void> {
+  async patchProvider(
+    id: string,
+    next: { enabled?: boolean; showInSidebar?: boolean; order?: number }
+  ): Promise<void> {
     await this.patch({ providers: { [id]: next } });
   }
 }

@@ -8,6 +8,10 @@ import type {
   AppInfo,
   AppSnapshot,
   Bucket,
+  CalendarDay,
+  CalendarQuery,
+  CalendarResult,
+  CalendarSlot,
   HistoryQuery,
   HistoryResult,
   HistoryRow,
@@ -19,10 +23,17 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  SessionQuery,
+  SessionRow,
+  SessionsResult,
   Settings,
+  ShortcutStatus,
   TokenTotals,
+  UpdateStatus,
 } from './types';
+import { localDateInput } from './history';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
+import { shortcutProblem } from './shortcuts';
 
 const now = Date.now();
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -45,11 +56,20 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: null,
+      nextAttemptAt: null,
+      extras: [],
+      // Forecasts mirror what src-tauri/src/forecast.rs would derive from the
+      // sample history below: the 5-hour window burns fast enough to run out
+      // before it resets, the weekly ones only drift upwards, and "Weekly ·
+      // Fable" is the idle window with no forecast at all.
       windows: [
-        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true },
-        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false },
+        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true,
+          forecast: { projectedPercentAtReset: 107.4, exhaustsAt: iso(now + 40 * 60_000), ratePercentPerHour: 40.5, confidence: 'high' } },
+        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false,
+          forecast: { projectedPercentAtReset: 74.2, exhaustsAt: null, ratePercentPerHour: 0.6, confidence: 'medium' } },
         { kind: 'seven_day', label: 'Weekly · Fable', windowSeconds: 604800, usedPercent: 24, resetsAt: iso(now + 3 * DAY), scope: 'Fable', isPrimary: false },
-        { kind: 'seven_day', label: 'Weekly · Opus', windowSeconds: 604800, usedPercent: 62, resetsAt: iso(now + 3 * DAY), scope: 'Opus', isPrimary: false },
+        { kind: 'seven_day', label: 'Weekly · Opus', windowSeconds: 604800, usedPercent: 62, resetsAt: iso(now + 3 * DAY), scope: 'Opus', isPrimary: false,
+          forecast: { projectedPercentAtReset: 95.6, exhaustsAt: null, ratePercentPerHour: 0.47, confidence: 'low' } },
       ],
     },
     {
@@ -63,9 +83,16 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: { hasCredits: false, unlimited: false, balance: '0' },
+      extras: [
+        { kind: 'reset_credits', value: '2', detail: '0', severity: 'info' },
+        { kind: 'model_unavailable', value: '1', detail: 'gpt-5.3-codex-spark', severity: 'warn' },
+      ],
+      nextAttemptAt: null,
       windows: [
-        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true },
-        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false },
+        { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true,
+          forecast: { projectedPercentAtReset: 33.5, exhaustsAt: null, ratePercentPerHour: 6, confidence: 'medium' } },
+        { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false,
+          forecast: { projectedPercentAtReset: 77.0, exhaustsAt: null, ratePercentPerHour: 0.3, confidence: 'high' } },
         { kind: 'other', label: 'GPT-5.3-Codex-Spark · 5-hour', windowSeconds: 18000, usedPercent: 4, resetsAt: iso(now + 4 * HOUR), scope: 'GPT-5.3-Codex-Spark', isPrimary: false },
         { kind: 'other', label: 'GPT-5.3-Codex-Spark · weekly', windowSeconds: 604800, usedPercent: 12, resetsAt: iso(now + 5 * DAY), scope: 'GPT-5.3-Codex-Spark', isPrimary: false },
       ],
@@ -78,27 +105,44 @@ export const mockSettings: Settings = {
   language: 'auto',
   theme: 'dark',
   surfaceStyle: 'glass',
+  cyberAccent: 'neon',
   edge: 'right',
   verticalAlign: 'center',
   verticalOffset: 0,
   monitor: null,
   autoHide: false,
   autoHideDelayMs: 800,
+  popoverTimeoutSec: 10,
   collapsedWidth: 6,
   ringMode: 'concentric',
   showScopedRing: true,
   percentMode: 'used',
   showPercentLabel: true,
+  sidebarItems: { fiveHour: true, weekly: true, scoped: true, other: true, logo: true, percentLabel: true, moreButton: true },
   refreshIntervalSec: 60,
-  providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
+  adaptiveRefresh: true,
+  providers: {
+    claude: { enabled: true, showInSidebar: true, order: 0 },
+    codex: { enabled: true, showInSidebar: true, order: 1 },
+    // copilot is experimental: off until its credentials are found (see
+    // providers::enabled_by_default), which the browser preview mirrors.
+    copilot: { enabled: false, showInSidebar: true, order: 2 },
+  },
   ingestEnabled: true,
+  pricingUrl: '',
+  monthlyBudgetUsd: 0,
   autostart: false,
+  autoUpdateCheck: true,
+  shortcutToggleSidebar: '',
+  shortcutOpenDashboard: '',
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
-  colors: { claude: '#ff5c1a', codex: '#10a37f', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
+  colors: { claude: '#ff5c1a', codex: '#10a37f', copilot: '#8250df', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
+  forecastNotifications: true,
+  hideAccountEmail: false,
   alwaysOnTop: true,
 };
 
@@ -110,6 +154,7 @@ export const mockProviders: ProviderInfo[] = [
     credentialPath: '~/.claude/.credentials.json',
     logPath: '~/.claude/projects/**/*.jsonl',
     planLabel: 'Claude Max 5x',
+    experimental: false,
   },
   {
     id: 'codex',
@@ -118,6 +163,17 @@ export const mockProviders: ProviderInfo[] = [
     credentialPath: '~/.codex/auth.json',
     logPath: '~/.codex/sessions/**/*.jsonl',
     planLabel: 'ChatGPT Plus',
+    experimental: false,
+  },
+  // Signed out on purpose: the only Copilot state that was ever verified.
+  {
+    id: 'copilot',
+    displayName: 'GitHub Copilot',
+    loggedIn: false,
+    credentialPath: '~/.config/github-copilot/apps.json',
+    logPath: null,
+    planLabel: null,
+    experimental: true,
   },
 ];
 
@@ -175,6 +231,25 @@ export const mockAppInfo: AppInfo = {
   backend: 'browser',
 };
 
+/**
+ * The preview always has an update to offer, so the banner, the release notes
+ * and the "package manager" branch can be exercised without a real release.
+ * `canInstall` is false here because the preview is not a bundle we own.
+ */
+export const mockUpdateAvailable = '9.9.9';
+
+let updateStatus: UpdateStatus = {
+  available: null,
+  currentVersion: '0.1.1-mock',
+  notes: null,
+  releaseUrl: 'https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases',
+  canInstall: false,
+  checking: false,
+  installing: false,
+  error: null,
+  checkedAt: null,
+};
+
 // ------------------------------------------------------------ fake events ---
 
 interface MockEvent {
@@ -182,6 +257,8 @@ interface MockEvent {
   provider: ProviderId;
   model: string;
   project: string | null;
+  /** provider session id; "" reproduces events that carry none */
+  session: string;
   inputTokens: number;
   cacheWriteTokens: number;
   cacheReadTokens: number;
@@ -250,6 +327,9 @@ const events: MockEvent[] = (() => {
             provider,
             model: models[m],
             project: PROJECTS[(dayBack + hour + m) % PROJECTS.length] || null,
+            // one session per provider and half-day; every 17th is left
+            // without an id so the "no session" group stays exercised
+            session: dayBack % 17 === 3 ? '' : `${provider}-${89 - dayBack}-${hour < 15 ? 'am' : 'pm'}`,
             inputTokens: input,
             cacheWriteTokens: cacheWrite,
             cacheReadTokens: cacheRead,
@@ -291,9 +371,40 @@ function priceFor(model: string): PricingEntry | null {
   return best;
 }
 
+const parts = (name: string) => name.split(/[-.]/).filter(Boolean);
+
+/**
+ * Nearest known family for an unpriced model — the same heuristic as
+ * `pricing::find_family_entry`: most shared leading components first, then
+ * the most generic pattern, then the later entry.
+ */
+function familyPriceFor(model: string): PricingEntry | null {
+  const want = parts(model.trim().toLowerCase().replace(/-\d{6,8}$/, ''));
+  if (want.length < 2) return null;
+  let best: PricingEntry | null = null;
+  let bestKey: [number, number] = [0, 0];
+  for (const e of pricing.entries) {
+    const have = parts(e.modelPattern.toLowerCase());
+    let shared = 0;
+    while (shared < want.length && shared < have.length && want[shared] === have[shared]) shared += 1;
+    if (shared < 2) continue;
+    const key: [number, number] = [shared, -have.length];
+    if (key[0] > bestKey[0] || (key[0] === bestKey[0] && key[1] >= bestKey[1])) {
+      best = e;
+      bestKey = key;
+    }
+  }
+  return best;
+}
+
+/** True when the cost of `model` could only be approximated from its family. */
+function costIsApproximate(model: string | null): boolean {
+  return model != null && priceFor(model) == null && familyPriceFor(model) != null;
+}
+
 function costOf(model: string | null, t: TokenTotals): number | null {
   if (!model) return null;
-  const p = priceFor(model);
+  const p = priceFor(model) ?? familyPriceFor(model);
   if (!p) return null;
   return (
     (t.inputTokens * p.inputPerM +
@@ -338,6 +449,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const totals = emptyTotals();
   const byProvider: Record<string, TokenTotals> = {};
   const projects = new Set<string>();
+  let costApproximate = false;
   // cost is accumulated per model then summed, because the price list is
   // per-model — a grouped-by-provider row still gets a meaningful estimate.
   const rowCost = new Map<string, number | null>();
@@ -371,6 +483,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
     byProvider[e.provider] ??= emptyTotals();
     addInto(byProvider[e.provider], e);
 
+    costApproximate ||= costIsApproximate(e.model);
     const c = costOf(e.model, {
       ...emptyTotals(),
       inputTokens: e.inputTokens,
@@ -397,7 +510,150 @@ function runHistory(q: HistoryQuery): HistoryResult {
       (a.model ?? '').localeCompare(b.model ?? '') ||
       (a.project ?? '').localeCompare(b.project ?? '')
   );
-  return { rows: list, totals, byProvider, projects: [...projects].sort((a, b) => a.localeCompare(b)) };
+  return {
+    rows: list,
+    totals,
+    byProvider,
+    projects: [...projects].sort((a, b) => a.localeCompare(b)),
+    costApproximate,
+  };
+}
+
+/** Estimated cost of a single synthetic event, or null for an unpriced model. */
+function eventCost(e: MockEvent): number | null {
+  return costOf(e.model, {
+    ...emptyTotals(),
+    inputTokens: e.inputTokens,
+    cacheWriteTokens: e.cacheWriteTokens,
+    cacheReadTokens: e.cacheReadTokens,
+    outputTokens: e.outputTokens,
+  });
+}
+
+/** Add `cost` into a running estimate, keeping "unknown" sticky (contract §9). */
+function addCost(previous: number | null | undefined, cost: number | null): number | null {
+  return previous == null || cost == null ? null : previous + cost;
+}
+
+/** Local day + weekday/hour aggregation, mirroring `store::query_calendar`. */
+function runCalendar(q: CalendarQuery): CalendarResult {
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const days = new Map<string, CalendarDay>();
+  const slots = new Map<string, CalendarSlot>();
+  const dayCost = new Map<string, number | null>();
+  const slotCost = new Map<string, number | null>();
+  const totals = emptyTotals();
+  let totalCost: number | null = 0;
+
+  for (const e of events) {
+    if (e.ts < from || e.ts >= to) continue;
+    if (q.provider && e.provider !== q.provider) continue;
+    if (q.project != null && (e.project ?? '') !== q.project) continue;
+
+    const cost = eventCost(e);
+    const date = localDateInput(e.ts);
+    let day = days.get(date);
+    if (!day) {
+      day = { ...emptyTotals(), date };
+      days.set(date, day);
+      dayCost.set(date, 0);
+    }
+    addInto(day, e);
+    dayCost.set(date, addCost(dayCost.get(date), cost));
+
+    const local = new Date(e.ts);
+    // Monday is weekday 0, like the Rust side and the week buckets
+    const weekday = (local.getDay() + 6) % 7;
+    const hour = local.getHours();
+    const key = `${weekday}:${hour}`;
+    let slot = slots.get(key);
+    if (!slot) {
+      slot = { ...emptyTotals(), weekday, hour };
+      slots.set(key, slot);
+      slotCost.set(key, 0);
+    }
+    addInto(slot, e);
+    slotCost.set(key, addCost(slotCost.get(key), cost));
+
+    addInto(totals, e);
+    totalCost = addCost(totalCost, cost);
+  }
+
+  for (const [date, day] of days) day.estimatedCostUsd = dayCost.get(date) ?? null;
+  for (const [key, slot] of slots) slot.estimatedCostUsd = slotCost.get(key) ?? null;
+  totals.estimatedCostUsd = totalCost;
+  return {
+    days: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    slots: [...slots.values()].sort((a, b) => a.weekday - b.weekday || a.hour - b.hour),
+    totals,
+  };
+}
+
+/** Per-session aggregation with the same cap/sort as `store::query_sessions`. */
+function runSessions(q: SessionQuery): SessionsResult {
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const limit = Math.min(1000, Math.max(1, Math.trunc(q.limit ?? 200) || 200));
+  const rows = new Map<string, SessionRow>();
+  const rowCost = new Map<string, number | null>();
+  const models = new Map<string, Set<string>>();
+  const totals = emptyTotals();
+  let totalCost: number | null = 0;
+
+  for (const e of [...events].sort((a, b) => a.ts - b.ts)) {
+    if (e.ts < from || e.ts >= to) continue;
+    if (q.provider && e.provider !== q.provider) continue;
+    const project = e.project ?? '';
+    if (q.project != null && project !== q.project) continue;
+
+    const key = `${e.provider}\u0000${e.session}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = {
+        ...emptyTotals(),
+        sessionId: e.session,
+        provider: e.provider,
+        project,
+        firstTs: iso(e.ts),
+        lastTs: iso(e.ts),
+        durationMs: 0,
+        models: [],
+      };
+      rows.set(key, row);
+      rowCost.set(key, 0);
+      models.set(key, new Set());
+    }
+    // events arrive in `ts` order, so the last one owns the session's cwd
+    row.project = project;
+    row.lastTs = iso(e.ts);
+    row.durationMs = e.ts - Date.parse(row.firstTs);
+    models.get(key)!.add(e.model);
+    addInto(row, e);
+    const cost = eventCost(e);
+    rowCost.set(key, addCost(rowCost.get(key), cost));
+    addInto(totals, e);
+    totalCost = addCost(totalCost, cost);
+  }
+
+  for (const [key, row] of rows) {
+    row.estimatedCostUsd = rowCost.get(key) ?? null;
+    row.models = [...models.get(key)!].sort((a, b) => a.localeCompare(b));
+  }
+  totals.estimatedCostUsd = totalCost;
+  const list = [...rows.values()].sort(
+    (a, b) =>
+      b.totalTokens - a.totalTokens ||
+      b.lastTs.localeCompare(a.lastTs) ||
+      a.provider.localeCompare(b.provider) ||
+      a.sessionId.localeCompare(b.sessionId)
+  );
+  return {
+    rows: list.slice(0, limit),
+    totalSessions: list.length,
+    totals,
+    truncated: list.length > limit,
+  };
 }
 
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */
@@ -427,8 +683,53 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
 
 // ------------------------------------------------------------- event bus ----
 
-let settings = structuredClone(mockSettings);
-let snapshot = structuredClone(mockSnapshot);
+/**
+ * Browser-preview hook: `?settings=<url-encoded JSON patch>` starts the mock
+ * backend from a patched state, so a preview link (or an e2e test) can open the
+ * dashboard with, say, a monthly budget already configured.
+ */
+export function seededSettings(): Settings {
+  const base = structuredClone(mockSettings);
+  if (typeof window === 'undefined') return base;
+  const raw = new URLSearchParams(window.location.search).get('settings');
+  if (!raw) return base;
+  try {
+    return mergeSettings(base, JSON.parse(raw) as SettingsPatch);
+  } catch {
+    return base;
+  }
+}
+
+/**
+ * `?mock=rate-limited` puts Claude into the rate-limited state so the browser
+ * preview (and the e2e suite) can exercise the "stale, not broken" UI.
+ */
+function mockScenario(): string {
+  if (typeof location === 'undefined') return '';
+  return new URLSearchParams(location.search).get('mock') ?? '';
+}
+
+function applyScenario(base: AppSnapshot): AppSnapshot {
+  if (mockScenario() !== 'rate-limited') return base;
+  return {
+    ...base,
+    providers: base.providers.map((p) =>
+      p.provider === 'claude'
+        ? {
+            ...p,
+            status: 'rate_limited',
+            source: 'cache',
+            fetchedAt: iso(Date.now() - 8 * 60_000),
+            nextAttemptAt: iso(Date.now() + 4 * 60_000),
+            error: 'Anthropic is rate-limiting the usage endpoint (HTTP 429)',
+          }
+        : p
+    ),
+  };
+}
+
+let settings = seededSettings();
+let snapshot = applyScenario(structuredClone(mockSnapshot));
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 
 export function mockEmit(event: string, payload: unknown) {
@@ -449,6 +750,9 @@ function jitterSnapshot(provider?: ProviderId | null) {
     generatedAt: stamp,
     providers: snapshot.providers.map((p) => {
       if (provider && p.provider !== provider) return p;
+      // A rate-limited provider is skipped by the backend, so its numbers and
+      // its timestamp stay where they were.
+      if (p.status === 'rate_limited') return p;
       return {
         ...p,
         fetchedAt: stamp,
@@ -483,6 +787,10 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     }
     case 'get_usage_history':
       return runHistory(args?.query as HistoryQuery) as T;
+    case 'get_usage_calendar':
+      return runCalendar(args?.query as CalendarQuery) as T;
+    case 'get_usage_sessions':
+      return runSessions(args?.query as SessionQuery) as T;
     case 'get_quota_history':
       return runQuotaHistory(args?.query as QuotaHistoryQuery) as T;
     case 'get_pricing':
@@ -502,6 +810,12 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       pricing = { entries, updatedAt: iso(Date.now()) };
       return structuredClone(pricing) as T;
     }
+    case 'refresh_pricing': {
+      // The preview has no network; mirror the "no URL configured" error.
+      if (!settings.pricingUrl.trim()) throw new Error('no pricing URL configured');
+      pricing = { ...pricing, updatedAt: iso(Date.now()) };
+      return structuredClone(pricing) as T;
+    }
     case 'reingest_logs': {
       const start = Date.now();
       const stats: IngestStats = { filesScanned: 0, filesUpdated: 0, eventsAdded: 0, durationMs: 0, errors: [], running: true };
@@ -513,6 +827,31 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       const done: IngestStats = { filesScanned: 1248, filesUpdated: 29, eventsAdded: 7361, durationMs: 940, errors: [], running: false };
       setTimeout(() => mockEmit('ingest-progress', done), 900);
       return new Promise<T>((resolve) => setTimeout(() => resolve(done as T), 900));
+    }
+    case 'get_update_status':
+      return structuredClone(updateStatus) as T;
+    case 'check_for_updates': {
+      updateStatus = {
+        ...updateStatus,
+        available: mockUpdateAvailable,
+        notes: 'Sample release notes for the browser preview.',
+        checking: false,
+        error: null,
+        checkedAt: iso(Date.now()),
+      };
+      mockEmit('update-status', structuredClone(updateStatus));
+      return structuredClone(updateStatus) as T;
+    }
+    case 'install_update':
+      throw new Error('the browser preview cannot install anything');
+    case 'get_shortcut_status': {
+      // Mirrors the Rust registration report closely enough for the preview.
+      const reason = (value: string) => (shortcutProblem(value) ? `invalid shortcut: ${value}` : null);
+      const status: ShortcutStatus = {
+        toggleSidebar: reason(settings.shortcutToggleSidebar),
+        openDashboard: reason(settings.shortcutOpenDashboard),
+      };
+      return status as T;
     }
     case 'get_providers':
       return structuredClone(mockProviders) as T;

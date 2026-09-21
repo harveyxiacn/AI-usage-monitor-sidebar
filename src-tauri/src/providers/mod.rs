@@ -6,6 +6,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 
 use crate::model::{
     AppSnapshot, DataSource, ProviderInfo, ProviderQuota, ProviderStatus, QuotaWindow, Settings,
@@ -17,6 +18,30 @@ use std::time::Duration;
 
 pub const CLAUDE_ID: &str = "claude";
 pub const CODEX_ID: &str = "codex";
+pub const COPILOT_ID: &str = "copilot";
+
+/// Every provider id the app knows, in default display order.
+///
+/// Single source of truth for the settings layer: `Settings::default()` seeds
+/// one `ProviderSettings` entry per id and `settings::clamp` back-fills them
+/// into an older `settings.json`, so adding a provider to `all_providers`
+/// means adding it here and nowhere else.
+pub const DEFAULT_PROVIDER_ORDER: &[&str] = &[CLAUDE_ID, CODEX_ID, COPILOT_ID];
+
+/// Whether a provider is switched on the first time its settings entry is
+/// created (an existing entry always wins — the user's choice is never
+/// overwritten).
+///
+/// The two verified providers are always on. An *experimental* one is only on
+/// when its credentials are already on disk: nobody should get a ring for a
+/// quota source that was never tested against a live account unless they use
+/// the tool in question.
+pub fn enabled_by_default(id: &str) -> bool {
+    match id {
+        COPILOT_ID => copilot::has_credentials(),
+        _ => true,
+    }
+}
 
 /// Everything a provider needs that is not the HTTP client.
 #[derive(Clone, Debug)]
@@ -56,6 +81,13 @@ pub trait Provider: Send + Sync {
     /// Stable id used in settings, the DB and the UI (`"claude"`, `"codex"`).
     fn id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
+    /// `true` when the quota source was never verified against a live account.
+    /// Such a provider is left out of the snapshot entirely while it is
+    /// switched off, so nobody gets a "disabled" card for a tool they do not
+    /// use; it is still listed by `get_providers` so it can be switched on.
+    fn experimental(&self) -> bool {
+        false
+    }
     /// Cheap, offline description (credential/log paths, login state, plan).
     fn info(&self) -> ProviderInfo;
     /// Fetch live quota. Never fails: transport problems are reported through
@@ -68,6 +100,7 @@ pub fn all_providers(ctx: &ProviderCtx) -> Vec<Box<dyn Provider>> {
     vec![
         Box::new(claude::ClaudeProvider::new(ctx.clone())),
         Box::new(codex::CodexProvider::new(ctx.clone())),
+        Box::new(copilot::CopilotProvider::new(ctx.clone())),
     ]
 }
 
@@ -131,6 +164,13 @@ pub fn mark_primary(windows: &mut [QuotaWindow]) {
 /// `now` as an RFC 3339 UTC string (second precision).
 pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// RFC 3339 → unix **milliseconds**.
+pub fn rfc3339_to_ms(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis())
 }
 
 /// Unix **seconds** → RFC 3339 UTC.
@@ -197,6 +237,8 @@ pub fn empty_quota(provider: &str, display_name: &str, status: ProviderStatus) -
         status,
         error: None,
         credits: None,
+        extras: Vec::new(),
+        next_attempt_at: None,
     }
 }
 
@@ -217,10 +259,80 @@ pub fn degraded(
         q.plan_label = cached.plan_label;
         q.account = cached.account;
         q.credits = cached.credits;
+        q.extras = cached.extras;
         q.source = DataSource::Cache;
         // `fetchedAt` of the *data*, not of this attempt, so the UI can age it.
         q.fetched_at = cached.fetched_at;
     }
+    q
+}
+
+// ---------- rate limiting ----------
+
+/// Bounds for a server-supplied `Retry-After`. A value below the minimum is
+/// not worth obeying literally (we would walk straight back into the limit),
+/// one above the maximum would freeze the widget for the rest of the day.
+pub const RETRY_AFTER_MIN_SECS: u64 = 30;
+pub const RETRY_AFTER_MAX_SECS: u64 = 3_600;
+/// Used when the server sends `429` without a usable `Retry-After`.
+pub const RETRY_AFTER_DEFAULT_SECS: u64 = 300;
+
+/// Parse an HTTP `Retry-After` header into seconds from `now`.
+///
+/// Both forms of RFC 9110 §10.2.3 are accepted: delta-seconds (`"120"`) and
+/// an HTTP-date (`"Wed, 21 Oct 2026 07:28:00 GMT"`). The result is clamped
+/// into `RETRY_AFTER_MIN_SECS..=RETRY_AFTER_MAX_SECS`; anything unparsable is
+/// `None` so the caller can fall back to its own schedule.
+pub fn parse_retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+    let raw = value.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let secs = if let Ok(delta) = raw.parse::<i64>() {
+        delta
+    } else {
+        let parsed = chrono::DateTime::parse_from_rfc2822(raw)
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(raw, "%a, %d %b %Y %H:%M:%S GMT")
+                    .map(|d| d.and_utc())
+            })
+            .ok()?;
+        (parsed - now).num_seconds()
+    };
+    Some((secs.max(0) as u64).clamp(RETRY_AFTER_MIN_SECS, RETRY_AFTER_MAX_SECS))
+}
+
+/// `Retry-After` of a response, already parsed and clamped.
+pub fn retry_after_of(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    parse_retry_after(value, chrono::Utc::now())
+}
+
+/// RFC 3339 timestamp `retry_after_secs` (or the default wait) from now.
+pub fn next_attempt_at(retry_after_secs: Option<u64>) -> Option<String> {
+    let wait = retry_after_secs.unwrap_or(RETRY_AFTER_DEFAULT_SECS);
+    rfc3339_from_unix_secs(chrono::Utc::now().timestamp() + wait as i64)
+}
+
+/// `HTTP 429` result: the last good windows stay on screen, the status says
+/// why they are ageing and `next_attempt_at` says when the app may try again.
+/// The scheduler may push that time further out (see `scheduler::PollInput`).
+pub fn rate_limited(
+    ctx: &ProviderCtx,
+    provider: &str,
+    display_name: &str,
+    retry_after_secs: Option<u64>,
+    message: impl Into<String>,
+) -> ProviderQuota {
+    let mut q = degraded(
+        ctx,
+        provider,
+        display_name,
+        ProviderStatus::RateLimited,
+        message,
+    );
+    q.next_attempt_at = next_attempt_at(retry_after_secs);
     q
 }
 
@@ -234,13 +346,15 @@ pub fn disabled_quota(provider: &str, display_name: &str) -> ProviderQuota {
     empty_quota(provider, display_name, ProviderStatus::Disabled)
 }
 
-/// `true` when the settings do not explicitly disable `id`.
+/// `true` when the settings do not explicitly disable `id`. A provider with no
+/// entry at all falls back to the registry default, so an experimental one is
+/// not silently switched on by a settings file written before it existed.
 pub fn is_enabled(settings: &Settings, id: &str) -> bool {
     settings
         .providers
         .get(id)
         .map(|p| p.enabled)
-        .unwrap_or(true)
+        .unwrap_or_else(|| enabled_by_default(id))
 }
 
 /// Providers in the user's configured display order.
@@ -261,6 +375,7 @@ pub fn ordered_providers(ctx: &ProviderCtx, settings: &Settings) -> Vec<Box<dyn 
 pub fn snapshot_from_cache(ctx: &ProviderCtx, settings: &Settings) -> AppSnapshot {
     let providers = ordered_providers(ctx, settings)
         .iter()
+        .filter(|p| !p.experimental() || is_enabled(settings, p.id()))
         .map(|p| {
             if !is_enabled(settings, p.id()) {
                 return disabled_quota(p.id(), p.display_name());
@@ -298,6 +413,11 @@ pub async fn fetch_snapshot(
     let mut out = Vec::new();
     for p in ordered_providers(ctx, settings) {
         let id = p.id();
+        // An experimental provider the user has not opted into is absent from
+        // the snapshot, not present-but-disabled: no ring, no "disabled" card.
+        if p.experimental() && !is_enabled(settings, id) {
+            continue;
+        }
         let prev = previous
             .providers
             .iter()
@@ -361,7 +481,99 @@ mod tests {
             resets_at: None,
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
+            forecast: None,
         }
+    }
+
+    /// The registry has to stay the single list: every provider that can be
+    /// constructed needs a settings entry, or the UI has no toggle for it.
+    #[test]
+    fn every_registered_provider_is_in_the_default_order() {
+        let ids: Vec<&str> = all_providers(&ProviderCtx::default())
+            .iter()
+            .map(|p| p.id())
+            .collect();
+        assert_eq!(ids, DEFAULT_PROVIDER_ORDER.to_vec());
+        assert!(
+            all_providers(&ProviderCtx::default())
+                .iter()
+                .filter(|p| p.experimental())
+                .all(|p| !enabled_by_default(p.id()) || copilot::has_credentials()),
+            "an unverified provider may only default to on when its credentials exist"
+        );
+    }
+
+    /// An experimental provider the user has not opted into must not reach the
+    /// sidebar or the overview at all — not even as a "disabled" entry.
+    #[test]
+    fn an_opted_out_experimental_provider_is_absent_from_the_snapshot() {
+        let ctx = ProviderCtx::default();
+        let mut settings = Settings::default();
+        settings.providers.insert(
+            COPILOT_ID.to_string(),
+            crate::model::ProviderSettings {
+                enabled: false,
+                show_in_sidebar: true,
+                order: 2,
+            },
+        );
+        let snapshot = snapshot_from_cache(&ctx, &settings);
+        assert!(snapshot.providers.iter().all(|q| q.provider != COPILOT_ID));
+
+        // Switched on, it is present again (as an error: nothing is cached).
+        settings.providers.insert(
+            COPILOT_ID.to_string(),
+            crate::model::ProviderSettings {
+                enabled: true,
+                show_in_sidebar: true,
+                order: 2,
+            },
+        );
+        let snapshot = snapshot_from_cache(&ctx, &settings);
+        assert!(snapshot.providers.iter().any(|q| q.provider == COPILOT_ID));
+
+        // A *verified* provider that is switched off still shows as disabled,
+        // exactly as before this change.
+        settings.providers.insert(
+            CODEX_ID.to_string(),
+            crate::model::ProviderSettings {
+                enabled: false,
+                show_in_sidebar: true,
+                order: 1,
+            },
+        );
+        let codex = snapshot_from_cache(&ctx, &settings)
+            .providers
+            .into_iter()
+            .find(|q| q.provider == CODEX_ID)
+            .expect("codex keeps its card when switched off");
+        assert_eq!(codex.status, ProviderStatus::Disabled);
+    }
+
+    #[test]
+    fn retry_after_accepts_both_header_forms_and_stays_in_range() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T07:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        // delta-seconds
+        assert_eq!(parse_retry_after("120", now), Some(120));
+        assert_eq!(parse_retry_after("  600 ", now), Some(600));
+        // HTTP-date (RFC 9110 §10.2.3)
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT", now),
+            Some(1_680)
+        );
+        // clamped: too eager, too far away, already in the past
+        assert_eq!(parse_retry_after("1", now), Some(RETRY_AFTER_MIN_SECS));
+        assert_eq!(parse_retry_after("99999", now), Some(RETRY_AFTER_MAX_SECS));
+        assert_eq!(parse_retry_after("-5", now), Some(RETRY_AFTER_MIN_SECS));
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2026 06:00:00 GMT", now),
+            Some(RETRY_AFTER_MIN_SECS)
+        );
+        // unusable values fall back to the caller's own schedule
+        assert_eq!(parse_retry_after("", now), None);
+        assert_eq!(parse_retry_after("soon", now), None);
     }
 
     #[test]

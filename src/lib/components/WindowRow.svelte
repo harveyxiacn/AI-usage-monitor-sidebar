@@ -1,10 +1,11 @@
 <!--
-  One rate-limit window: label / bar / "73% Used" + "Resets in 51 min".
+  One rate-limit window: label / bar / "73% Used" + "Resets in 51 min", plus the
+  burn-rate line ("Runs out in ~40 min") when the backend sent a forecast.
   Used by the popover bubble and by the dashboard overview cards. [FRONTEND]
 -->
 <script lang="ts">
   import Bar from './Bar.svelte';
-  import { formatPercent, formatReset, severityColor, severityOf, clampPercent, windowLabel } from '$lib/format';
+  import { formatForecast, formatPercent, formatReset, severityColor, severityOf, clampPercent, windowLabel } from '$lib/format';
   import type { PercentMode, QuotaWindow, Thresholds } from '$lib/types';
 
   interface Props {
@@ -39,6 +40,7 @@
   const color = $derived(severityColor(accent, severity));
   // the bar paints whatever the percent label says, see Bar.svelte
   const shown = $derived(percentMode === 'remaining' ? 100 - used : used);
+  const forecast = $derived(formatForecast(w, percentMode, now));
 </script>
 
 <div class="row" class:highlight class:compact>
@@ -48,6 +50,9 @@
     <span class="pct">{formatPercent(w.usedPercent, percentMode)}</span>
     <span class="reset">{formatReset(w.resetsAt, now)}</span>
   </div>
+  {#if forecast}
+    <div class="forecast" class:warn={forecast.tone === 'warn'}>{forecast.text}</div>
+  {/if}
 </div>
 
 <style>
@@ -101,5 +106,21 @@
     color: var(--muted);
     font-variant-numeric: tabular-nums;
     text-align: right;
+  }
+
+  /* The burn-rate line is a footnote to the row: one notch smaller than the
+     stats above it, and only coloured when the window will actually run out.
+     `-0.125rem` pulls it back into the 0.4375rem row gap so the row does not
+     grow a full line taller when a forecast appears. */
+  .forecast {
+    margin-top: -0.125rem;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .forecast.warn {
+    color: var(--warn);
   }
 </style>

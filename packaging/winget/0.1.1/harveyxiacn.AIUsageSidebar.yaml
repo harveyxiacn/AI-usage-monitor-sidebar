@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+# Version manifest. In winget-pkgs this file lives at
+# manifests/h/harveyxiacn/AIUsageSidebar/0.1.1/ together with the other two.
+PackageIdentifier: harveyxiacn.AIUsageSidebar
+PackageVersion: 0.1.1
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

@@ -1,23 +1,27 @@
 import type { Settings } from './types';
 
 /** Nested fields are merged by the backend; use the same rule for previews. */
-export type SettingsPatch = Partial<Omit<Settings, 'colors' | 'sizes' | 'thresholds' | 'providers'>> & {
+export type SettingsPatch = Partial<
+  Omit<Settings, 'colors' | 'sizes' | 'thresholds' | 'providers' | 'sidebarItems'>
+> & {
   colors?: Partial<Settings['colors']>;
   sizes?: Partial<Settings['sizes']>;
   thresholds?: Partial<Settings['thresholds']>;
   providers?: Record<string, Partial<Settings['providers'][string]>>;
+  sidebarItems?: Partial<Settings['sidebarItems']>;
 };
 
 export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
   const providers = { ...base.providers };
   for (const [id, next] of Object.entries(patch.providers ?? {})) {
-    providers[id] = { ...(providers[id] ?? { enabled: true, order: 0 }), ...next };
+    providers[id] = { ...(providers[id] ?? { enabled: true, showInSidebar: true, order: 0 }), ...next };
   }
   return {
     ...base, ...patch, providers,
     colors: { ...base.colors, ...patch.colors },
     sizes: { ...base.sizes, ...patch.sizes },
     thresholds: { ...base.thresholds, ...patch.thresholds },
+    sidebarItems: { ...base.sidebarItems, ...patch.sidebarItems },
   };
 }
 

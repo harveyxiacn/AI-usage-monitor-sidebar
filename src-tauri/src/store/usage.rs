@@ -2,10 +2,13 @@
 
 use super::Db;
 use crate::commands::pricing;
-use crate::model::{Bucket, HistoryQuery, HistoryResult, HistoryRow, PricingTable, TokenTotals};
+use crate::model::{
+    Bucket, CalendarDay, CalendarQuery, CalendarResult, CalendarSlot, HistoryQuery, HistoryResult,
+    HistoryRow, PricingTable, SessionQuery, SessionRow, SessionsResult, TokenTotals,
+};
 use anyhow::Result;
 use chrono::{Datelike, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One parsed request from a provider session log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -107,6 +110,8 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
     let mut buckets: BTreeMap<HistoryBucket, Acc> = BTreeMap::new();
     let mut totals = Acc::default();
     let mut by_provider: BTreeMap<String, Acc> = BTreeMap::new();
+    // Set as soon as one model was priced from its family, not from itself.
+    let mut cost_approximate = false;
     let projects;
 
     {
@@ -147,7 +152,13 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
                 requests: 1,
                 estimated_cost_usd: None,
             };
-            let cost = pricing::estimate_cost(pricing, &model, &t);
+            let cost = match pricing::estimate_cost_kind(pricing, &model, &t) {
+                Some((cost, kind)) => {
+                    cost_approximate |= kind == pricing::MatchKind::Family;
+                    Some(cost)
+                }
+                None => None,
+            };
             let key_model = if q.group_by_model {
                 Some(model.clone())
             } else {
@@ -192,6 +203,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
             .map(|(k, v)| (k, v.finish()))
             .collect(),
         projects,
+        cost_approximate,
     })
 }
 
@@ -230,6 +242,210 @@ impl Acc {
         }
         t
     }
+}
+
+/// Default / maximum number of session rows handed to the webview.
+const SESSION_LIMIT_DEFAULT: u32 = 200;
+const SESSION_LIMIT_MAX: u32 = 1000;
+
+/// Aggregate `usage_events` into a local-day calendar **and** a weekday × hour
+/// punch card in a single pass over the range.
+///
+/// Both grids come from the same scan because the UI toggles between them; the
+/// webview only ever receives the aggregates (at most ~26 × 7 days + 168 slots),
+/// never the individual events.
+pub fn query_calendar(
+    db: &Db,
+    q: &CalendarQuery,
+    pricing: &PricingTable,
+) -> Result<CalendarResult> {
+    let (from, to) = query_range(&q.from, &q.to)?;
+    let mut days: BTreeMap<i64, Acc> = BTreeMap::new();
+    let mut slots: BTreeMap<(u8, u8), Acc> = BTreeMap::new();
+    let mut totals = Acc::default();
+
+    {
+        let conn = db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
+                    output_tokens, reasoning_tokens, total_tokens
+             FROM usage_events
+             WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
+               AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![from, to, q.provider, q.project])?;
+        while let Some(row) = rows.next()? {
+            let model: String = row.get(1)?;
+            let ts: i64 = row.get(2)?;
+            let t = TokenTotals {
+                input_tokens: row.get(3)?,
+                cache_write_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                output_tokens: row.get(6)?,
+                reasoning_tokens: row.get(7)?,
+                total_tokens: row.get(8)?,
+                requests: 1,
+                estimated_cost_usd: None,
+            };
+            let cost = pricing::estimate_cost(pricing, &model, &t);
+            days.entry(bucket_start_ms(ts, Bucket::Day))
+                .or_default()
+                .add(&t, cost);
+            if let Some(slot) = local_weekday_hour(ts) {
+                slots.entry(slot).or_default().add(&t, cost);
+            }
+            totals.add(&t, cost);
+        }
+    }
+
+    Ok(CalendarResult {
+        days: days
+            .into_iter()
+            .map(|(start, acc)| CalendarDay {
+                date: local_date(start),
+                totals: acc.finish(),
+            })
+            .collect(),
+        slots: slots
+            .into_iter()
+            .map(|((weekday, hour), acc)| CalendarSlot {
+                weekday,
+                hour,
+                totals: acc.finish(),
+            })
+            .collect(),
+        totals: totals.finish(),
+    })
+}
+
+/// One session's aggregate while the scan is running.
+#[derive(Default)]
+struct SessionAcc {
+    first_ts: i64,
+    last_ts: i64,
+    /// cwd of the latest event seen, so a session that moved keeps its current
+    /// directory (exact path, never trimmed — contract §4).
+    project: String,
+    models: BTreeSet<String>,
+    acc: Acc,
+}
+
+/// Per-session totals for the selected range, capped server-side.
+///
+/// Sessions are `(provider, session_id)`; events without a session id share the
+/// empty-string session of their provider, mirroring the unassigned-project
+/// rule. First/last activity and the duration only cover events **inside** the
+/// range, which is what the surrounding history view shows.
+pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Result<SessionsResult> {
+    let (from, to) = query_range(&q.from, &q.to)?;
+    let limit = q
+        .limit
+        .unwrap_or(SESSION_LIMIT_DEFAULT)
+        .clamp(1, SESSION_LIMIT_MAX) as usize;
+    let mut sessions: BTreeMap<(String, String), SessionAcc> = BTreeMap::new();
+    let mut totals = Acc::default();
+
+    {
+        let conn = db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
+                    output_tokens, reasoning_tokens, total_tokens,
+                    COALESCE(session_id, ''), COALESCE(cwd, '')
+             FROM usage_events
+             WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
+               AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
+             ORDER BY ts",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![from, to, q.provider, q.project])?;
+        while let Some(row) = rows.next()? {
+            let provider: String = row.get(0)?;
+            let model: String = row.get(1)?;
+            let ts: i64 = row.get(2)?;
+            let t = TokenTotals {
+                input_tokens: row.get(3)?,
+                cache_write_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                output_tokens: row.get(6)?,
+                reasoning_tokens: row.get(7)?,
+                total_tokens: row.get(8)?,
+                requests: 1,
+                estimated_cost_usd: None,
+            };
+            let session_id: String = row.get(9)?;
+            let project: String = row.get(10)?;
+            let cost = pricing::estimate_cost(pricing, &model, &t);
+            let entry = sessions
+                .entry((provider, session_id))
+                .or_insert_with(|| SessionAcc {
+                    first_ts: ts,
+                    last_ts: ts,
+                    ..SessionAcc::default()
+                });
+            entry.first_ts = entry.first_ts.min(ts);
+            // rows arrive in `ts` order, so the last write wins for the cwd
+            entry.last_ts = entry.last_ts.max(ts);
+            entry.project = project;
+            entry.models.insert(model);
+            entry.acc.add(&t, cost);
+            totals.add(&t, cost);
+        }
+    }
+
+    let total_sessions = sessions.len() as i64;
+    let mut rows = sessions
+        .into_iter()
+        .map(|((provider, session_id), s)| SessionRow {
+            session_id,
+            provider,
+            project: s.project,
+            first_ts: local_rfc3339(s.first_ts),
+            last_ts: local_rfc3339(s.last_ts),
+            duration_ms: s.last_ts - s.first_ts,
+            models: s.models.into_iter().collect(),
+            totals: s.acc.finish(),
+        })
+        .collect::<Vec<_>>();
+    // Biggest sessions first; the remaining keys break ties deterministically.
+    rows.sort_by(|a, b| {
+        b.totals
+            .total_tokens
+            .cmp(&a.totals.total_tokens)
+            .then_with(|| b.last_ts.cmp(&a.last_ts))
+            .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    let truncated = rows.len() > limit;
+    rows.truncate(limit);
+
+    Ok(SessionsResult {
+        rows,
+        total_sessions,
+        totals: totals.finish(),
+        truncated,
+    })
+}
+
+/// Local `YYYY-MM-DD` for a unix-ms timestamp.
+fn local_date(ms: i64) -> String {
+    match Local.timestamp_millis_opt(ms) {
+        LocalResult::Single(d) | LocalResult::Ambiguous(d, _) => {
+            d.naive_local().date().format("%Y-%m-%d").to_string()
+        }
+        LocalResult::None => String::new(),
+    }
+}
+
+/// `(weekday, hour)` in local time, Monday = 0.
+fn local_weekday_hour(ms: i64) -> Option<(u8, u8)> {
+    let dt = match Local.timestamp_millis_opt(ms) {
+        LocalResult::Single(d) | LocalResult::Ambiguous(d, _) => d,
+        LocalResult::None => return None,
+    };
+    let naive = dt.naive_local();
+    Some((
+        naive.date().weekday().num_days_from_monday() as u8,
+        naive.hour() as u8,
+    ))
 }
 
 /// Truncate a unix-ms timestamp to the start of its bucket **in local time**.
@@ -516,6 +732,48 @@ mod tests {
             query_history(&db, &query("2020-01-01", "2020-01-02", Bucket::Day), &table).unwrap();
         assert!(empty.rows.is_empty());
         assert_eq!(empty.totals.requests, 0);
+    }
+
+    #[test]
+    fn a_family_priced_model_marks_the_result_approximate() {
+        let db = Db::open_in_memory().unwrap();
+        let table = pricing::default_table();
+        let range = query("2026-09-14", "2026-09-20", Bucket::Day);
+
+        // A model the table knows exactly: an honest, exact estimate.
+        let known = event(
+            "codex",
+            "gpt-5.3-codex",
+            ms("2026-09-16T10:00:00"),
+            "a",
+            1_000_000,
+            0,
+        );
+        insert_usage_events(&db, &[known]).unwrap();
+        let exact = query_history(&db, &range, &table).unwrap();
+        assert!(!exact.cost_approximate);
+        assert_eq!(exact.totals.estimated_cost_usd, Some(1.75));
+
+        // A model released after this build: priced from its family, and the
+        // result says so rather than silently showing "—".
+        let fresh = event(
+            "codex",
+            "gpt-5.3-codex-spark",
+            ms("2026-09-16T11:00:00"),
+            "b",
+            1_000_000,
+            0,
+        );
+        insert_usage_events(&db, &[fresh]).unwrap();
+        let approximate = query_history(&db, &range, &table).unwrap();
+        assert!(approximate.cost_approximate, "family match is approximate");
+        assert_eq!(approximate.totals.estimated_cost_usd, Some(3.5));
+
+        // Something from another vendor is still unknown, not guessed at.
+        let alien = event("codex", "who-knows", ms("2026-09-16T12:00:00"), "c", 10, 0);
+        insert_usage_events(&db, &[alien]).unwrap();
+        let unknown = query_history(&db, &range, &table).unwrap();
+        assert!(unknown.totals.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -810,5 +1068,376 @@ mod tests {
             serde_json::from_value::<HistoryResult>(wire).unwrap(),
             result
         );
+    }
+
+    // ---------------------------------------------- calendar / sessions ----
+
+    fn calendar(from: &str, to: &str) -> CalendarQuery {
+        CalendarQuery {
+            from: from.into(),
+            to: to.into(),
+            provider: None,
+            project: None,
+        }
+    }
+
+    fn sessions(from: &str, to: &str) -> SessionQuery {
+        SessionQuery {
+            from: from.into(),
+            to: to.into(),
+            provider: None,
+            project: None,
+            limit: None,
+        }
+    }
+
+    fn in_session(mut event: UsageEvent, session: Option<&str>) -> UsageEvent {
+        event.session_id = session.map(str::to_owned);
+        event
+    }
+
+    #[test]
+    fn calendar_reports_local_days_and_a_weekday_hour_punch_card() {
+        let db = Db::open_in_memory().unwrap();
+        // 2026-09-15 is a Tuesday (weekday 1), 2026-09-20 a Sunday (weekday 6).
+        let events = [
+            event(
+                "claude",
+                "claude-opus-4-5",
+                ms("2026-09-15T09:30:00"),
+                "a",
+                1_000_000,
+                0,
+            ),
+            event(
+                "claude",
+                "claude-opus-4-5",
+                ms("2026-09-15T23:59:59"),
+                "b",
+                10,
+                0,
+            ),
+            event("codex", "gpt-5", ms("2026-09-15T09:05:00"), "c", 20, 0),
+            event("codex", "who-knows", ms("2026-09-20T13:00:00"), "d", 30, 0),
+        ];
+        insert_usage_events(&db, &events).unwrap();
+        let table = pricing::default_table();
+
+        let r = query_calendar(&db, &calendar("2026-09-14", "2026-09-21"), &table).unwrap();
+        assert_eq!(
+            r.days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>(),
+            vec!["2026-09-15", "2026-09-20"],
+            "only days with activity are returned, in calendar order"
+        );
+        assert_eq!(r.days[0].totals.requests, 3, "23:59 local stays in its day");
+        assert_eq!(r.days[0].totals.total_tokens, 1_000_030);
+        assert!(
+            r.days[1].totals.estimated_cost_usd.is_none(),
+            "an unpriced model leaves the day's estimate unknown"
+        );
+        assert_eq!(r.totals.requests, 4);
+        assert!(r.totals.estimated_cost_usd.is_none());
+
+        let slots = r
+            .slots
+            .iter()
+            .map(|s| (s.weekday, s.hour, s.totals.requests))
+            .collect::<Vec<_>>();
+        assert_eq!(slots, vec![(1, 9, 2), (1, 23, 1), (6, 13, 1)]);
+
+        let claude = query_calendar(
+            &db,
+            &CalendarQuery {
+                provider: Some("claude".into()),
+                ..calendar("2026-09-14", "2026-09-21")
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(claude.totals.requests, 2);
+        assert_eq!(claude.days.len(), 1);
+        assert_eq!(claude.totals.estimated_cost_usd, Some(5.00005));
+    }
+
+    #[test]
+    fn calendar_range_is_half_open_and_respects_the_exact_project_filter() {
+        let db = Db::open_in_memory().unwrap();
+        let start = ms("2026-09-15T00:00:00");
+        let end = ms("2026-09-16T00:00:00");
+        let path = r"C:\Work\O'Reilly, Inc\项目";
+        let events = [
+            in_project(
+                event("codex", "gpt-5", start - 1, "before", 10, 0),
+                Some(path),
+            ),
+            in_project(
+                event("codex", "gpt-5", start, "at-start", 10, 0),
+                Some(path),
+            ),
+            in_project(
+                event("codex", "gpt-5", end - 1, "last-ms", 10, 0),
+                Some(path),
+            ),
+            in_project(event("codex", "gpt-5", end, "at-end", 10, 0), Some(path)),
+            in_project(
+                event("codex", "gpt-5", start, "other", 10, 0),
+                Some("/other"),
+            ),
+            in_project(event("codex", "gpt-5", start, "none", 10, 0), None),
+        ];
+        insert_usage_events(&db, &events).unwrap();
+        let table = pricing::default_table();
+
+        let all = query_calendar(&db, &calendar("2026-09-15", "2026-09-16"), &table).unwrap();
+        assert_eq!(
+            all.totals.requests, 4,
+            "[from, to) excludes the end instant"
+        );
+
+        let filtered = query_calendar(
+            &db,
+            &CalendarQuery {
+                project: Some(path.into()),
+                ..calendar("2026-09-15", "2026-09-16")
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(filtered.totals.requests, 2);
+
+        let unassigned = query_calendar(
+            &db,
+            &CalendarQuery {
+                project: Some(String::new()),
+                ..calendar("2026-09-15", "2026-09-16")
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(unassigned.totals.requests, 1);
+
+        assert!(query_calendar(&db, &calendar("nope", "2026-09-16"), &table).is_err());
+        assert!(query_calendar(&db, &calendar("2026-09-16", "2026-09-15"), &table).is_err());
+    }
+
+    #[test]
+    fn sessions_aggregate_per_provider_session_with_boundaries_and_models() {
+        let db = Db::open_in_memory().unwrap();
+        let day = "2026-09-15T";
+        let events = [
+            in_session(
+                in_project(
+                    event(
+                        "claude",
+                        "claude-opus-4-5",
+                        ms(&format!("{day}09:00:00")),
+                        "a",
+                        1_000_000,
+                        0,
+                    ),
+                    Some("/home/dev/api"),
+                ),
+                Some("sess-1"),
+            ),
+            in_session(
+                in_project(
+                    event(
+                        "claude",
+                        "claude-haiku-4-5",
+                        ms(&format!("{day}11:30:00")),
+                        "b",
+                        10,
+                        5,
+                    ),
+                    Some("/home/dev/api-moved"),
+                ),
+                Some("sess-1"),
+            ),
+            in_session(
+                event(
+                    "claude",
+                    "claude-opus-4-5",
+                    ms(&format!("{day}10:00:00")),
+                    "c",
+                    200_000,
+                    0,
+                ),
+                Some("sess-2"),
+            ),
+            // same session id, different provider: never merged
+            in_session(
+                event("codex", "gpt-5", ms(&format!("{day}12:00:00")), "d", 100, 0),
+                Some("sess-1"),
+            ),
+            in_session(
+                event(
+                    "codex",
+                    "who-knows",
+                    ms(&format!("{day}12:30:00")),
+                    "e",
+                    50,
+                    0,
+                ),
+                None,
+            ),
+            in_session(
+                event("codex", "gpt-5", ms(&format!("{day}13:00:00")), "f", 60, 0),
+                Some(""),
+            ),
+        ];
+        insert_usage_events(&db, &events).unwrap();
+        let table = pricing::default_table();
+        let r = query_sessions(&db, &sessions("2026-09-15", "2026-09-16"), &table).unwrap();
+
+        assert_eq!(
+            r.total_sessions, 4,
+            "claude/sess-1, claude/sess-2, codex/sess-1, codex/unassigned"
+        );
+        assert!(!r.truncated);
+        assert_eq!(r.totals.requests, 6);
+        assert_eq!(r.rows.len(), 4);
+        assert_eq!(r.rows[0].session_id, "sess-1", "biggest session first");
+        assert_eq!(r.rows[0].provider, "claude");
+        assert_eq!(r.rows[0].totals.requests, 2);
+        assert_eq!(r.rows[0].duration_ms, 2 * 3_600_000 + 30 * 60_000);
+        assert!(r.rows[0].first_ts.starts_with("2026-09-15T09:00:00"));
+        assert!(r.rows[0].last_ts.starts_with("2026-09-15T11:30:00"));
+        assert_eq!(
+            r.rows[0].models,
+            vec![
+                "claude-haiku-4-5".to_string(),
+                "claude-opus-4-5".to_string()
+            ]
+        );
+        assert_eq!(
+            r.rows[0].project, "/home/dev/api-moved",
+            "the session keeps the cwd of its latest event"
+        );
+        let unassigned = r
+            .rows
+            .iter()
+            .find(|row| row.provider == "codex" && row.session_id.is_empty())
+            .unwrap();
+        assert_eq!(
+            unassigned.totals.requests, 2,
+            "NULL and empty session ids share the unassigned session"
+        );
+        assert!(
+            unassigned.totals.estimated_cost_usd.is_none(),
+            "one unpriced model makes the session estimate unknown"
+        );
+        assert_eq!(unassigned.duration_ms, 30 * 60_000);
+        assert_eq!(
+            r.rows
+                .iter()
+                .find(|row| row.provider == "claude" && row.session_id == "sess-2")
+                .unwrap()
+                .duration_ms,
+            0,
+            "a single-event session has no duration"
+        );
+    }
+
+    #[test]
+    fn sessions_cap_rows_server_side_and_keep_the_range_half_open() {
+        let db = Db::open_in_memory().unwrap();
+        let start = ms("2026-09-15T00:00:00");
+        let end = ms("2026-09-16T00:00:00");
+        let mut events = Vec::new();
+        for i in 0..250i64 {
+            events.push(in_session(
+                event("codex", "gpt-5", start + i * 60_000, &format!("r{i}"), i, 0),
+                Some(&format!("sess-{i:03}")),
+            ));
+        }
+        events.push(in_session(
+            event("codex", "gpt-5", start - 1, "before", 9_000, 0),
+            Some("outside-before"),
+        ));
+        events.push(in_session(
+            event("codex", "gpt-5", end, "at-end", 9_000, 0),
+            Some("outside-after"),
+        ));
+        insert_usage_events(&db, &events).unwrap();
+        let table = pricing::default_table();
+
+        let capped = query_sessions(&db, &sessions("2026-09-15", "2026-09-16"), &table).unwrap();
+        assert_eq!(capped.total_sessions, 250, "the count ignores the cap");
+        assert_eq!(capped.rows.len(), 200, "default cap");
+        assert!(capped.truncated);
+        assert_eq!(capped.totals.requests, 250);
+        assert_eq!(capped.rows[0].session_id, "sess-249", "sorted by tokens");
+        assert!(capped
+            .rows
+            .iter()
+            .all(|row| !row.session_id.starts_with("outside")));
+
+        let few = query_sessions(
+            &db,
+            &SessionQuery {
+                limit: Some(3),
+                ..sessions("2026-09-15", "2026-09-16")
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(few.rows.len(), 3);
+        assert!(few.truncated);
+        assert_eq!(few.totals.requests, 250, "totals cover every session");
+
+        let huge = query_sessions(
+            &db,
+            &SessionQuery {
+                limit: Some(u32::MAX),
+                ..sessions("2026-09-15", "2026-09-16")
+            },
+            &table,
+        )
+        .unwrap();
+        assert_eq!(huge.rows.len(), 250);
+        assert!(!huge.truncated);
+        assert!(query_sessions(&db, &sessions("2026-09-16", "2026-09-15"), &table).is_err());
+    }
+
+    #[test]
+    fn calendar_and_session_json_use_camel_case_and_flattened_totals() {
+        let db = Db::open_in_memory().unwrap();
+        insert_usage_events(
+            &db,
+            &[in_session(
+                in_project(
+                    event("codex", "gpt-5", ms("2026-09-15T12:00:00"), "a", 10, 0),
+                    Some("/tmp/x"),
+                ),
+                Some("sess"),
+            )],
+        )
+        .unwrap();
+        let table = pricing::default_table();
+        let cal = serde_json::to_value(
+            query_calendar(&db, &calendar("2026-09-15", "2026-09-16"), &table).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cal["days"][0]["date"], "2026-09-15");
+        assert_eq!(cal["days"][0]["totalTokens"], 10);
+        assert!(cal["days"][0].get("totals").is_none());
+        assert_eq!(cal["slots"][0]["weekday"], 1);
+        assert_eq!(cal["slots"][0]["hour"], 12);
+
+        let ses = serde_json::to_value(
+            query_sessions(&db, &sessions("2026-09-15", "2026-09-16"), &table).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ses["rows"][0]["sessionId"], "sess");
+        assert_eq!(ses["rows"][0]["durationMs"], 0);
+        assert_eq!(ses["rows"][0]["project"], "/tmp/x");
+        assert_eq!(ses["rows"][0]["totalTokens"], 10);
+        assert_eq!(ses["totalSessions"], 1);
+        assert_eq!(ses["truncated"], false);
+        // legacy-shaped queries (no provider/project/limit) still deserialize
+        let q: SessionQuery =
+            serde_json::from_value(serde_json::json!({"from":"2026-09-15","to":"2026-09-16"}))
+                .unwrap();
+        assert!(q.limit.is_none() && q.provider.is_none() && q.project.is_none());
     }
 }

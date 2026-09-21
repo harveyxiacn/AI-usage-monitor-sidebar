@@ -2,6 +2,9 @@
 //!
 //! Loading never fails: a missing, partial or partly-invalid file degrades to
 //! the defaults for the fields it cannot supply.
+//!
+//! The file is also **watched**, so a user or an AI agent can edit it while
+//! the app runs (see `watch`).
 
 use crate::model::{ColorSettings, ProviderSettings, Settings, SizeSettings};
 use anyhow::{Context, Result};
@@ -29,19 +32,18 @@ pub fn load(config_dir: &Path) -> Settings {
             return Settings::default();
         }
     };
-    let value: Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!(
-                "{} is not valid JSON ({}), using defaults",
-                path.display(),
-                e
-            );
-            return Settings::default();
-        }
-    };
-    // `merge` is field-by-field, so a single bad field cannot poison the rest.
-    merge(&Settings::default(), &value)
+    parse(&text).unwrap_or_else(|| {
+        log::warn!("{} is not valid JSON, using defaults", path.display());
+        Settings::default()
+    })
+}
+
+/// Turn the *contents* of a settings file into usable settings, or `None`
+/// when it is not valid JSON (a half-written file, say). `merge` is
+/// field-by-field, so a single bad field cannot poison the rest.
+pub fn parse(text: &str) -> Option<Settings> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    Some(merge(&Settings::default(), &value))
 }
 
 /// Shallow merge of a JSON patch onto `base`.
@@ -61,7 +63,7 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         let mut candidate = current.clone();
         if matches!(
             key.as_str(),
-            "providers" | "colors" | "sizes" | "thresholds"
+            "providers" | "colors" | "sizes" | "thresholds" | "sidebarItems"
         ) {
             // per-key merge so a patch can toggle one provider / one colour only
             let mut merged = match current.get(key.as_str()) {
@@ -110,7 +112,33 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         }
     }
     let merged = serde_json::from_value::<Settings>(Value::Object(current)).unwrap_or_default();
-    clamp(merged)
+    clamp(reconcile_legacy(merged, patch))
+}
+
+/// Bridge between the deprecated top-level `showScopedRing` /
+/// `showPercentLabel` and their new home in `sidebarItems`.
+///
+/// * an old settings file (or anything still writing the flat keys) has its
+///   value copied into `sidebarItems`, so nothing changes under the user;
+/// * when the same patch carries both spellings the nested one wins, because
+///   that is the one the UI writes;
+/// * afterwards the flat fields are kept as a mirror of the nested ones, so a
+///   file written by this version is still understood by an older build.
+///
+/// Every `Settings` that leaves `merge` is therefore consistent, which is what
+/// makes the first rule safe to apply to a merged (not raw) value.
+fn reconcile_legacy(mut s: Settings, patch: &serde_json::Map<String, Value>) -> Settings {
+    let nested = patch.get("sidebarItems").and_then(Value::as_object);
+    let patched = |key: &str| nested.is_some_and(|o| o.contains_key(key));
+    if patch.contains_key("showScopedRing") && !patched("scoped") {
+        s.sidebar_items.scoped = s.show_scoped_ring;
+    }
+    if patch.contains_key("showPercentLabel") && !patched("percentLabel") {
+        s.sidebar_items.percent_label = s.show_percent_label;
+    }
+    s.show_scoped_ring = s.sidebar_items.scoped;
+    s.show_percent_label = s.sidebar_items.percent_label;
+    s
 }
 
 /// `value` if it is a CSS hex colour (or empty), otherwise `fallback`.
@@ -136,6 +164,9 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.refresh_interval_sec = s.refresh_interval_sec.max(15);
     s.collapsed_width = s.collapsed_width.clamp(2, 24);
     s.auto_hide_delay_ms = s.auto_hide_delay_ms.min(600_000);
+    s.popover_timeout_sec = s.popover_timeout_sec.min(600);
+    // 0 = budget line off; the cap keeps a typo out of the chart's y-axis.
+    s.monthly_budget_usd = clamp_f64(s.monthly_budget_usd, 0.0, 1_000_000.0, 0.0);
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);
@@ -162,18 +193,25 @@ pub fn clamp(mut s: Settings) -> Settings {
     let dc = ColorSettings::default();
     s.colors.claude = hex_or(&s.colors.claude, &dc.claude);
     s.colors.codex = hex_or(&s.colors.codex, &dc.codex);
+    s.colors.copilot = hex_or(&s.colors.copilot, &dc.copilot);
     s.colors.warn = hex_or(&s.colors.warn, &dc.warn);
     s.colors.critical = hex_or(&s.colors.critical, &dc.critical);
     s.colors.surface = hex_or(&s.colors.surface, "");
     s.colors.text = hex_or(&s.colors.text, "");
 
-    // Every known provider must have an entry so the UI can render a toggle.
-    for (id, order) in [("claude", 0), ("codex", 1)] {
+    // Every known provider must have an entry so the UI can render a toggle;
+    // the registry is the source of truth, so an older settings.json gains the
+    // entry for a provider that did not exist when it was written.
+    for (order, id) in crate::commands::providers::DEFAULT_PROVIDER_ORDER
+        .iter()
+        .enumerate()
+    {
         s.providers
-            .entry(id.to_string())
-            .or_insert(ProviderSettings {
-                enabled: true,
-                order,
+            .entry((*id).to_string())
+            .or_insert_with(|| ProviderSettings {
+                enabled: crate::commands::providers::enabled_by_default(id),
+                show_in_sidebar: true,
+                order: order as i32,
             });
     }
     s
@@ -187,11 +225,17 @@ fn clamp_f64(v: f64, min: f64, max: f64, fallback: f64) -> f64 {
     }
 }
 
+/// The exact bytes this process wrote last. The file watcher compares against
+/// them so our own atomic save never bounces back as an "external" change.
+static LAST_WRITTEN: parking_lot::Mutex<Option<Vec<u8>>> = parking_lot::Mutex::new(None);
+
 /// Write `settings.json` atomically (temp file + rename).
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<()> {
     std::fs::create_dir_all(config_dir).ok();
     let bytes = serde_json::to_vec_pretty(settings).context("serialize settings")?;
-    write_atomic(&settings_path(config_dir), &bytes)
+    write_atomic(&settings_path(config_dir), &bytes)?;
+    *LAST_WRITTEN.lock() = Some(bytes);
+    Ok(())
 }
 
 /// Write `bytes` to `path` via a sibling temp file + rename, so a crash can
@@ -277,11 +321,136 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
     }
 }
 
+// ---------- live reload of an externally edited settings.json ----------
+
+/// Quiet period after the last file-system event before re-reading, so an
+/// editor's write-truncate-write dance produces one reload, not three.
+const RELOAD_DEBOUNCE_MS: u64 = 300;
+
+/// What the watcher should do with the settings file as it is right now.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReloadAction {
+    /// Our own write, or a file that says exactly what memory already says.
+    Ignore,
+    /// Unreadable or not valid JSON *yet* — an editor mid-write. Wait for the
+    /// next event instead of resetting anything to the defaults.
+    Wait,
+    /// Somebody else changed the file: apply these settings.
+    Apply(Box<Settings>),
+}
+
+/// Decide what to do, given the bytes currently on disk (`None` = the file
+/// could not be read), the bytes this process wrote last, and the settings
+/// currently live in memory.
+///
+/// Reading the file at decision time (rather than trusting the event) is what
+/// keeps a stale event from clobbering a newer in-memory change: whatever the
+/// event said, the comparison is always against the current file and the
+/// current memory.
+pub fn reload_action(
+    on_disk: Option<&[u8]>,
+    own_write: Option<&[u8]>,
+    in_memory: &Settings,
+) -> ReloadAction {
+    let Some(bytes) = on_disk else {
+        return ReloadAction::Wait;
+    };
+    if own_write == Some(bytes) {
+        return ReloadAction::Ignore;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ReloadAction::Wait;
+    };
+    match parse(text) {
+        None => ReloadAction::Wait,
+        Some(next) if next == *in_memory => ReloadAction::Ignore,
+        Some(next) => ReloadAction::Apply(Box::new(next)),
+    }
+}
+
+/// True when a watcher event concerns `settings.json` itself. The watch is on
+/// the *directory* (editors and our own atomic save replace the file by
+/// rename, which a watch on the file would lose), so neighbours like
+/// `pricing.json` and our `.settings.json.<pid>.<n>.tmp` must be filtered out.
+pub fn event_touches_settings(paths: &[PathBuf]) -> bool {
+    paths
+        .iter()
+        .any(|p| p.file_name().and_then(|n| n.to_str()) == Some(SETTINGS_FILE))
+}
+
+/// Re-read `settings.json` and hot-apply an external edit.
+fn apply_external(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let path = settings_path(&state.config_dir);
+    let on_disk = std::fs::read(&path).ok();
+    let own = LAST_WRITTEN.lock().clone();
+    // The write lock is held across the comparison so a concurrent
+    // `update_settings` cannot be overwritten by a file that predates it.
+    let next = {
+        let mut current = state.settings.write();
+        match reload_action(on_disk.as_deref(), own.as_deref(), &current) {
+            ReloadAction::Ignore | ReloadAction::Wait => return,
+            ReloadAction::Apply(next) => {
+                *current = (*next).clone();
+                *next
+            }
+        }
+    };
+    log::info!("{} changed on disk, applied", path.display());
+    emit_updated(app, &next);
+}
+
+/// Watch the config directory and hot-apply external edits of
+/// `settings.json`, so editing the file (by hand or by an AI agent) does not
+/// need a restart. Runs on its own thread which owns the watcher for the
+/// lifetime of the app.
+pub fn watch(app: AppHandle) {
+    std::thread::spawn(move || {
+        use notify::{RecursiveMode, Watcher};
+        use std::sync::mpsc::RecvTimeoutError;
+        let dir = app.state::<AppState>().config_dir.clone();
+        std::fs::create_dir_all(&dir).ok();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("settings are not watched ({e}); edits need a restart");
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            log::warn!("cannot watch {} ({e}); edits need a restart", dir.display());
+            return;
+        }
+        log::debug!("watching {} for external settings edits", dir.display());
+        let mut pending = false;
+        loop {
+            let received = if pending {
+                rx.recv_timeout(std::time::Duration::from_millis(RELOAD_DEBOUNCE_MS))
+            } else {
+                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            };
+            match received {
+                // Any further event restarts the debounce window.
+                Ok(Ok(event)) if event_touches_settings(&event.paths) => pending = true,
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    pending = false;
+                    apply_external(&app);
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::test_support::tempdir;
-    use crate::model::{Edge, RingMode, Theme};
+    use crate::model::{Edge, RingMode, SidebarItems, Theme};
     use serde_json::json;
 
     #[test]
@@ -342,6 +511,100 @@ mod tests {
         );
         assert!(!merged.providers["codex"].enabled);
         assert_eq!(merged.providers["codex"].order, 5);
+        assert!(
+            merged.providers["codex"].show_in_sidebar,
+            "a patch that does not mention showInSidebar keeps it"
+        );
+    }
+
+    #[test]
+    fn sidebar_items_merge_per_key_and_default_to_visible() {
+        let base = Settings::default();
+        assert_eq!(base.sidebar_items, SidebarItems::default());
+        let merged = merge(
+            &base,
+            &json!({"sidebarItems": {"weekly": false, "logo": "maybe"}}),
+        );
+        assert!(!merged.sidebar_items.weekly);
+        assert!(merged.sidebar_items.logo, "the invalid member is ignored");
+        assert!(
+            merged.sidebar_items.five_hour && merged.sidebar_items.more_button,
+            "untouched members survive the per-key merge"
+        );
+    }
+
+    #[test]
+    fn legacy_show_flags_migrate_into_sidebar_items() {
+        let base = Settings::default();
+        // an old settings file only knows the flat keys
+        let merged = merge(
+            &base,
+            &json!({"showScopedRing": false, "showPercentLabel": false}),
+        );
+        assert!(!merged.sidebar_items.scoped);
+        assert!(!merged.sidebar_items.percent_label);
+        assert!(
+            merged.sidebar_items.weekly && merged.sidebar_items.logo,
+            "migration touches nothing else"
+        );
+
+        // the UI writes the nested keys; the flat ones follow so a downgrade
+        // still sees the user's choice
+        let merged = merge(&base, &json!({"sidebarItems": {"percentLabel": false}}));
+        assert!(!merged.show_percent_label);
+        assert!(merged.show_scoped_ring);
+
+        // both spellings in one patch: the nested one wins
+        let merged = merge(
+            &base,
+            &json!({"showScopedRing": true, "sidebarItems": {"scoped": false}}),
+        );
+        assert!(!merged.sidebar_items.scoped);
+        assert!(!merged.show_scoped_ring);
+    }
+
+    #[test]
+    fn old_settings_files_load_with_the_new_fields_filled_in() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"showPercentLabel":false,"providers":{"claude":{"enabled":true,"order":0},
+                "codex":{"enabled":false,"order":1}}}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert!(!loaded.sidebar_items.percent_label, "flat flag migrated");
+        assert!(
+            loaded.sidebar_items.scoped,
+            "unmentioned flag keeps its default"
+        );
+        assert!(
+            loaded.providers["claude"].show_in_sidebar && loaded.providers["codex"].show_in_sidebar,
+            "a provider entry without showInSidebar is shown on the bar"
+        );
+        assert!(!loaded.providers["codex"].enabled, "the rest still loads");
+
+        // round trip: what we write must read back identically
+        save(&dir, &loaded).unwrap();
+        assert_eq!(load(&dir), loaded);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_new_horizontal_edges_load_and_old_files_keep_their_meaning() {
+        let base = Settings::default();
+        for (value, edge) in [("top", Edge::Top), ("bottom", Edge::Bottom)] {
+            let merged = merge(&base, &json!({"edge": value, "verticalOffset": -120}));
+            assert_eq!(merged.edge, edge);
+            // The two position fields keep their wire names on every edge; on a
+            // horizontal one they describe the position along the x axis.
+            assert_eq!(merged.vertical_offset, -120);
+            assert_eq!(merged.vertical_align, base.vertical_align);
+        }
+        // A settings.json written before top/bottom existed is untouched.
+        let old = merge(&base, &json!({"edge": "left", "verticalAlign": "bottom"}));
+        assert_eq!(old.edge, Edge::Left);
+        assert_eq!(old.vertical_align, crate::model::VerticalAlign::Bottom);
     }
 
     #[test]
@@ -353,7 +616,33 @@ mod tests {
         );
         assert_eq!(merged.edge, base.edge, "the bad enum value is dropped");
         assert_eq!(merged.ring_mode, RingMode::All, "good fields still apply");
-        assert_eq!(merged.providers.len(), 2);
+        assert_eq!(
+            merged.providers.len(),
+            crate::commands::providers::DEFAULT_PROVIDER_ORDER.len(),
+            "every registered provider keeps an entry"
+        );
+    }
+
+    #[test]
+    fn an_experimental_provider_is_seeded_switched_off_without_credentials() {
+        // The machine running the tests has no ~/.config/github-copilot, so
+        // the registry default is "off" — an unverified quota source must
+        // never appear on its own. (A machine that *does* have Copilot signed
+        // in would legitimately seed it on; assert the invariant instead.)
+        use crate::commands::providers;
+        let seeded = clamp(Settings::default());
+        let copilot = &seeded.providers[providers::COPILOT_ID];
+        assert_eq!(copilot.enabled, providers::enabled_by_default("copilot"));
+        assert!(providers::enabled_by_default("claude"));
+        assert!(providers::enabled_by_default("codex"));
+
+        // An explicit choice always wins over the registry default.
+        let on = merge(
+            &Settings::default(),
+            &json!({"providers": {"copilot": {"enabled": true}}}),
+        );
+        assert!(on.providers["copilot"].enabled);
+        assert!(providers::is_enabled(&on, "copilot"));
     }
 
     #[test]
@@ -371,6 +660,32 @@ mod tests {
         let low = merge(&base, &json!({"opacity": 2.0, "scale": 0.1}));
         assert_eq!(low.opacity, 1.0);
         assert_eq!(low.scale, 0.75);
+    }
+
+    #[test]
+    fn the_monthly_budget_is_optional_non_negative_and_capped() {
+        let base = Settings::default();
+        assert_eq!(base.monthly_budget_usd, 0.0, "no budget by default");
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": 250})).monthly_budget_usd,
+            250.0
+        );
+        // a typo must not blow the chart's axis out or go negative
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": -5})).monthly_budget_usd,
+            0.0
+        );
+        assert_eq!(
+            merge(&base, &json!({"monthlyBudgetUsd": 1e12})).monthly_budget_usd,
+            1_000_000.0
+        );
+        // a settings.json written before the field existed still loads
+        let dir = tempdir();
+        std::fs::write(settings_path(&dir), r#"{"edge":"left"}"#).unwrap();
+        let old = load(&dir);
+        assert_eq!(old.edge, Edge::Left);
+        assert_eq!(old.monthly_budget_usd, 0.0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -448,6 +763,177 @@ mod tests {
         assert_eq!(merged.sizes.bar_gap, base.sizes.bar_gap);
         assert_eq!(merged.thresholds.warn, 60.0);
         assert_eq!(merged.thresholds.critical, base.thresholds.critical);
+    }
+
+    /// A `settings.json` written before the updater and the global shortcuts
+    /// existed must keep working and pick up their defaults.
+    #[test]
+    fn settings_files_without_the_newer_keys_keep_working() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"edge":"left","autostart":true,"theme":"light"}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.edge, Edge::Left);
+        assert!(loaded.autostart, "the old keys still apply");
+        assert!(
+            loaded.auto_update_check,
+            "checking for updates is the default"
+        );
+        assert_eq!(loaded.shortcut_toggle_sidebar, "");
+        assert_eq!(
+            loaded.shortcut_open_dashboard, "",
+            "no global shortcut is registered unless the user asks for one"
+        );
+
+        let patched = merge(
+            &loaded,
+            &json!({"autoUpdateCheck": false, "shortcutToggleSidebar": "Ctrl+Alt+U"}),
+        );
+        assert!(!patched.auto_update_check);
+        assert_eq!(patched.shortcut_toggle_sidebar, "Ctrl+Alt+U");
+        assert_eq!(patched.shortcut_open_dashboard, "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_old_settings_file_keeps_the_predictive_notification_default() {
+        let dir = tempdir();
+        // written by a version that did not know about forecastNotifications
+        std::fs::write(settings_path(&dir), r#"{"notifications":true}"#).unwrap();
+        let loaded = load(&dir);
+        assert!(loaded.notifications);
+        assert!(
+            loaded.forecast_notifications,
+            "a missing field takes its default"
+        );
+
+        let merged = merge(&loaded, &json!({"forecastNotifications": false}));
+        assert!(!merged.forecast_notifications);
+        assert!(merged.notifications, "unrelated fields survive");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_settings_file_written_before_hide_account_email_keeps_working() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"edge":"left","notifications":true}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert!(loaded.notifications, "the old field still applies");
+        assert!(!loaded.hide_account_email, "the new one takes its default");
+
+        let merged = merge(&Settings::default(), &json!({"hideAccountEmail": true}));
+        assert!(merged.hide_account_email);
+        assert_eq!(merged.notifications, Settings::default().notifications);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_external_edit_is_applied_and_our_own_write_is_not() {
+        let memory = Settings::default();
+        let own = serde_json::to_vec_pretty(&memory).unwrap();
+
+        // Our own atomic save must not bounce back as an external change.
+        assert_eq!(
+            reload_action(Some(&own), Some(&own), &memory),
+            ReloadAction::Ignore
+        );
+        // Neither must a file that only *says* what memory already holds
+        // (a different process rewriting the same values, reformatted).
+        let same = br#"{"edge":"right","theme":"dark"}"#;
+        assert_eq!(
+            reload_action(Some(same), Some(&own), &memory),
+            ReloadAction::Ignore
+        );
+
+        // A real edit is applied, merged and clamped exactly like start-up.
+        let edited = br#"{"edge":"left","opacity":0.05,"refreshIntervalSec":3}"#;
+        let ReloadAction::Apply(next) = reload_action(Some(edited), Some(&own), &memory) else {
+            panic!("an external edit must be applied");
+        };
+        assert_eq!(next.edge, Edge::Left);
+        assert_eq!(next.opacity, 0.3, "clamped like load()");
+        assert_eq!(next.refresh_interval_sec, 15);
+        assert_eq!(next.theme, memory.theme, "untouched fields survive");
+    }
+
+    #[test]
+    fn a_half_written_or_unreadable_file_is_waited_out_never_reset() {
+        let memory = Settings {
+            auto_hide: true,
+            ..Settings::default()
+        };
+        // Mid-rename the file can be missing for an instant.
+        assert_eq!(reload_action(None, None, &memory), ReloadAction::Wait);
+        // An editor truncating before writing, or writing half a document.
+        assert_eq!(reload_action(Some(b""), None, &memory), ReloadAction::Wait);
+        assert_eq!(
+            reload_action(Some(br#"{"edge": "le"#), None, &memory),
+            ReloadAction::Wait
+        );
+        assert_eq!(
+            reload_action(Some(&[0x7b, 0xff, 0xfe]), None, &memory),
+            ReloadAction::Wait,
+            "invalid UTF-8 is not valid JSON either"
+        );
+    }
+
+    #[test]
+    fn a_newer_in_memory_change_is_not_clobbered_by_an_older_file() {
+        // The user (or another window) just saved `autoHide`; the watcher is
+        // only now getting round to an event from before that save. Because
+        // the decision compares the *current* file with the *current* memory,
+        // and the current file is our own write, nothing happens.
+        let memory = Settings {
+            auto_hide: true,
+            ..Settings::default()
+        };
+        let own = serde_json::to_vec_pretty(&memory).unwrap();
+        assert_eq!(
+            reload_action(Some(&own), Some(&own), &memory),
+            ReloadAction::Ignore
+        );
+    }
+
+    #[test]
+    fn only_settings_json_events_trigger_a_reload() {
+        let touches = |name: &str| event_touches_settings(&[PathBuf::from("/cfg").join(name)]);
+        assert!(touches(SETTINGS_FILE));
+        assert!(!touches("pricing.json"));
+        assert!(!touches(".settings.json.1234.0.tmp"));
+        assert!(!event_touches_settings(&[]));
+        // A rename event carries both paths; the destination is what counts.
+        assert!(event_touches_settings(&[
+            PathBuf::from("/cfg/.settings.json.1234.0.tmp"),
+            PathBuf::from("/cfg/settings.json"),
+        ]));
+    }
+
+    #[test]
+    fn a_real_save_is_recognised_as_our_own_write() {
+        let dir = tempdir();
+        let s = Settings {
+            vertical_offset: 42,
+            ..Settings::default()
+        };
+        save(&dir, &s).unwrap();
+        let on_disk = std::fs::read(settings_path(&dir)).unwrap();
+        // `save` records exactly these bytes (the marker itself is a process
+        // global, so this reproduces it instead of racing other tests).
+        let own = serde_json::to_vec_pretty(&s).unwrap();
+        assert_eq!(own, on_disk, "the marker is what landed on disk");
+        assert!(LAST_WRITTEN.lock().is_some(), "saving records a marker");
+        assert_eq!(
+            reload_action(Some(&on_disk), Some(&own), &s),
+            ReloadAction::Ignore
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

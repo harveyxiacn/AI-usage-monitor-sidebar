@@ -6,11 +6,11 @@
 
 use super::{
     clamp_percent, degraded, empty_quota, mark_primary, normalize_rfc3339, now_rfc3339,
-    write_cache, Provider, ProviderCtx, CLAUDE_ID,
+    rate_limited, retry_after_of, write_cache, Provider, ProviderCtx, CLAUDE_ID,
 };
 use crate::model::{
-    AccountInfo, CreditsInfo, DataSource, ProviderInfo, ProviderQuota, ProviderStatus, QuotaWindow,
-    WindowKind,
+    AccountInfo, CreditsInfo, DataSource, ExtraSeverity, ProviderInfo, ProviderQuota,
+    ProviderStatus, QuotaExtra, QuotaWindow, WindowKind,
 };
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -295,6 +295,7 @@ fn map_limits(limits: &[LimitEntry]) -> Vec<QuotaWindow> {
                 resets_at,
                 scope: None,
                 is_primary: false,
+                forecast: None,
             }),
             "weekly_all" => out.push(QuotaWindow {
                 kind: WindowKind::SevenDay,
@@ -304,6 +305,7 @@ fn map_limits(limits: &[LimitEntry]) -> Vec<QuotaWindow> {
                 resets_at,
                 scope: None,
                 is_primary: false,
+                forecast: None,
             }),
             "weekly_scoped" => {
                 let scope = l
@@ -320,6 +322,7 @@ fn map_limits(limits: &[LimitEntry]) -> Vec<QuotaWindow> {
                     resets_at,
                     scope: Some(scope),
                     is_primary: false,
+                    forecast: None,
                 });
             }
             other => log::debug!("claude: ignoring unknown limit kind `{other}`"),
@@ -345,6 +348,7 @@ fn map_legacy(usage: &UsageResponse) -> Vec<QuotaWindow> {
             resets_at: w.resets_at.as_deref().and_then(normalize_rfc3339),
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
+            forecast: None,
         });
     };
     push(
@@ -422,6 +426,29 @@ fn credits_from(extra: &Option<ExtraUsage>) -> Option<CreditsInfo> {
             _ => extra.utilization.map(|u| format!("{:.0}%", u)),
         },
     })
+}
+
+/// Claude's extras. `extra_usage` is mostly already covered by the credits
+/// line above; the one number that line drops is the utilization percentage,
+/// and only when both `used_credits` and `monthly_limit` are known (it then
+/// shows "12.50/50.00"). Surface exactly that, so nothing is shown twice.
+pub fn map_extras(usage: &UsageResponse) -> Vec<QuotaExtra> {
+    let Some(extra) = &usage.extra_usage else {
+        return Vec::new();
+    };
+    if !extra.is_enabled || extra.used_credits.is_none() || extra.monthly_limit.is_none() {
+        return Vec::new();
+    }
+    extra
+        .utilization
+        .map(|u| {
+            vec![QuotaExtra::value(
+                "extra_usage",
+                format!("{:.0}%", clamp_percent(u)),
+                ExtraSeverity::Info,
+            )]
+        })
+        .unwrap_or_default()
 }
 
 // ---------- profile cache ----------
@@ -523,6 +550,7 @@ impl Provider for ClaudeProvider {
             plan_label: creds.as_ref().and_then(|c| {
                 plan_label(c.subscription_type.as_deref(), c.rate_limit_tier.as_deref())
             }),
+            experimental: false,
         }
     }
 
@@ -582,14 +610,20 @@ impl Provider for ClaudeProvider {
             );
         }
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // The usage endpoint itself is rate-limited; the scheduler backs off
-            // and the last good windows stay on screen meanwhile.
-            return degraded(
+            // The usage endpoint itself is rate-limited — and the OAuth token
+            // is shared with Claude Code's own calls, so this is not an error
+            // of ours. Keep the last good windows and obey `Retry-After`.
+            let retry_after = retry_after_of(resp.headers());
+            log::warn!(
+                "claude usage API answered HTTP 429 (Retry-After: {})",
+                retry_after.map_or("absent".to_string(), |s| format!("{s}s"))
+            );
+            return rate_limited(
                 &self.ctx,
                 CLAUDE_ID,
                 DISPLAY_NAME,
-                ProviderStatus::Error,
-                "Anthropic usage API is rate-limiting requests (HTTP 429); showing the last known values and retrying later",
+                retry_after,
+                "Anthropic is rate-limiting the usage endpoint (HTTP 429); showing the last known values until the next attempt",
             );
         }
         if !status.is_success() {
@@ -627,6 +661,7 @@ impl Provider for ClaudeProvider {
         quota.plan_label = plan_label(creds.subscription_type.as_deref(), tier.as_deref());
         quota.account = profile.and_then(|p| p.account);
         quota.credits = credits_from(&usage.extra_usage);
+        quota.extras = map_extras(&usage);
         quota.source = DataSource::Api;
         quota.fetched_at = now_rfc3339();
         write_cache(&self.ctx, &quota);
@@ -785,5 +820,39 @@ mod tests {
         assert!(c.has_credits);
         assert!(!c.unlimited);
         assert_eq!(c.balance.as_deref(), Some("12.50/50.00"));
+    }
+
+    #[test]
+    fn extras_only_add_what_the_credits_line_leaves_out() {
+        let with = |extra: Option<ExtraUsage>| {
+            map_extras(&UsageResponse {
+                extra_usage: extra,
+                ..UsageResponse::default()
+            })
+        };
+        assert!(with(None).is_empty());
+        assert!(with(Some(ExtraUsage::default())).is_empty(), "disabled");
+        // utilization alone is already the credits balance — no duplicate row
+        assert!(with(Some(ExtraUsage {
+            is_enabled: true,
+            utilization: Some(25.0),
+            ..ExtraUsage::default()
+        }))
+        .is_empty());
+
+        let extras = with(Some(ExtraUsage {
+            is_enabled: true,
+            monthly_limit: Some(50.0),
+            used_credits: Some(12.5),
+            utilization: Some(25.0),
+        }));
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "extra_usage");
+        assert_eq!(extras[0].value.as_deref(), Some("25%"));
+        assert_eq!(extras[0].severity, ExtraSeverity::Info);
+
+        // the fixture's extra_usage is disabled, so a real response is clean
+        let usage: UsageResponse = serde_json::from_str(FIXTURE).unwrap();
+        assert!(map_extras(&usage).is_empty());
     }
 }

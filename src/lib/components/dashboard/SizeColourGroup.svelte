@@ -15,7 +15,8 @@
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import Ring from '$lib/components/Ring.svelte';
   import { parseHex } from '$lib/colors';
-  import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { providerColorKeys, providerDisplayName } from '$lib/providers';
   import {
     clampSize,
     defaultColors,
@@ -28,9 +29,23 @@
   const s = $derived(settings.value);
 
   const SIZE_KEYS = Object.keys(defaultSizes) as (keyof SizeSettings)[];
-  /** solid colours: always a real hex. `surface`/`text` may also be "" = theme. */
-  const SOLID_KEYS = ['claude', 'codex', 'warn', 'critical'] as const;
+  /**
+   * Solid colours: always a real hex. `surface`/`text` may also be "" = theme.
+   * The provider accents are whatever `Settings.colors` carries beyond the four
+   * fixed keys, so a provider added in the backend gets a picker for free.
+   */
+  const SOLID_KEYS = $derived([
+    ...providerColorKeys(s.colors),
+    'warn',
+    'critical',
+  ] as (keyof ColorSettings)[]);
   const OPTIONAL_KEYS = ['surface', 'text'] as const;
+
+  /** Accent label: the i18n key when there is one, else the provider's name. */
+  const colorLabel = (key: keyof ColorSettings) =>
+    hasKey(`settings.colors.${key}`)
+      ? tDyn(`settings.colors.${key}`)
+      : t('settings.colors.provider', { provider: providerDisplayName(key) });
 
   function setSize(key: keyof SizeSettings, raw: number) {
     const value = clampSize(key, raw);
@@ -105,19 +120,19 @@
 
       <h4>{t('settings.colours')}</h4>
       {#each SOLID_KEYS as key (key)}
-        <Field label={tDyn(`settings.colors.${key}`)}>
+        <Field label={colorLabel(key)}>
           <input
             class="swatch"
             type="color"
             value={s.colors[key] || '#000000'}
             oninput={(e) => setColor(key, e.currentTarget.value)}
-            aria-label={tDyn(`settings.colors.${key}`)}
+            aria-label={colorLabel(key)}
           />
           <input
             class="field hex mono"
             value={s.colors[key]}
             onchange={(e) => setColorText(key, e.currentTarget.value, false)}
-            aria-label={`${tDyn(`settings.colors.${key}`)} (hex)`}
+            aria-label={`${colorLabel(key)} (hex)`}
           />
         </Field>
       {/each}
@@ -167,11 +182,11 @@
             thresholds={s.thresholds}
             size={s.sizes.ringSize}
             stroke={s.sizes.ringStroke}
-            showPercentLabel={s.showPercentLabel}
+            showPercentLabel={s.sidebarItems.percentLabel}
             percentMode={s.percentMode}
           >
             {#snippet logo(logoSize)}
-              <ProviderLogo provider="claude" size={logoSize} />
+              {#if s.sidebarItems.logo}<ProviderLogo provider="claude" size={logoSize} />{/if}
             {/snippet}
           </Ring>
         </div>

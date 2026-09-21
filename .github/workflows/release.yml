@@ -106,14 +106,43 @@ jobs:
       - name: Verify frontend
         run: pnpm check && pnpm test
 
+      # `bundle.createUpdaterArtifacts` is on in tauri.conf.json, and the CLI
+      # refuses to build ("A public key has been found, but no private key")
+      # unless TAURI_SIGNING_PRIVATE_KEY is set. The maintainer may not have
+      # created that key yet, so a missing secret must degrade to a perfectly
+      # normal release instead of a red run: we then merge a config override
+      # that turns updater artifacts off and skip latest.json.
+      - name: Decide whether this release carries updater artifacts
+        id: updater
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "${SIGNING_KEY:-}" ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            echo 'config=' >> "$GITHUB_OUTPUT"
+            echo "Updater artifacts will be signed and latest.json uploaded."
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'config=--config src-tauri/updater-disabled.conf.json' >> "$GITHUB_OUTPUT"
+            echo "::warning title=Updater artifacts disabled::TAURI_SIGNING_PRIVATE_KEY is not set, so this release has no latest.json and installed copies will not be offered an in-app update. See docs/RELEASING.md."
+          fi
+
       - name: Build and draft the release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Empty when the secret does not exist; the step above then disabled
+          # updater artifacts, so the bundler never looks at them.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'AI Usage Sidebar ${{ github.event.inputs.tag || github.ref_name }}'
           releaseBody: 'See the assets below to download and install this version.'
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }} -- --locked
+          # Each matrix job merges its platforms into the latest.json already
+          # attached to the release, so all four builds end up in one file.
+          uploadUpdaterJson: ${{ steps.updater.outputs.enabled }}
+          args: ${{ steps.updater.outputs.config }} ${{ matrix.args }} -- --locked

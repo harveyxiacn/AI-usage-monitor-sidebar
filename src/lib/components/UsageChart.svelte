@@ -21,11 +21,12 @@
     type ChartDataset,
   } from 'chart.js';
   import { onDestroy } from 'svelte';
-  import { cssVar, lighten, PROVIDER_ACCENT, resolveColor } from '$lib/colors';
+  import { cssVar, lighten, providerAccent, resolveColor } from '$lib/colors';
   import { formatBucket, formatCost, formatTokens } from '$lib/format';
   import { historySeries, projectLabels, shortenLabel } from '$lib/history';
   import { t } from '$lib/i18n/i18n.svelte';
-  import type { Bucket, HistoryRow, ProviderId } from '$lib/types';
+  import { providerDisplayName } from '$lib/providers';
+  import type { Bucket, HistoryRow } from '$lib/types';
 
   Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
@@ -60,16 +61,17 @@
     const unassigned = t('history.project.unassigned');
     const own = projectLabels(series.map((entry) => entry.project ?? ''), unassigned);
     const projects = projectNames ?? own;
-    const providerIndex: Record<ProviderId, number> = { claude: 0, codex: 0 };
+    const providerIndex: Record<string, number> = {};
     return {
       labels: buckets.map((b) => formatBucket(b, bucket)),
       datasets: series.map((entry) => {
         const path = entry.project ?? '';
-        const label = [entry.provider === 'claude' ? 'Claude' : 'Codex'];
+        const label = [providerDisplayName(entry.provider)];
         if (groupByModel) label.push(entry.model || t('history.modelUnknown'));
         // a legend entry is a single line: long paths are elided in the middle
         if (groupByProject) label.push(shortenLabel(projects.get(path) ?? own.get(path) ?? unassigned));
-        const base = resolveColor(PROVIDER_ACCENT[entry.provider]);
+        const base = resolveColor(providerAccent(entry.provider));
+        providerIndex[entry.provider] ??= 0;
         const color = groupByModel || groupByProject ? lighten(base, (providerIndex[entry.provider]++ % 5) * 0.09, 0.75) : base;
         return {
           label: label.join(' · '),

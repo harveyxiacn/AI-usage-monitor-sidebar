@@ -2,6 +2,13 @@ import { test as base, expect, type Page } from '@playwright/test';
 import { mockSettings, mockSnapshot } from '../src/lib/mock';
 import type { HistoryQuery, HistoryResult, ProviderId, TokenTotals } from '../src/lib/types';
 
+function emptyTotals(): TokenTotals {
+  return {
+    inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0,
+    reasoningTokens: 0, totalTokens: 0, requests: 0, estimatedCostUsd: 0,
+  };
+}
+
 interface PendingHistory {
   provider: ProviderId | null;
   resolve: (result: HistoryResult) => void;
@@ -19,6 +26,10 @@ const test = base.extend<{ historyRequests: PendingHistory[] }>({
         case 'get_settings': return mockSettings;
         case 'get_snapshot': return mockSnapshot;
         case 'get_quota_history': return [];
+        // the heatmap and the session view are separate commands on purpose,
+        // so this test still counts exactly the table's history requests
+        case 'get_usage_calendar': return { days: [], slots: [], totals: emptyTotals() };
+        case 'get_usage_sessions': return { rows: [], totalSessions: 0, totals: emptyTotals(), truncated: false };
         case 'plugin:event|listen': return ++listenerId;
         case 'plugin:event|unlisten': return;
         case 'get_usage_history':
@@ -63,6 +74,7 @@ function result(provider: ProviderId, totalTokens: number): HistoryResult {
     totals,
     byProvider: { [provider]: totals },
     projects: [],
+    costApproximate: false,
   };
 }
 

@@ -6,15 +6,21 @@
     (TAIL_W). The popover route measures `.root` with a ResizeObserver and sends
     that size to `popover_relayout`, so the Rust window is exactly big enough for
     the bubble *plus* its tail — no clipping, no dead transparent margin.
-  * `--tail-y` is the y of the tail tip inside the bubble (default 50%). The
-    platform layer can align it with the ring by resizing/moving the window; the
-    route also sets it from PopoverRequest.anchorY when it knows its own height.
+  * `--tail-y` / `--tail-x` is the position of the tail tip along the bubble
+    (default 50%), `--tail-y` for a left/right bar and `--tail-x` for a
+    top/bottom one. The platform layer can align it with the ring by
+    resizing/moving the window; the route also sets it from
+    PopoverRequest.anchorY / anchorX when it knows its own size.
+  * `edge` is the edge the *bar* is docked to, so the tail always points back
+    at it: a right-edge bar puts the tail on the bubble's right, a top-edge bar
+    on its top.
 -->
 <script lang="ts">
   import ProviderLogo from './ProviderLogo.svelte';
+  import QuotaExtras from './QuotaExtras.svelte';
   import WindowRow from './WindowRow.svelte';
   import { accentFor } from '$lib/stores/rings.svelte';
-  import { formatAgo } from '$lib/format';
+  import { formatAgo, staleHint } from '$lib/format';
   import { t, tDyn, hasKey } from '$lib/i18n/i18n.svelte';
   import type { Edge, PercentMode, ProviderQuota, Thresholds, WindowKind } from '$lib/types';
 
@@ -25,7 +31,7 @@
     percentMode?: PercentMode;
     /** window to mark with a dot, from PopoverRequest.windowKind */
     highlightKind?: WindowKind | null;
-    /** 0..100, vertical position of the tail tip */
+    /** 0..100, position of the tail tip along the bubble's docked side */
     tailPercent?: number;
     now?: number;
     onDetails?: () => void;
@@ -42,6 +48,9 @@
     onDetails,
   }: Props = $props();
 
+  /** tail tip along the docked side; the CSS picks the axis from `edge` */
+  const tailOffset = $derived(`${Math.min(92, Math.max(8, tailPercent))}%`);
+
   /** primary first, then the remaining account-wide windows in backend order */
   const mainWindows = $derived(
     quota.windows
@@ -54,6 +63,8 @@
 
   const statusHint = $derived.by(() => {
     if (quota.status === 'ok') return null;
+    // Being rate-limited is a schedule, not a fault: explain the staleness.
+    if (quota.status === 'rate_limited') return staleHint(quota);
     if (quota.error) return quota.error;
     const specific = `status.hint.${quota.provider}.${quota.status}`;
     const generic = `status.hint.${quota.status}`;
@@ -72,7 +83,7 @@
   });
 </script>
 
-<div class="root" data-edge={edge} style:--tail-y={`${Math.min(92, Math.max(8, tailPercent))}%`}>
+<div class="root" data-edge={edge} style:--tail-y={tailOffset} style:--tail-x={tailOffset}>
   <div class="bubble surface">
     <header>
       <span class="logo" style:color={accentFor(quota.provider, 0)}>
@@ -129,6 +140,10 @@
       {/if}
     {/if}
 
+    <!-- provider extras (credits, spend limits, unavailable models …);
+         renders nothing when the provider reported none -->
+    <QuotaExtras extras={quota.extras} context="popover" />
+
     {#if creditsLine}
       <div class="line">
         <span class="k">{t('popover.credits')}</span>
@@ -163,12 +178,21 @@
     min-width: 19rem; /* ≈ the reference bubble; keeps short labels from producing a cramped card */
   }
 
+  /* the tail gutter is on the side that faces the bar */
   .root[data-edge='right'] {
     padding-right: 0.5rem;
   }
 
   .root[data-edge='left'] {
     padding-left: 0.5rem;
+  }
+
+  .root[data-edge='top'] {
+    padding-top: 0.5rem;
+  }
+
+  .root[data-edge='bottom'] {
+    padding-bottom: 0.5rem;
   }
 
   /* background / border / shadow / glass layers come from the global
@@ -183,14 +207,28 @@
 
   .tail {
     position: absolute;
-    top: var(--tail-y, 50%);
-    transform: translateY(-50%);
     width: 0;
     height: 0;
-    border-top: 0.5rem solid transparent;
-    border-bottom: 0.5rem solid transparent;
     /* a filter shadow keeps the beak visually attached to the bubble */
     filter: drop-shadow(0 0.125rem 0.25rem rgb(0 0 0 / 0.3));
+  }
+
+  /* vertical bar: the beak sits on a side and slides along y */
+  .root[data-edge='right'] .tail,
+  .root[data-edge='left'] .tail {
+    top: var(--tail-y, 50%);
+    transform: translateY(-50%);
+    border-top: 0.5rem solid transparent;
+    border-bottom: 0.5rem solid transparent;
+  }
+
+  /* horizontal bar: it sits on the top/bottom and slides along x */
+  .root[data-edge='top'] .tail,
+  .root[data-edge='bottom'] .tail {
+    left: var(--tail-x, 50%);
+    transform: translateX(-50%);
+    border-left: 0.5rem solid transparent;
+    border-right: 0.5rem solid transparent;
   }
 
   .root[data-edge='right'] .tail {
@@ -201,6 +239,16 @@
   .root[data-edge='left'] .tail {
     left: 0.0625rem;
     border-right: 0.5rem solid var(--surface-fill);
+  }
+
+  .root[data-edge='top'] .tail {
+    top: 0.0625rem;
+    border-bottom: 0.5rem solid var(--surface-fill);
+  }
+
+  .root[data-edge='bottom'] .tail {
+    bottom: 0.0625rem;
+    border-top: 0.5rem solid var(--surface-fill);
   }
 
   header {

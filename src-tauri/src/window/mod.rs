@@ -9,6 +9,7 @@
 //! * [`drag`]     — dragging the bar to another edge / height / monitor
 //! * [`dashboard`]— the normal window (settings + history)
 //! * [`tray`]     — tray icon and menu
+//! * [`shortcuts`]— optional global (desktop-wide) hotkeys
 //! * [`linux`]    — Wayland layer-shell docking and the KDE X11 blur hint
 //!
 //! Everything positional works in **logical** (CSS) pixels; see
@@ -21,6 +22,7 @@ pub mod hover;
 pub mod linux;
 pub mod monitors;
 pub mod popover;
+pub mod shortcuts;
 pub mod sidebar;
 pub mod tray;
 
@@ -45,6 +47,9 @@ pub const POPOVER_HIDE_DELAY_MS: u64 = 250;
 pub const PINNED_POPOVER_HIDE_DELAY_MS: u64 = 8_000;
 /// Period of the pointer check that catches a `mouseleave` the webview lost.
 pub const POINTER_CHECK_MS: u64 = 400;
+/// A pinned popover gets this many times `popoverTimeoutSec` before the
+/// inactivity failsafe closes it.
+pub const PINNED_TIMEOUT_FACTOR: u64 = 6;
 /// Period of the geometry watchdog (monitor hot-plug, WM moved us, …).
 pub const GEOMETRY_CHECK_SEC: u64 = 5;
 /// Tolerance of the geometry watchdog, logical px.
@@ -73,6 +78,8 @@ pub struct Inner {
     /// Bumped on every hover event; pending timers with an older generation
     /// are stale and do nothing when they wake up.
     pub generation: u64,
+    /// Last sign of life from the pointer (hover report, heartbeat, show, pin).
+    pub last_activity: std::time::Instant,
     /// Where the bar was when the current drag began; `None` when idle.
     pub drag_origin: Option<monitors::LogicalRect>,
 }
@@ -90,6 +97,7 @@ impl Default for Inner {
             popover_visible: false,
             revealed: false,
             generation: 0,
+            last_activity: std::time::Instant::now(),
             drag_origin: None,
         }
     }
@@ -141,7 +149,40 @@ pub fn apply_stacking(win: &WebviewWindow, always_on_top: bool) {
     if let Err(e) = win.set_skip_taskbar(true) {
         log::debug!("set_skip_taskbar on `{}`: {e}", win.label());
     }
+    macos_full_screen_auxiliary(win);
 }
+
+/// tao's `set_visible_on_all_workspaces` only sets `CanJoinAllSpaces`, which
+/// covers ordinary Spaces but *not* the full-screen Space another app creates:
+/// the overlays disappear as soon as anything goes full screen. Adding
+/// `FullScreenAuxiliary` tells AppKit the window may float over that Space too.
+///
+/// AppKit is main-thread-only, and settings changes arrive on an async worker.
+#[cfg(target_os = "macos")]
+fn macos_full_screen_auxiliary(win: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let native_window = win.clone();
+    if let Err(e) = win.run_on_main_thread(move || {
+        let ptr = match native_window.ns_window() {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                log::debug!("ns_window on `{}`: {e}", native_window.label());
+                return;
+            }
+        };
+        // SAFETY: on the main thread `ns_window()` hands out this window's
+        // live `NSWindow`, which outlives the borrow taken here.
+        let ns_window: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
+        let behavior = ns_window.collectionBehavior();
+        ns_window.setCollectionBehavior(behavior | NSWindowCollectionBehavior::FullScreenAuxiliary);
+    }) {
+        log::debug!("scheduling the full-screen behaviour: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_full_screen_auxiliary(_win: &WebviewWindow) {}
 
 /// GTK treats non-resizable windows as their webview's natural size (200px),
 /// which prevents a narrow sidebar or collapsed handle. Equal min/max hints
@@ -286,6 +327,8 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
     }
     #[cfg(target_os = "linux")]
     linux::mark_as_dock(app);
+    #[cfg(target_os = "linux")]
+    linux::watch_pointer_leave(app);
 
     let settings = settings_of(app);
     log::info!(
@@ -329,6 +372,7 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
         log::error!("tray icon could not be created: {e:#}");
     }
     autostart::apply(app, settings.autostart);
+    shortcuts::apply(app, &settings);
 
     // The backend owns settings; whenever it publishes a change, re-apply the
     // parts that are ours (geometry, stacking, autostart, tray check state).
@@ -357,6 +401,7 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
                         provider: "claude".into(),
                         ring_index: 0,
                         anchor_y: 52.0,
+                        anchor_x: Some(52.0),
                         window_kind: None,
                     },
                 );
@@ -412,6 +457,7 @@ pub fn apply_settings(app: &AppHandle) {
     }
     tray::sync(app, &settings);
     autostart::apply(app, settings.autostart);
+    shortcuts::apply(app, &settings);
 }
 
 /// Autostart (login item) handling; failures are never fatal.

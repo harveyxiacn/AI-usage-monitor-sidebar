@@ -15,16 +15,24 @@
   * Hovering the bar reports `hover_report('bar', true|false)`; Rust owns the
     expand/collapse + popover-hide timers.
   * Dragging the pill (past a 5px threshold) streams `sidebar_drag`; Rust moves
-    the window and snaps it to the nearer edge of the drop monitor on release.
-  * Hovering a ring asks for the popover with the ring's centre y in CSS px
+    the window and snaps it to the nearest edge of the drop monitor on release.
+  * Hovering a ring asks for the popover with the ring's centre in CSS px
     relative to *this* window — which is the viewport, so
-    `rect.top + rect.height / 2` is already the right number.
+    `rect.top + rect.height / 2` (and `rect.left + rect.width / 2`) is already
+    the right number. Both are sent; Rust picks the one along the bar's axis.
+
+  Orientation
+  -----------
+  `settings.edge` decides it: `left`/`right` stack the rings in a column (the
+  original pill), `top`/`bottom` lay them out in a row. Only the stage's
+  `data-edge` attribute drives the CSS — the flush side loses its border and
+  its two corners there, and the "⋯" button moves next to the rings.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import Ring from '$lib/components/Ring.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
-  import { dragHandle, observeSize, type DragPhase, type SizeReport } from '$lib/actions';
+  import { dragHandle, HEARTBEAT_MS, observeSize, throttle, type DragPhase, type SizeReport } from '$lib/actions';
   import {
     hoverReport,
     onSidebarState,
@@ -36,9 +44,9 @@
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
-  import { severityColor, worstSeverity } from '$lib/format';
+  import { forecastTickPercent } from '$lib/forecast';
   import { t } from '$lib/i18n/i18n.svelte';
-  import { rings, type RingItem } from '$lib/stores/rings.svelte';
+  import { handleColorOf, rings, type RingItem } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
@@ -58,6 +66,8 @@
   let pinnedKey = $state<string | null>(null);
 
   const collapsed = $derived(s.autoHide && !expanded);
+  /** top/bottom edges: the bar is a horizontal strip, rings laid out in a row */
+  const horizontal = $derived(s.edge === 'top' || s.edge === 'bottom');
 
   function reportSize(size: SizeReport) {
     if (!collapsed) expandedSize = size;
@@ -66,17 +76,12 @@
   }
 
   /**
-   * Colour of the collapsed handle: the worst threshold reached by any ring.
-   * When nothing crossed a threshold the handle takes the accent of the ring
-   * that is closest to its limit, so the sliver still says *who* is busy.
+   * Colour of the collapsed handle: the worst threshold reached by any window,
+   * in the accent of the provider closest to its limit, so the sliver still
+   * says *who* is busy. Computed from the snapshot, not from `items`: a window
+   * the user removed from the bar must still be able to raise the alarm.
    */
-  const handleColor = $derived.by(() => {
-    if (items.length === 0) return 'var(--surface-track)';
-    const worst = worstSeverity(items.map((i) => i.severity));
-    const pct = (i: RingItem) => i.labelWindow?.usedPercent ?? -1;
-    const leader = items.reduce((a, b) => (pct(b) > pct(a) ? b : a));
-    return severityColor(leader.accent, worst);
-  });
+  const handleColor = $derived(handleColorOf(snapshot.value, s));
 
   onMount(() => {
     const disposers: Array<() => void> = [settings.init(), snapshot.init()];
@@ -112,16 +117,23 @@
     void hoverReport('bar', hovered);
   }
 
-  function anchorOf(el: HTMLElement): number {
+  /** Ring centre in CSS px relative to this window (= the viewport). */
+  /** "still here" while the pointer moves over the bar, see HEARTBEAT_MS */
+  const heartbeat = throttle(() => void hoverReport('bar', true), HEARTBEAT_MS);
+
+  function anchorOf(el: HTMLElement): { x: number; y: number } {
     const r = el.getBoundingClientRect();
-    return Math.round(r.top + r.height / 2);
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   }
 
   function requestPopover(item: RingItem, el: HTMLElement) {
+    const anchor = anchorOf(el);
     void popoverShow({
       provider: item.provider,
       ringIndex: item.index,
-      anchorY: anchorOf(el),
+      // Both axes travel; the platform layer uses the one along the bar.
+      anchorY: anchor.y,
+      anchorX: anchor.x,
       windowKind: item.labelWindow?.kind ?? null,
     });
   }
@@ -163,14 +175,17 @@
   oncontextmenu={(e) => e.preventDefault()}
   onmouseenter={() => reportHover(true)}
   onmouseleave={() => reportHover(false)}
+  onmousemove={heartbeat}
   role="presentation"
 >
   {#if collapsed}
     <!-- auto-hidden: only a thin coloured sliver is left on the screen edge -->
+    <!-- `collapsedWidth` is the sliver's thickness: its width on a left/right
+         edge, its height on a top/bottom one -->
     <div
       class="handle"
-      style:width={`${Math.max(2, s.collapsedWidth)}px`}
-      style:height={`${expandedSize.height}px`}
+      style:width={horizontal ? `${expandedSize.width}px` : `${Math.max(2, s.collapsedWidth)}px`}
+      style:height={horizontal ? `${Math.max(2, s.collapsedWidth)}px` : `${expandedSize.height}px`}
       style:background={handleColor}
       onmouseenter={() => void hoverReport('bar', true)}
       role="presentation"
@@ -181,10 +196,13 @@
       {#if loading}
         {#each [0, 1] as i (i)}
           <div class="slot">
-            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.showPercentLabel} />
+            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} />
           </div>
         {/each}
       {:else if items.length === 0}
+        <!-- Nothing to draw (no provider enabled, or everything hidden from the
+             bar): the grip is rendered whatever `moreButton` says, so the pill
+             keeps a non-zero box and stays hoverable, draggable and clickable. -->
         <div class="slot empty" title={t('overview.noProviders')}>
           <button class="dots" onclick={() => void openDashboard('settings')} aria-label={t('sidebar.more')}>⋯</button>
         </div>
@@ -207,21 +225,27 @@
             }}
           >
             <Ring
-              arcs={item.arcs.map((a) => ({ percent: a.window.usedPercent, accent: a.accent }))}
+              arcs={item.arcs.map((a) => ({
+                percent: a.window.usedPercent,
+                accent: a.accent,
+                projectedPercent: forecastTickPercent(a.window),
+              }))}
               labelPercent={item.labelWindow?.usedPercent ?? null}
               thresholds={s.thresholds}
-              showPercentLabel={s.showPercentLabel}
+              showPercentLabel={s.sidebarItems.percentLabel}
               percentMode={s.percentMode}
               status={item.quota.status}
               interactive
             >
               {#snippet logo(logoSize)}
-                <ProviderLogo provider={item.provider} size={logoSize} />
+                {#if s.sidebarItems.logo}<ProviderLogo provider={item.provider} size={logoSize} />{/if}
               {/snippet}
             </Ring>
           </div>
         {/each}
-        <button class="dots" onclick={() => void openDashboard('overview')} aria-label={t('sidebar.more')}>⋯</button>
+        {#if s.sidebarItems.moreButton}
+          <button class="dots" onclick={() => void openDashboard('overview')} aria-label={t('sidebar.more')}>⋯</button>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -259,6 +283,17 @@
     cursor: grabbing;
   }
 
+  /* A top/bottom bar is the same pill turned 90°: the rings run in a row and
+     the 4px-roomier padding follows to the horizontal axis. */
+  .stage[data-edge='top'] .pill,
+  .stage[data-edge='bottom'] .pill {
+    flex-direction: row;
+    min-width: 0;
+    min-height: calc(var(--ring-size) + 2 * var(--bar-padding));
+    padding: var(--bar-padding) calc(var(--bar-padding) + 0.25rem);
+  }
+
+  /* The docked side is flush with the screen: no rounding, no border there. */
   .stage[data-edge='right'] .pill {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
@@ -271,6 +306,18 @@
     border-left: none;
   }
 
+  .stage[data-edge='top'] .pill {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    border-top: none;
+  }
+
+  .stage[data-edge='bottom'] .pill {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom: none;
+  }
+
   .slot {
     display: block;
     line-height: 0;
@@ -280,6 +327,12 @@
     display: grid;
     place-items: center;
     min-height: 3.5rem;
+  }
+
+  .stage[data-edge='top'] .slot.empty,
+  .stage[data-edge='bottom'] .slot.empty {
+    min-width: 3.5rem;
+    min-height: 0;
   }
 
   .slot.pinned :global(.ring) {
@@ -303,10 +356,27 @@
     color: var(--text);
   }
 
+  /* In a row the dots sit beside the last ring instead of under it; the
+     negative margin keeps them tucked against the group either way. */
+  .stage[data-edge='top'] .dots,
+  .stage[data-edge='bottom'] .dots {
+    width: auto;
+    align-self: center;
+    margin-top: 0;
+    margin-left: -0.375rem;
+  }
+
   .handle {
     height: 8.75rem;
     border-radius: 999px;
     opacity: 0.85;
     transition: background var(--dur-ring) var(--ease-out);
+  }
+
+  /* The inline width/height above win; this only keeps the fallback sane. */
+  .stage[data-edge='top'] .handle,
+  .stage[data-edge='bottom'] .handle {
+    width: 8.75rem;
+    height: auto;
   }
 </style>

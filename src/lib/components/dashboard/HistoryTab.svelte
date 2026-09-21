@@ -1,21 +1,30 @@
 <!--
   Dashboard → History. Token usage recorded from the providers' local session
-  logs: range/bucket/provider/group controls, a stacked bar chart, per-provider
-  comparison cards, a sortable table with CSV export and the ingestion line.
+  logs: range/bucket/provider/group controls, an activity heatmap, a stacked bar
+  chart, an optional monthly-budget burn-up, per-provider comparison cards, a
+  sortable bucket/session table with CSV export and the ingestion line.
   [FRONTEND]
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import BudgetChart from '$lib/components/BudgetChart.svelte';
   import UsageChart from '$lib/components/UsageChart.svelte';
-  import { exportUsageCsv, getUsageHistory, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
-  import { historyCsv, historyRange, localDateInput, projectLabels, projectName, type HistoryPreset } from '$lib/history';
-  import { formatBucket, formatCost, formatInt, formatTokens } from '$lib/format';
+  import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
+  import { exportUsageCsv, getUsageCalendar, getUsageHistory, getUsageSessions, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
+  import { budgetProgress, historyCsv, historyRange, localDateInput, projectLabels, projectName, sessionsCsv, type HistoryPreset } from '$lib/history';
+  import { formatBucket, formatCost, formatDuration, formatInt, formatTokens } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { providerDisplayName } from '$lib/providers';
+  import { settings } from '$lib/stores/settings.svelte';
+  import { snapshot } from '$lib/stores/snapshot.svelte';
   import type {
     Bucket,
+    CalendarResult,
     HistoryResult,
     IngestStats,
     ProviderId,
+    SessionRow,
+    SessionsResult,
     TokenTotals,
   } from '$lib/types';
 
@@ -43,6 +52,22 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
+  /** Activity heatmap: a fixed 26-week window, independent of the range above. */
+  const HEATMAP_WEEKS = 26;
+  let heatView = $state<'calendar' | 'punchcard'>('calendar');
+  let calendar = $state<CalendarResult | null>(null);
+  let calendarError = $state<string | null>(null);
+  let calendarId = 0;
+
+  /** Session drill-down; loaded only while its view is on screen. */
+  let tableView = $state<'buckets' | 'sessions'>('buckets');
+  let sessions = $state<SessionsResult | null>(null);
+  let sessionsLoading = $state(false);
+  let sessionsError = $state<string | null>(null);
+  let sessionsId = 0;
+  let sessionSortKey = $state<'sessionId' | 'provider' | 'project' | 'firstTs' | 'lastTs' | 'durationMs' | keyof TokenTotals>('totalTokens');
+  let sessionSortDir = $state<1 | -1>(-1);
+
   let ingest = $state<IngestStats | null>(null);
   let rescanning = $state(false);
   let copied = $state(false);
@@ -52,6 +77,8 @@
   let requestId = 0;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
+  /** Bumped when a log scan finished, so the slower panels reload once. */
+  let dataVersion = $state(0);
 
   let sortKey = $state<'bucketStart' | 'provider' | 'model' | 'project' | keyof TokenTotals>('bucketStart');
   let sortDir = $state<1 | -1>(-1);
@@ -125,17 +152,100 @@
     void load();
   });
 
+  /**
+   * The heatmap window: `[start of the day 26 weeks ago, tomorrow)`, local.
+   * Kept as two numbers rather than an object so the minute tick that keeps
+   * the table fresh does not re-scan half a year of events every minute — the
+   * window only really moves at local midnight.
+   */
+  const heatTo = $derived.by(() => {
+    const to = new Date(queryTime);
+    to.setHours(0, 0, 0, 0);
+    to.setDate(to.getDate() + 1);
+    return to.getTime();
+  });
+  const heatFrom = $derived.by(() => {
+    const from = new Date(heatTo);
+    // calendar arithmetic, so a DST week is still a week
+    from.setDate(from.getDate() - HEATMAP_WEEKS * 7);
+    return from.getTime();
+  });
+
+  async function loadCalendar() {
+    const id = ++calendarId;
+    const [from, to] = [heatFrom, heatTo];
+    calendarError = null;
+    try {
+      const next = await getUsageCalendar({
+        from: new Date(from).toISOString(),
+        to: new Date(to).toISOString(),
+        provider: provider === '' ? null : provider,
+        project,
+      });
+      if (id === calendarId && !disposed) calendar = next;
+    } catch (e) {
+      if (id === calendarId && !disposed) {
+        calendar = null;
+        calendarError = String(e);
+      }
+    }
+  }
+
+  // `dataVersion` changes only when a scan actually added events
+  $effect(() => {
+    void [heatFrom, heatTo, provider, project, dataVersion];
+    void loadCalendar();
+  });
+
+  async function loadSessions() {
+    const id = ++sessionsId;
+    const activeRange = range;
+    if (!activeRange || tableView !== 'sessions') {
+      sessions = null;
+      sessionsLoading = false;
+      return;
+    }
+    sessionsLoading = true;
+    sessionsError = null;
+    try {
+      const next = await getUsageSessions({
+        from: new Date(activeRange.from).toISOString(),
+        to: new Date(activeRange.to).toISOString(),
+        provider: provider === '' ? null : provider,
+        project,
+      });
+      if (id === sessionsId && !disposed) sessions = next;
+    } catch (e) {
+      if (id === sessionsId && !disposed) {
+        sessions = null;
+        sessionsError = String(e);
+      }
+    } finally {
+      if (id === sessionsId && !disposed) sessionsLoading = false;
+    }
+  }
+
+  $effect(() => {
+    void [range, provider, project, tableView];
+    void loadSessions();
+  });
+
   onMount(() => {
     let un: Unlisten | null = null;
     void onIngestProgress((stats) => {
       ingest = stats;
       // a finished scan may have added events — refresh the view
-      if (!stats.running && !rescanning) queryTime = Date.now();
+      if (!stats.running && !rescanning) {
+        queryTime = Date.now();
+        dataVersion += 1;
+      }
     }).then((u) => (disposed ? u() : (un = u))).catch((e) => { actionError = String(e); });
     const timer = setInterval(() => { if (!document.hidden && !rescanning) queryTime = Date.now(); }, 60_000);
     return () => {
       disposed = true;
       requestId++;
+      calendarId++;
+      sessionsId++;
       un?.();
       clearInterval(timer);
       clearTimeout(copiedTimer);
@@ -153,6 +263,7 @@
     } finally {
       rescanning = false;
       queryTime = Date.now();
+      dataVersion += 1;
     }
   }
 
@@ -197,8 +308,60 @@
     }
   }
 
+  const TEXT_SESSION_KEYS: readonly string[] = ['sessionId', 'provider', 'project'];
+  // offsets move across a DST change, so timestamps are compared as instants
+  const TIME_SESSION_KEYS: readonly string[] = ['firstTs', 'lastTs'];
+
+  /** Sorted copy of the (already capped) session rows. */
+  const sortedSessions = $derived.by(() => {
+    const list = [...(sessions?.rows ?? [])];
+    const key = sessionSortKey;
+    const dir = sessionSortDir;
+    list.sort((a, b) => {
+      let cmp: number;
+      if (TEXT_SESSION_KEYS.includes(key)) cmp = String(a[key as 'sessionId']).localeCompare(String(b[key as 'sessionId']));
+      else if (TIME_SESSION_KEYS.includes(key)) cmp = Date.parse(a[key as 'firstTs']) - Date.parse(b[key as 'firstTs']);
+      else cmp = ((a[key as 'totalTokens'] ?? 0) as number) - ((b[key as 'totalTokens'] ?? 0) as number);
+      return cmp * dir || b.totalTokens - a.totalTokens || a.sessionId.localeCompare(b.sessionId);
+    });
+    return list;
+  });
+
+  function sortSessionsBy(key: typeof sessionSortKey) {
+    if (sessionSortKey === key) sessionSortDir = sessionSortDir === 1 ? -1 : 1;
+    else {
+      sessionSortKey = key;
+      sessionSortDir = TEXT_SESSION_KEYS.includes(key) ? 1 : -1;
+    }
+  }
+
+  const sessionLabel = (row: SessionRow) => row.sessionId || t('history.sessions.unassigned');
+
+  /** Clicking a heatmap day narrows the range below to that single local day. */
+  function pickDay(date: string) {
+    preset = 'custom';
+    customFrom = date;
+    customTo = date;
+    bucket = 'hour';
+  }
+
+  const pickedDay = $derived(preset === 'custom' && customFrom === customTo ? customFrom : null);
+
+  // ---- monthly budget (estimates only; see history.costNote) ----
+  const monthlyBudgetUsd = $derived(settings.value.monthlyBudgetUsd);
+  const budget = $derived(
+    metric === 'cost' && monthlyBudgetUsd > 0 && calendar
+      ? budgetProgress(calendar.days, monthlyBudgetUsd, queryTime)
+      : null
+  );
+
+  /** The active table view decides what "copy" and "export" produce. */
+  const csvText = () => (tableView === 'sessions' ? sessionsCsv(sortedSessions) : historyCsv(sortedRows));
+  const csvEmpty = $derived(tableView === 'sessions' ? sortedSessions.length === 0 : sortedRows.length === 0);
+  const csvBusy = $derived(tableView === 'sessions' ? sessionsLoading : loading);
+
   async function copyCsv() {
-    const csv = historyCsv(sortedRows);
+    const csv = csvText();
     actionError = null;
     copied = false;
     let success = false;
@@ -235,8 +398,9 @@
     exporting = true;
     actionError = null;
     exported = null;
+    const kind = tableView === 'sessions' ? 'sessions-' : '';
     try {
-      exported = await exportUsageCsv(historyCsv(sortedRows), `ai-usage-${localDateInput(range.from)}-${localDateInput(range.to - 1)}.csv`);
+      exported = await exportUsageCsv(csvText(), `ai-usage-${kind}${localDateInput(range.from)}-${localDateInput(range.to - 1)}.csv`);
     } catch (e) {
       actionError = String(e);
     } finally {
@@ -247,7 +411,17 @@
   const metricValue = (tt: TokenTotals) =>
     metric === 'cost' ? formatCost(tt.estimatedCostUsd) : formatTokens(tt.totalTokens);
 
-  const providerName = (id: ProviderId) => (id === 'claude' ? 'Claude' : 'Codex');
+  /** Backend display name when the snapshot knows the provider, else a monogram-style label. */
+  const providerName = (id: ProviderId) =>
+    snapshot.value?.providers.find((p) => p.provider === id)?.displayName ?? providerDisplayName(id);
+
+  /** Filter options: every provider the backend knows or the settings list, in display order. */
+  const providerOptions = $derived.by(() => {
+    const cfg = settings.value.providers;
+    const ids = new Set<ProviderId>((snapshot.value?.providers ?? []).map((p) => p.provider));
+    for (const id of Object.keys(cfg)) ids.add(id);
+    return [...ids].sort((a, b) => (cfg[a]?.order ?? 0) - (cfg[b]?.order ?? 0));
+  });
 
   const PRESETS: Array<[HistoryPreset, string]> = [
     ['today', 'history.range.today'],
@@ -289,8 +463,9 @@
       <label class="ctl-label" for="provider">{t('history.provider')}</label>
       <select id="provider" class="field" bind:value={provider}>
         <option value="">{t('common.all')}</option>
-        <option value="claude">Claude</option>
-        <option value="codex">Codex</option>
+        {#each providerOptions as id (id)}
+          <option value={id}>{providerName(id)}</option>
+        {/each}
       </select>
 
       <label class="ctl-label" for="project">{t('history.project')}</label>
@@ -347,6 +522,69 @@
     <p class="muted export-path" role="status">{t('history.exported', { path: exported })}</p>
   {/if}
 
+  <div class="card panel activity">
+    <header class="panel-head">
+      <h3>{t('history.activity')}</h3>
+      <div class="head-controls">
+        <span class="muted">{t('history.activity.range', { weeks: HEATMAP_WEEKS })}</span>
+        <div class="segmented" role="group" aria-label={t('history.activity.view')}>
+          <button class:active={heatView === 'calendar'} aria-pressed={heatView === 'calendar'} onclick={() => (heatView = 'calendar')}>
+            {t('history.activity.calendar')}
+          </button>
+          <button class:active={heatView === 'punchcard'} aria-pressed={heatView === 'punchcard'} onclick={() => (heatView = 'punchcard')}>
+            {t('history.activity.punchcard')}
+          </button>
+        </div>
+      </div>
+    </header>
+    {#if calendarError}
+      <div class="feedback" role="alert">
+        <p class="err">{t('common.error', { message: calendarError })}</p>
+        <button class="btn" onclick={() => void loadCalendar()}>{t('common.retry')}</button>
+      </div>
+    {:else if calendar}
+      <UsageHeatmap
+        days={calendar.days}
+        slots={calendar.slots}
+        from={heatFrom}
+        to={heatTo}
+        {metric}
+        view={heatView}
+        selected={pickedDay}
+        onpick={pickDay}
+      />
+    {:else}
+      <p class="muted" role="status">{t('common.loading')}</p>
+    {/if}
+    <p class="note">{t('history.costNote')}</p>
+  </div>
+
+  {#if monthlyBudgetUsd > 0}
+    <div class="card panel">
+      <header class="panel-head">
+        <h3>{t('history.budget.title')}</h3>
+        {#if budget}
+          <span class="budget-stat" class:over={budget.percentUsed > 100} role="status">
+            {t('history.budget.stat', {
+              percent: `${Math.round(budget.percentUsed)}%`,
+              pace: formatCost(budget.paceUsd),
+              budget: formatCost(monthlyBudgetUsd),
+            })}
+          </span>
+        {/if}
+      </header>
+      {#if budget}
+        {#if budget.incomplete}<p class="muted cost-note" role="status">{t('history.budget.incomplete')}</p>{/if}
+        <BudgetChart series={budget.series} budgetUsd={monthlyBudgetUsd} {themeKey} />
+        <p class="note">{t('history.costNote')}</p>
+      {:else if metric !== 'cost'}
+        <p class="muted">{t('history.budget.tokensHint')}</p>
+      {:else}
+        <p class="muted" role="status">{t('common.loading')}</p>
+      {/if}
+    </div>
+  {/if}
+
   <div class="card panel" aria-busy={loading}>
     <header class="panel-head">
       <h3>{t('history.chartTitle')}</h3>
@@ -383,6 +621,9 @@
             <div><dt>{t('history.estCost')}</dt><dd>{formatCost(p.totals.estimatedCostUsd)}</dd></div>
           </dl>
           <p class="note">{t('history.costNote')}</p>
+          {#if result?.costApproximate}
+            <p class="note">{t('history.costApproxNote')}</p>
+          {/if}
         </article>
       {/each}
     </div>
@@ -390,18 +631,81 @@
 
   <div class="card panel">
     <header class="panel-head">
-      <h3>{t('history.table.title')}</h3>
-      <div class="export-actions">
-        <button class="btn" onclick={() => void copyCsv()} disabled={loading || sortedRows.length === 0}>
-          {copied ? t('common.copied') : t('common.copy')}
-        </button>
-        <button class="btn" onclick={() => void exportCsv()} disabled={loading || exporting || sortedRows.length === 0}>
-          {exporting ? t('common.saving') : t('history.exportCsv')}
-        </button>
+      <h3>{tableView === 'sessions' ? t('history.sessions.title') : t('history.table.title')}</h3>
+      <div class="head-controls">
+        <div class="segmented" role="group" aria-label={t('history.view')}>
+          <button class:active={tableView === 'buckets'} aria-pressed={tableView === 'buckets'} onclick={() => (tableView = 'buckets')}>
+            {t('history.view.buckets')}
+          </button>
+          <button class:active={tableView === 'sessions'} aria-pressed={tableView === 'sessions'} onclick={() => (tableView = 'sessions')}>
+            {t('history.view.sessions')}
+          </button>
+        </div>
+        <div class="export-actions">
+          <button class="btn" onclick={() => void copyCsv()} disabled={csvBusy || csvEmpty}>
+            {copied ? t('common.copied') : t('common.copy')}
+          </button>
+          <button class="btn" onclick={() => void exportCsv()} disabled={csvBusy || exporting || csvEmpty}>
+            {exporting ? t('common.saving') : t('history.exportCsv')}
+          </button>
+        </div>
       </div>
     </header>
 
-    {#if loading}
+    {#if tableView === 'sessions'}
+      {#if sessionsError}
+        <div class="feedback" role="alert">
+          <p class="err">{t('common.error', { message: sessionsError })}</p>
+          <button class="btn" onclick={() => void loadSessions()}>{t('common.retry')}</button>
+        </div>
+      {:else if sessionsLoading}
+        <p class="muted">{t('common.loading')}</p>
+      {:else if sessions && sortedSessions.length === 0}
+        <p class="muted">{t('history.sessions.none')}</p>
+      {:else if sessions}
+        <p class="muted small">
+          {sessions.truncated
+            ? t('history.sessions.capped', { shown: formatInt(sessions.rows.length), total: formatInt(sessions.totalSessions) })
+            : t('history.sessions.count', { n: formatInt(sessions.totalSessions) })}
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                {#each [['sessionId', 'history.sessions.id'], ['provider', 'history.table.provider'], ['project', 'history.project'], ['firstTs', 'history.sessions.start'], ['lastTs', 'history.sessions.end'], ['durationMs', 'history.sessions.duration'], ['requests', 'history.requests'], ['totalTokens', 'history.table.total'], ['estimatedCostUsd', 'history.estCost']] as [key, label] (key)}
+                  <th
+                    class:num={key === 'durationMs' || key === 'requests' || key === 'totalTokens' || key === 'estimatedCostUsd'}
+                    aria-sort={sessionSortKey === key ? (sessionSortDir === 1 ? 'ascending' : 'descending') : 'none'}
+                  >
+                    <button onclick={() => sortSessionsBy(key as typeof sessionSortKey)}>
+                      {tDyn(label)}
+                      {#if sessionSortKey === key}<span class="caret">{sessionSortDir === 1 ? '▲' : '▼'}</span>{/if}
+                    </button>
+                  </th>
+                {/each}
+                <th>{t('history.sessions.models')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each sortedSessions as s (`${s.provider}:${s.sessionId}`)}
+                <tr>
+                  <td class="session-id" title={s.sessionId}>{sessionLabel(s)}</td>
+                  <td>{providerName(s.provider)}</td>
+                  <td class="project-name" title={s.project || t('history.project.unassigned')}>{projectLabel(s.project)}</td>
+                  <td class="mono">{new Date(s.firstTs).toLocaleString()}</td>
+                  <td class="mono">{new Date(s.lastTs).toLocaleString()}</td>
+                  <td class="num mono">{formatDuration(s.durationMs)}</td>
+                  <td class="num mono">{formatInt(s.requests)}</td>
+                  <td class="num mono strong">{formatTokens(s.totalTokens)}</td>
+                  <td class="num mono">{formatCost(s.estimatedCostUsd)}</td>
+                  <td class="model" title={s.models.join(', ')}>{s.models.join(', ')}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    {:else if loading}
       <p class="muted">{t('common.loading')}</p>
     {:else if result && sortedRows.length === 0}
       <p class="muted">{t('history.noRows')}</p>
@@ -580,6 +884,46 @@
   }
 
   .panel-head .muted {
+    font-size: 0.75rem;
+  }
+
+  .head-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .small {
+    font-size: 0.75rem;
+  }
+
+  .cost-note {
+    margin: 0;
+    font-size: 0.75rem;
+  }
+
+  .activity {
+    /* the heatmap sizes itself from the card, never the other way round */
+    min-width: 0;
+  }
+
+  .budget-stat {
+    font-size: 0.75rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .budget-stat.over {
+    color: var(--critical);
+    font-weight: 600;
+  }
+
+  .session-id {
+    max-width: 14rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
     font-size: 0.75rem;
   }
 

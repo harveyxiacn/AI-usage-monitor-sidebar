@@ -6,6 +6,7 @@ pub mod export;
 pub mod model;
 pub mod scheduler;
 pub mod state;
+pub mod updater;
 pub mod window;
 
 use tauri::Manager;
@@ -46,6 +47,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_log::Builder::new().level(log_level()).build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(window::shortcuts::plugin())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
@@ -68,7 +71,12 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).ok();
             app.manage(state::AppState::new(config_dir, data_dir));
             window::setup(app.handle())?;
+            updater::setup(app.handle());
             scheduler::start(app.handle().clone());
+            // External edits of settings.json apply without a restart.
+            commands::settings::watch(app.handle().clone());
+            // No-op unless the user opted into a remote pricing table.
+            commands::pricing::start_remote_refresh(app.handle().clone());
 
             #[cfg(debug_assertions)]
             if std::env::var("AI_USAGE_SIDEBAR_DEVTOOLS").as_deref() == Ok("1") {
@@ -87,14 +95,22 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::get_usage_history,
+            commands::get_usage_calendar,
+            commands::get_usage_sessions,
             commands::get_quota_history,
             commands::get_pricing,
             commands::set_pricing,
+            commands::refresh_pricing,
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,
             export::export_usage_csv,
+            // updater
+            updater::get_update_status,
+            updater::check_for_updates,
+            updater::install_update,
             // platform
+            window::shortcuts::get_shortcut_status,
             window::sidebar_set_expanded,
             window::sidebar_relayout,
             window::sidebar_drag,

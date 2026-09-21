@@ -113,6 +113,11 @@ login of its own.
 - Claude Code: the user runs `claude` and signs in (`/login`).
 - Codex: the user runs `codex login` (ChatGPT sign-in). API-key mode has no
   quota windows, so the ring shows "not signed in" — that is expected.
+- GitHub Copilot: **experimental and unverified** (see `docs/PROVIDERS.md`). It
+  reads the token the Copilot editor plugins leave in
+  `~/.config/github-copilot/apps.json` and is switched off unless that file
+  already holds a github.com token. Do not enable it for a user without saying
+  it was never tested against a live account.
 - Non-default locations are honoured through `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
 
 A ring in an error state has its message in the popover and in the log.
@@ -120,9 +125,10 @@ A ring in an error state has its message in the popover and in the log.
 
 ## 5. Configure
 
-Settings live in one JSON file. The app reads it **at start-up** and rewrites
-it when the user changes something in the dashboard, so: quit the app (tray →
-Quit, or kill the process), edit, start it again.
+Settings live in one JSON file. The app **watches** it: save your edit and it
+applies within about a second — no restart, no quitting. (It also rewrites the
+file when the user changes something in the dashboard; a half-written file is
+ignored until it parses, so write it atomically or in one go.)
 
 | Platform | Path |
 |---|---|
@@ -138,20 +144,31 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `language` | `"auto"`, `"en"`, `"zh-CN"` | UI and tray language |
 | `theme` | `"dark"`, `"light"`, `"auto"` | |
 | `surfaceStyle` | `"glass"`, `"solid"`, `"cyber"` | liquid glass (blurred backdrop where the OS has one), opaque, or a neon sci-fi HUD |
-| `edge` | `"right"`, `"left"` | screen edge (also set by dragging) |
-| `verticalAlign` | `"center"`, `"top"`, `"bottom"` | |
-| `verticalOffset` | `0` (px, positive = down) | also set by dragging |
+| `cyberAccent` | `"neon"`, `"matrix"`, `"amber"`, `"ice"`, `"synthwave"` | neon pair the `cyber` HUD is painted with; ignored by the other surfaces |
+| `edge` | `"right"`, `"left"`, `"top"`, `"bottom"` | screen edge (also set by dragging). `top`/`bottom` make the bar a horizontal strip |
+| `verticalAlign` | `"center"`, `"top"`, `"bottom"` | position **along** the edge: `top` = its start (left end of a top/bottom edge), `bottom` = its end |
+| `verticalOffset` | `0` (px, positive = towards the end of the edge: down on left/right, right on top/bottom) | also set by dragging |
 | `monitor` | `null` = primary, or a monitor name | |
 | `autoHide` | `false`, `true` | collapse to a thin handle when idle |
 | `autoHideDelayMs` | `800` | |
+| `popoverTimeoutSec` | `10` (0 = never) | the detail popover closes after this many seconds without pointer activity; a pinned one gets 6× |
 | `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, or one per window |
 | `percentMode` | `"used"`, `"remaining"` | |
-| `showPercentLabel` | `true` | |
-| `refreshIntervalSec` | `60` | quota polling period |
-| `providers` | `{"claude":{"enabled":true,"order":0},"codex":{"enabled":true,"order":1}}` | hide or reorder a provider |
+| `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |
+| `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
+| `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |
+| `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
+| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` is **experimental** (never verified against a live account) and only turns itself on when its credentials are found |
+| `pricingUrl` | `""` | optional https URL of a price list, refreshed at most daily. Empty = no third-party request is ever made |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
+| `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
+| `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
+| `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
+| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer release once a day; never installs on its own |
+| `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS) |
+| `shortcutOpenDashboard` | `""` (off), e.g. `"Ctrl+Alt+D"` | global shortcut opening the dashboard |
 | `alwaysOnTop` | `true` | |
 | `opacity` | `1` (0.3 – 1) | |
 | `scale` | `1` (0.75 – 1.5) | |

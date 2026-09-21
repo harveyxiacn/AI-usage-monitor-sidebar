@@ -6,11 +6,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
+  import QuotaExtras from '$lib/components/QuotaExtras.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
   import { getQuotaHistory } from '$lib/api';
-  import { formatAgo, windowLabel } from '$lib/format';
+  import { formatAgo, staleHint, windowLabel } from '$lib/format';
   import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { accountEmail } from '$lib/privacy';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -69,6 +71,8 @@
 
   function statusHint(q: ProviderQuota): string | null {
     if (q.status === 'ok') return null;
+    // Being rate-limited is a schedule, not a fault: explain the staleness.
+    if (q.status === 'rate_limited') return staleHint(q, now);
     if (q.error) return q.error;
     const specific = `status.hint.${q.provider}.${q.status}`;
     if (hasKey(specific)) return tDyn(specific);
@@ -117,6 +121,7 @@
         {@const accent = accentFor(q.provider, 0)}
         {@const hint = statusHint(q)}
         {@const credits = creditsLine(q)}
+        {@const email = accountEmail(q.account?.email, s.hideAccountEmail)}
         <article class="card provider">
           <header class="head">
             <span class="logo" style:color={accent}>
@@ -125,7 +130,7 @@
             <div class="who">
               <span class="name">{q.displayName}</span>
               <span class="sub">
-                {q.planLabel ?? q.plan ?? '—'}{q.account?.email ? ` · ${q.account.email}` : ''}
+                {q.planLabel ?? q.plan ?? '—'}{email ? ` · ${email}` : ''}
               </span>
             </div>
             <span class="dot" data-status={q.status} title={tDyn(`status.${q.status}`)}></span>
@@ -177,6 +182,8 @@
               {/each}
             </div>
           {/if}
+
+          <QuotaExtras extras={q.extras} context="dashboard" />
 
           <footer class="foot">
             {#if credits}
@@ -274,7 +281,8 @@
   }
 
   .dot[data-status='not_logged_in'],
-  .dot[data-status='token_expired'] {
+  .dot[data-status='token_expired'],
+  .dot[data-status='rate_limited'] {
     background: var(--warn);
   }
 

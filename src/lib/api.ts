@@ -5,6 +5,8 @@
 import type {
   AppInfo,
   AppSnapshot,
+  CalendarQuery,
+  CalendarResult,
   DashboardTab,
   HistoryQuery,
   HistoryResult,
@@ -16,8 +18,12 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  SessionQuery,
+  SessionsResult,
   Settings,
+  ShortcutStatus,
   SidebarState,
+  UpdateStatus,
 } from './types';
 import { mockInvoke, mockListen } from './mock';
 import type { SettingsPatch } from './settings-writer';
@@ -49,9 +55,13 @@ export const refreshNow = (provider?: ProviderId) => invoke<AppSnapshot>('refres
 export const getSettings = () => invoke<Settings>('get_settings');
 export const updateSettings = (patch: SettingsPatch) => invoke<Settings>('update_settings', { patch });
 export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('get_usage_history', { query });
+export const getUsageCalendar = (query: CalendarQuery) => invoke<CalendarResult>('get_usage_calendar', { query });
+export const getUsageSessions = (query: SessionQuery) => invoke<SessionsResult>('get_usage_sessions', { query });
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });
+/** Only reaches the network when Settings.pricingUrl is set. */
+export const refreshPricing = () => invoke<PricingTable>('refresh_pricing');
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');
@@ -72,7 +82,15 @@ export async function exportUsageCsv(csv: string, suggestedName: string): Promis
   return suggestedName;
 }
 
+// ---- updater ----
+export const getUpdateStatus = () => invoke<UpdateStatus>('get_update_status');
+/** Reads the release feed; never downloads anything. */
+export const checkForUpdates = () => invoke<UpdateStatus>('check_for_updates');
+/** Downloads, installs and restarts — only for bundles we may replace. */
+export const installUpdate = () => invoke<void>('install_update');
+
 // ---- platform ----
+export const getShortcutStatus = () => invoke<ShortcutStatus>('get_shortcut_status');
 export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_set_expanded', { expanded });
 export const sidebarRelayout = (width: number, height: number) => invoke<void>('sidebar_relayout', { width, height });
 /** dx/dy: CSS px the pointer travelled since the drag started */
@@ -94,3 +112,4 @@ export const onIngestProgress = (h: (s: IngestStats) => void) => listen<IngestSt
 export const onPopoverTarget = (h: (r: PopoverRequest) => void) => listen<PopoverRequest>('popover-target', h);
 export const onSidebarState = (h: (s: SidebarState) => void) => listen<SidebarState>('sidebar-state', h);
 export const onDashboardNavigate = (h: (p: { tab: DashboardTab }) => void) => listen<{ tab: DashboardTab }>('dashboard-navigate', h);
+export const onUpdateStatus = (h: (s: UpdateStatus) => void) => listen<UpdateStatus>('update-status', h);

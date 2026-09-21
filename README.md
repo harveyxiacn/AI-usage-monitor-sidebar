@@ -41,35 +41,56 @@ quota is left, and when does it reset?*
 
 | | |
 |---|---|
-| Edge docking | Left or right edge, top / centre / bottom, with a pixel offset, on any monitor |
-| Drag to move | Drag the bar anywhere: it snaps to the nearer screen edge of the monitor you drop it on and remembers the height |
+| Edge docking | Any of the four screen edges, positioned along it (start / centre / end) with a pixel offset, on any monitor. Top and bottom turn the bar into a horizontal strip |
+| Drag to move | Drag the bar anywhere: it snaps to the nearest screen edge of the monitor you drop it on and remembers its position along that edge |
 | Auto-hide | The bar collapses to a thin handle when you move the pointer away and expands on hover |
 | Pinning | Click a ring to pin the popover open while you read it; click again to close it. A pinned popover closes by itself 8 s after the pointer left |
 | Always on top | Re-asserted after every map on X11, visible on all workspaces |
 | Glass surface | `surfaceStyle: "glass"` uses a real blurred backdrop where the OS has one (macOS vibrancy, Windows acrylic); `"solid"` turns it off |
 | Cyber HUD | `surfaceStyle: "cyber"` — a neon sci-fi look: chamfered plate, scanlines, tick-mark rings with glowing arcs, segmented bars |
+| HUD accents | `cyberAccent` repaints the HUD: `neon` (cyan/magenta), `matrix` green, `amber` CRT, `ice` white-blue, `synthwave` purple/pink |
 | Themes | Dark / light / follow the system |
 | i18n | English and 简体中文 (tray menu included) |
 | History | Incremental ingestion of session logs into SQLite; per-model, per-day/-week/-month totals; native CSV save and clipboard copy |
+| Activity heatmap | 26 weeks of local days (or a weekday × hour punch card); pick a day to narrow the range. Every cell is focusable and labelled |
+| Session drill-down | Per-session totals — provider, project, first/last activity, duration, requests, tokens, models — sortable and exportable. Counters and identifiers only, never prompt or response text |
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
+| Monthly budget | `monthlyBudgetUsd` draws the month-to-date *estimate* against your budget, with the percentage used and the pace. Estimates only — subscriptions do not bill per token |
 | Autostart | Optional login item (`--hidden`) |
 | Notifications | Optional warning when a window crosses your editable threshold |
+| Usage forecast | "Runs out in ~40 min" / "On pace for 82 % at reset" from the recorded quota samples, a tick on the ring where the projection lands, and an optional notification when a window is on pace to run out early |
+| Screen-share safe | `hideAccountEmail` masks account addresses as `h•••@g•••.com` wherever they appear |
 
 ## Providers
 
-| Provider | Plan | Rate-limit windows shown |
-|---|---|---|
-| Claude Code (OAuth) | Pro | 5-hour session **+** weekly (all models) |
-| Claude Code (OAuth) | Max 5× / Max 20× | 5-hour session **+** weekly, plus per-model weekly windows (e.g. Opus) when the API reports them |
-| OpenAI Codex (ChatGPT login) | Plus | 5-hour **+** weekly |
-| OpenAI Codex (ChatGPT login) | Pro / "prolite" | API-reported windows, including weekly-only responses |
-| OpenAI Codex | Team / Business / Enterprise / Edu | whatever the API reports, classified by window length |
-| OpenAI Codex | API-key mode (`auth_mode: "apikey"`) | no quota windows exist; the ring shows "not signed in" |
+| Provider | Verification | Plan | Rate-limit windows shown |
+|---|---|---|---|
+| Claude Code (OAuth) | verified against a live account | Pro | 5-hour session **+** weekly (all models) |
+| Claude Code (OAuth) | verified against a live account | Max 5× / Max 20× | 5-hour session **+** weekly, plus per-model weekly windows (e.g. Opus) when the API reports them |
+| OpenAI Codex (ChatGPT login) | verified against a live account | Plus | 5-hour **+** weekly |
+| OpenAI Codex (ChatGPT login) | verified against a live account | Pro 20x (`pro`) / Pro 5x (`prolite`) | API-reported windows, including weekly-only responses |
+| OpenAI Codex | verified against a live account | Team / Business / Enterprise / Edu | whatever the API reports, classified by window length |
+| OpenAI Codex | verified against a live account | API-key mode (`auth_mode: "apikey"`) | no quota windows exist; the ring shows "not signed in" |
+| GitHub Copilot | **experimental — never tested against a live account** | Pro / Pro+ / Business / Enterprise | monthly premium-request pool; chat and completions are unmetered on paid plans |
+| GitHub Copilot | **experimental — never tested against a live account** | Free | monthly chat **+** completions counts (there is no premium pool to meter) |
+| GitHub Copilot | **experimental — never tested against a live account** | organisation-managed seat | GitHub reports no per-seat quota; the popover says so instead of showing 0 % |
 
 Window kinds are **detected from the API**, never assumed: a window is classified
 by its `limit_window_seconds` (≤ 6 h → 5-hour, ~7 d → weekly, anything else →
 "other"). A weekly window can be *primary*; plan names never decide which
 windows are present. The table describes observed payloads, not guaranteed plan entitlements.
+
+**About "experimental".** The Claude and Codex providers were built by
+inspecting real responses from real accounts. The Copilot provider was built
+only from other projects' published source code and GitHub's own Copilot SDK
+documentation — the author has no Copilot subscription and could never run it
+against one. It is therefore **off by default** unless Copilot credentials are
+already on your disk, it is badged *Experimental* in Settings → Providers, and
+its numbers may be wrong or stop working without notice. Every claim behind it,
+with links to the source lines it came from, is in
+[docs/PROVIDERS.md](docs/PROVIDERS.md) — which also records why **Gemini CLI**
+and **Cursor** were researched and *not* implemented. Corrections from someone
+with a live Copilot account are very welcome.
 
 ## How it reads your data
 
@@ -83,6 +104,7 @@ session logs those CLIs leave on disk.
 |---|---|
 | Claude | `~/.claude/.credentials.json` (Linux, Windows) · macOS Keychain item `Claude Code-credentials` · override the directory with `CLAUDE_CONFIG_DIR` |
 | Codex | `~/.codex/auth.json` · override the directory with `CODEX_HOME` |
+| GitHub Copilot | `~/.config/github-copilot/apps.json` (older `hosts.json`), written by the Copilot editor plugins · `%LOCALAPPDATA%\github-copilot\` on Windows · `$XDG_CONFIG_HOME` is honoured. The GitHub CLI's token is deliberately **not** used. |
 
 **Endpoints**
 
@@ -90,6 +112,7 @@ session logs those CLIs leave on disk.
 |---|---|
 | Claude | `GET https://api.anthropic.com/api/oauth/usage` (and `/api/oauth/profile` for the plan label), `Authorization: Bearer …`, `anthropic-beta: oauth-2025-04-20` |
 | Codex | `GET https://chatgpt.com/backend-api/wham/usage`, `Authorization: Bearer …`, `ChatGPT-Account-Id: …` |
+| GitHub Copilot | `GET https://api.github.com/copilot_internal/user`, `Authorization: token …`, `X-Github-Api-Version: 2025-04-01` — the call the Copilot editor extensions make |
 
 **Local logs (token history, and a fallback when you are offline)**
 
@@ -97,13 +120,20 @@ session logs those CLIs leave on disk.
 |---|---|
 | Claude | `~/.claude/projects/**/*.jsonl` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, `~/.codex/archived_sessions/**` |
+| GitHub Copilot | none — no Copilot client is known to log token counts, so Copilot has no token history |
 
 > **Privacy.** Your tokens never leave your machine except in the request to
-> Anthropic's and OpenAI's own endpoints — the same ones `claude` and `codex`
-> already talk to. There is no telemetry, no analytics and no third-party
+> Anthropic's, OpenAI's and GitHub's own endpoints — the same ones `claude`,
+> `codex` and the Copilot editor extensions already talk to, and only for a
+> provider you have switched on. There is no telemetry, no analytics and no third-party
 > service. Session JSONL records are parsed locally; only usage counters,
 > model/session identifiers and project paths are retained. Prompt and response
 > text is not stored in the usage database or sent by this app.
+>
+> The one exception is opt-in and off by default: if *you* put an https URL in
+> **Settings → Data → Pricing table URL**, the app downloads that price list
+> once a day (see "Keeping prices up to date"). While the field is empty no
+> third-party request is ever made.
 
 ## Install
 
@@ -121,6 +151,18 @@ Download the installer for your platform from the
 Intel), `-setup.exe` / `.msi` (Windows x64). These builds are unsigned: macOS
 needs `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`,
 Windows shows a SmartScreen warning.
+
+### Staying up to date
+
+The app checks GitHub for a newer release once a day (Settings → Behaviour →
+*Check for updates daily*, on by default) and never installs anything on its
+own: a new version shows up as a tray item, a one-line banner in the dashboard
+and an *Updates* row under Settings → About, where "Install and restart" is a
+deliberate click. Copies installed from a `.deb`/`.rpm` or by
+`scripts/install-linux.sh` are owned by the package manager, so they get a
+link to the release page instead of an in-place install. Maintainers: see
+[`docs/RELEASING.md`](docs/RELEASING.md). Draft manifests for AUR, Homebrew
+and winget live in [`packaging/`](packaging/README.md).
 
 ### Build prerequisites
 
@@ -200,6 +242,43 @@ Details, including the geometry maths and the hover state machine, are in
 [`docs/PLATFORM.md`](docs/PLATFORM.md). The module and command contracts are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Keeping prices up to date
+
+The cost column is an *estimate* for comparing providers and plans —
+subscriptions do not bill per token. Prices come from a built-in table
+(checked 2026-09-20). Model names drift fast, so:
+
+* A model the table does not know is priced from its **closest known family**
+  (`gpt-5.3-codex-spark` → `gpt-5.3-codex`, `claude-opus-4-99` →
+  `claude-opus-4`). Those numbers are approximate and the dashboard says so.
+  A model from an unrelated family stays unpriced and shows "—".
+* You can edit any row, add your own prefixes and delete rows in
+  **Settings → Data**. Your table wins over everything else.
+* **Optional, off by default:** put an `https://` URL in **Pricing table URL**
+  and the app refreshes the built-in list from it at most once a day (plus a
+  "Refresh prices now" button). The download is capped in size, validated
+  strictly and cached in the app data directory; anything unexpected is
+  rejected and the bundled table keeps being used.
+
+The file must use the same schema as [`pricing.json`](pricing.json) in this
+repository, which you can host yourself:
+
+```json
+{
+  "updatedAt": "2026-09-20T00:00:00Z",
+  "entries": [
+    { "modelPattern": "gpt-5.3-codex", "inputPerM": 1.75, "outputPerM": 14.0,
+      "cacheWritePerM": 1.75, "cacheReadPerM": 0.175 }
+  ]
+}
+```
+
+Rates are USD per 1M tokens. To follow this project's own list:
+
+```
+https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json
+```
+
 ## Where your configuration lives
 
 | | Linux | macOS | Windows |
@@ -215,7 +294,9 @@ centred, always visible, dark theme).
 
 - [ ] `wlr-layer-shell` support for KDE / Hyprland / Sway (true native Wayland)
 - [ ] Blur behind the bar on KWin (`_KDE_NET_WM_BLUR_BEHIND_REGION`)
-- [ ] More providers (Gemini CLI, GitHub Copilot, Cursor)
+- [x] GitHub Copilot (experimental, unverified — see [docs/PROVIDERS.md](docs/PROVIDERS.md))
+- [ ] Gemini CLI — blocked on its move to OS-keychain credential storage ([why](docs/PROVIDERS.md))
+- [ ] ~~Cursor~~ — not planned: ToS and endpoint stability ([why](docs/PROVIDERS.md))
 - [ ] Menu-bar mode on macOS
 - [x] Native CSV export and clipboard copy
 - [ ] Per-project token breakdown
@@ -284,34 +365,48 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 | | |
 |---|---|
-| 边缘吸附 | 左/右边缘，顶部/居中/底部，可设像素偏移，可指定显示器 |
-| 拖拽移动 | 直接拖动侧栏：松手后吸附到所在显示器较近的左/右边缘，并记住高度位置 |
+| 边缘吸附 | 四条屏幕边缘任选，沿边缘对齐（起始/居中/末端）并可设像素偏移，可指定显示器；贴靠顶部或底部时侧栏会变成横条 |
+| 拖拽移动 | 直接拖动侧栏：松手后吸附到所在显示器最近的一条边缘，并记住沿该边缘的位置 |
 | 自动隐藏 | 鼠标离开后收起为细条，悬停时自动展开 |
 | 固定弹层 | 点击环可固定弹层，方便慢慢看；再次点击立即关闭。固定的弹层在鼠标离开 8 秒后也会自动关闭 |
 | 始终置顶 | X11 下每次映射后重新置顶，并在所有工作区可见 |
 | 玻璃质感 | `surfaceStyle: "glass"` 在系统支持时使用原生毛玻璃背景（macOS vibrancy、Windows acrylic）；`"solid"` 关闭 |
 | 赛博 HUD | `surfaceStyle: "cyber"`：霓虹科幻风——切角面板、扫描线、刻度式圆环与发光用量弧、分段进度条 |
+| HUD 霓虹配色 | `cyberAccent` 切换 HUD 配色：`neon`（青/品红）、`matrix` 绿、`amber` 琥珀 CRT、`ice` 冰蓝、`synthwave` 紫/粉 |
 | 主题 | 深色 / 浅色 / 跟随系统 |
 | 多语言 | English 与简体中文（含托盘菜单） |
 | 历史 | 增量解析会话日志入 SQLite，支持按模型、按日/周/月统计，以及原生 CSV 保存与复制 |
 | 费用估算 | 可选的 API 等价价格估算，界面明确标注仅作横向参考 |
 | 开机自启 | 可选登录项（带 `--hidden` 参数） |
 | 通知 | 额度超过可编辑阈值时可选提醒 |
+| 用量预测 | 依据已记录的额度样本给出「约 40 分钟后用尽」「重置时将达 82%」，在圆环上标出预计落点，并可在预计提前用尽时通知 |
+| 屏幕共享友好 | `hideAccountEmail` 将账号邮箱在所有位置显示为 `h•••@g•••.com` |
 
 ## 支持的服务与套餐
 
-| 服务 | 套餐 | 显示的限额窗口 |
-|---|---|---|
-| Claude Code（OAuth） | Pro | 5 小时会话 **+** 每周（全模型） |
-| Claude Code（OAuth） | Max 5× / Max 20× | 5 小时会话 **+** 每周，API 返回时还包括按模型（如 Opus）的每周窗口 |
-| OpenAI Codex（ChatGPT 登录） | Plus | 5 小时 **+** 每周 |
-| OpenAI Codex（ChatGPT 登录） | Pro / prolite | 以 API 返回为准，兼容仅返回每周窗口的情况 |
-| OpenAI Codex | Team / Business / Enterprise / Edu | 以 API 返回为准，按窗口时长归类 |
-| OpenAI Codex | API Key 模式（`auth_mode: "apikey"`） | 不存在额度窗口，环显示“未登录” |
+| 服务 | 验证情况 | 套餐 | 显示的限额窗口 |
+|---|---|---|---|
+| Claude Code（OAuth） | 已在真实账号上验证 | Pro | 5 小时会话 **+** 每周（全模型） |
+| Claude Code（OAuth） | 已在真实账号上验证 | Max 5× / Max 20× | 5 小时会话 **+** 每周，API 返回时还包括按模型（如 Opus）的每周窗口 |
+| OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Plus | 5 小时 **+** 每周 |
+| OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Pro 20x（`pro`）/ Pro 5x（`prolite`） | 以 API 返回为准，兼容仅返回每周窗口的情况 |
+| OpenAI Codex | 已在真实账号上验证 | Team / Business / Enterprise / Edu | 以 API 返回为准，按窗口时长归类 |
+| OpenAI Codex | 已在真实账号上验证 | API Key 模式（`auth_mode: "apikey"`） | 不存在额度窗口，环显示“未登录” |
+| GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Pro / Pro+ / Business / Enterprise | 每月 premium 请求额度池；付费套餐的 chat 与补全不计量 |
+| GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Free | 每月 chat **+** 代码补全次数（免费套餐没有 premium 额度池） |
+| GitHub Copilot | **实验性 —— 从未在真实账号上验证** | 组织分配的席位 | GitHub 不返回该席位的个人额度，弹窗会如实说明，而不是显示 0% |
 
 窗口类型一律**由 API 返回值判断**，不做假设：按 `limit_window_seconds` 归类
 （≤ 6 小时 → 5 小时窗口，约 7 天 → 每周窗口，其余 → 其他）。每周窗口也可能是
 *primary*，程序不按套餐名硬编码窗口数量。上表是已观察到的数据形态，不承诺套餐权益。
+
+**关于“实验性”**：Claude 与 Codex 两个服务商是对着真实账号的真实响应写出来的；
+GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自家 Copilot SDK 的
+文档实现——作者没有 Copilot 订阅，无法在真实账号上跑通任何一条路径。因此它
+**默认关闭**（除非本机已存在 Copilot 凭据），在「设置 → 服务商」中标注为
+*实验性*，其数值可能有误，也可能随时失效。所有结论及其源码出处链接都记录在
+[docs/PROVIDERS.md](docs/PROVIDERS.md)，其中也说明了 **Gemini CLI** 与
+**Cursor** 为什么调研后*没有*实现。欢迎有 Copilot 账号的朋友帮忙纠正。
 
 ## 数据从哪里来
 
@@ -324,6 +419,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 |---|---|
 | Claude | `~/.claude/.credentials.json`（Linux、Windows）· macOS 钥匙串条目 `Claude Code-credentials` · 可用 `CLAUDE_CONFIG_DIR` 覆盖目录 |
 | Codex | `~/.codex/auth.json` · 可用 `CODEX_HOME` 覆盖目录 |
+| GitHub Copilot | `~/.config/github-copilot/apps.json`（旧版为 `hosts.json`），由 Copilot 编辑器插件写入 · Windows 为 `%LOCALAPPDATA%\github-copilot\` · 支持 `$XDG_CONFIG_HOME`。**不会**使用 GitHub CLI 的令牌。 |
 
 **接口**
 
@@ -331,6 +427,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 |---|---|
 | Claude | `GET https://api.anthropic.com/api/oauth/usage`（套餐名另取 `/api/oauth/profile`），请求头 `Authorization: Bearer …`、`anthropic-beta: oauth-2025-04-20` |
 | Codex | `GET https://chatgpt.com/backend-api/wham/usage`，请求头 `Authorization: Bearer …`、`ChatGPT-Account-Id: …` |
+| GitHub Copilot | `GET https://api.github.com/copilot_internal/user`，请求头 `Authorization: token …`、`X-Github-Api-Version: 2025-04-01` —— 与 Copilot 编辑器插件所调用的一致 |
 
 **本地日志（token 历史；离线时也作为额度兜底）**
 
@@ -338,11 +435,17 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 |---|---|
 | Claude | `~/.claude/projects/**/*.jsonl` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`、`~/.codex/archived_sessions/**` |
+| GitHub Copilot | 无 —— 目前没有任何 Copilot 客户端会把 token 计数写到本地，因此 Copilot 没有 token 历史 |
 
-> **隐私说明**：除了发往 Anthropic 与 OpenAI 自家接口（也就是 `claude`、`codex`
-> 本来就会访问的那两个）之外，你的 token 不会离开本机。没有遥测、没有统计上报、
+> **隐私说明**：除了发往 Anthropic、OpenAI 与 GitHub 自家接口（也就是 `claude`、
+> `codex` 和 Copilot 编辑器插件本来就会访问的那几个，且仅限你已启用的服务商）之外，
+> 你的 token 不会离开本机。没有遥测、没有统计上报、
 > 没有任何第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
 > 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
+>
+> 唯一的例外需要你自己开启，默认关闭：只有当你在**设置 → 数据 → 价格表地址**里
+> 填入一个 https 地址时，应用才会每天最多拉取一次该价格表（见“让价格保持最新”）。
+> 该字段为空时，不会向任何第三方发起请求。
 
 ## 安装
 
@@ -357,6 +460,15 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 Linux x86_64 的 `.deb` / `.rpm` / `.AppImage`，macOS 的 `.dmg`（Apple Silicon 与 Intel 各一个），
 Windows x64 的 `-setup.exe` / `.msi`。这些构建尚未签名：macOS 需执行
 `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`，Windows 会出现 SmartScreen 提示。
+
+### 保持更新
+
+应用每天检查一次 GitHub 上是否有新版本（设置 → 行为 → *每天检查更新*，默认开启），
+但从不自动安装：有新版本时，托盘菜单、仪表盘顶部的一行提示以及“设置 → 关于 → 更新”
+都会显示，安装始终需要你点击“安装并重启”。通过 `.deb` / `.rpm` 或
+`scripts/install-linux.sh` 安装的副本由包管理器接管，只会给出发布页链接，不做原地替换。
+维护者请看 [`docs/RELEASING.md`](docs/RELEASING.md)；AUR、Homebrew 与 winget 的打包草稿在
+[`packaging/`](packaging/README.md)。
 
 ### 自行构建所需依赖
 
@@ -429,6 +541,37 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 更多细节（几何计算、悬停状态机）见 [`docs/PLATFORM.md`](docs/PLATFORM.md)；
 模块与命令契约见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
+## 让价格保持最新
+
+费用一栏只是用于横向比较服务与套餐的**估算值**——订阅制并不按 token 计费。价格来自
+内置价目表（2026-09-20 核对）。模型名字更新很快，所以：
+
+* 表里没有的模型会按**最接近的同系列模型**计价（`gpt-5.3-codex-spark` →
+  `gpt-5.3-codex`，`claude-opus-4-99` → `claude-opus-4`）。这类数字是近似值，
+  仪表盘会明确标注；完全不沾边的模型仍然显示“—”。
+* 在**设置 → 数据**里可以改价、添加自己的前缀、删除行；你保存的表优先级最高。
+* **可选，默认关闭**：在**价格表地址**里填入 `https://` 地址后，应用每天最多从该地址
+  更新一次内置价目表（也可以点“立即更新价格”）。下载有体积上限、经过严格校验，
+  并缓存在应用数据目录；只要有任何异常就整份丢弃，继续用内置表。
+
+文件格式与本仓库的 [`pricing.json`](pricing.json) 一致，你也可以自己托管一份：
+
+```json
+{
+  "updatedAt": "2026-09-20T00:00:00Z",
+  "entries": [
+    { "modelPattern": "gpt-5.3-codex", "inputPerM": 1.75, "outputPerM": 14.0,
+      "cacheWritePerM": 1.75, "cacheReadPerM": 0.175 }
+  ]
+}
+```
+
+价格单位是每百万 token 的美元数。想直接跟随本项目维护的价目表：
+
+```
+https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json
+```
+
 ## 配置文件位置
 
 | | Linux | macOS | Windows |
@@ -443,7 +586,9 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 
 - [ ] 支持 `wlr-layer-shell`（KDE / Hyprland / Sway 的原生 Wayland）
 - [ ] KWin 下的背景模糊（`_KDE_NET_WM_BLUR_BEHIND_REGION`）
-- [ ] 接入更多服务（Gemini CLI、GitHub Copilot、Cursor）
+- [x] GitHub Copilot（实验性，未在真实账号上验证，详见 [docs/PROVIDERS.md](docs/PROVIDERS.md)）
+- [ ] Gemini CLI —— 其凭据已迁入系统钥匙串，暂时受阻（[原因](docs/PROVIDERS.md)）
+- [ ] ~~Cursor~~ —— 不计划支持：服务条款与接口稳定性（[原因](docs/PROVIDERS.md)）
 - [ ] macOS 菜单栏模式
 - [x] 原生 CSV 导出与剪贴板复制
 - [ ] 按项目统计 token

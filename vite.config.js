@@ -7,6 +7,14 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [sveltekit()],
 
+  // Pre-bundle everything a lazily loaded dashboard tab or the Tauri bridge
+  // pulls in. Discovered late, Vite re-optimises and *reloads the page*, which
+  // drops the first interaction in `tauri dev` and failed whichever e2e tests
+  // ran first against a cold dev server.
+  optimizeDeps: {
+    include: ["chart.js", "@tauri-apps/api/core", "@tauri-apps/api/event", "@tauri-apps/plugin-opener"],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

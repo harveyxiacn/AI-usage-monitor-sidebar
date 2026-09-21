@@ -6,6 +6,8 @@
 //! scheduler, state, window`, so every other backend module hangs off this one
 //! via `#[path]` declarations.
 
+#[path = "forecast.rs"]
+pub mod forecast;
 #[path = "ingest/mod.rs"]
 pub mod ingest;
 #[path = "pricing.rs"]
@@ -68,6 +70,26 @@ pub async fn get_usage_history(
 }
 
 #[tauri::command]
+pub async fn get_usage_calendar(
+    state: State<'_, AppState>,
+    query: CalendarQuery,
+) -> Result<CalendarResult, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_calendar(&db, &query, &pricing)).await
+}
+
+#[tauri::command]
+pub async fn get_usage_sessions(
+    state: State<'_, AppState>,
+    query: SessionQuery,
+) -> Result<SessionsResult, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_sessions(&db, &query, &pricing)).await
+}
+
+#[tauri::command]
 pub async fn get_quota_history(
     state: State<'_, AppState>,
     query: QuotaHistoryQuery,
@@ -89,6 +111,27 @@ pub async fn set_pricing(
     let mut current = state.pricing.write();
     let merged = pricing::save(&state.config_dir, &table).map_err(|e| format!("{e:#}"))?;
     *current = merged.clone();
+    Ok(merged)
+}
+
+/// "Refresh prices now" — only ever reaches the network when the user set
+/// `pricingUrl`; a failure keeps the table that is already in use.
+#[tauri::command]
+pub async fn refresh_pricing(state: State<'_, AppState>) -> Result<PricingTable, String> {
+    let (http, url, data_dir, config_dir) = {
+        let settings = state.settings.read();
+        (
+            state.http.clone(),
+            settings.pricing_url.clone(),
+            state.data_dir.clone(),
+            state.config_dir.clone(),
+        )
+    };
+    pricing::refresh_remote(&http, &data_dir, &url, true)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let merged = pricing::load_with_base(&config_dir, pricing::base_table(&data_dir, &url));
+    *state.pricing.write() = merged.clone();
     Ok(merged)
 }
 

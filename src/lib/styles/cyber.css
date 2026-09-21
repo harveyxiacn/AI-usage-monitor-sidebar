@@ -47,6 +47,68 @@
   --cut: clamp(6px, calc(var(--r-pill, 1.625rem) * 0.42), 14px);
 }
 
+/*
+ * Accent presets (Settings.cyberAccent → `data-cyber` on <html>, written by
+ * applyTheme). Only the neon pair, the plate tint and the three text tokens
+ * change: every other rule below is written in terms of `--cy-a` / `--cy-b`,
+ * and `--text-halo` / `--label-shadow` are derived in the block above, so a
+ * preset is nine declarations and nothing else has to know about it.
+ *
+ * `neon` is the block above — the default needs no override. Each pair is
+ * checked to keep the text tokens legible on that preset's own dark plate.
+ */
+:root[data-surface='cyber'][data-cyber='matrix']:not([data-win='dashboard']),
+:root[data-surface='cyber'][data-cyber='matrix'] .surface {
+  --cy-a: #34ff9b;
+  --cy-a-rgb: 52 255 155;
+  --cy-b: #b6ff3c;
+  --cy-b-rgb: 182 255 60;
+  --surface-fill: rgb(3 14 9 / calc(0.82 * var(--surface-alpha, 1)));
+  --text: #dcffe9;
+  --muted: #8ee8b4;
+  --faint: #5fae84;
+  --logo: #dcffe9;
+}
+
+:root[data-surface='cyber'][data-cyber='amber']:not([data-win='dashboard']),
+:root[data-surface='cyber'][data-cyber='amber'] .surface {
+  --cy-a: #ffb300;
+  --cy-a-rgb: 255 179 0;
+  --cy-b: #ff6a1f;
+  --cy-b-rgb: 255 106 31;
+  --surface-fill: rgb(16 9 2 / calc(0.82 * var(--surface-alpha, 1)));
+  --text: #ffeed2;
+  --muted: #f0c684;
+  --faint: #bb9254;
+  --logo: #ffeed2;
+}
+
+:root[data-surface='cyber'][data-cyber='ice']:not([data-win='dashboard']),
+:root[data-surface='cyber'][data-cyber='ice'] .surface {
+  --cy-a: #7fdcff;
+  --cy-a-rgb: 127 220 255;
+  --cy-b: #dcefff;
+  --cy-b-rgb: 220 239 255;
+  --surface-fill: rgb(6 12 20 / calc(0.82 * var(--surface-alpha, 1)));
+  --text: #eef8ff;
+  --muted: #b6d7e8;
+  --faint: #86aabe;
+  --logo: #eef8ff;
+}
+
+:root[data-surface='cyber'][data-cyber='synthwave']:not([data-win='dashboard']),
+:root[data-surface='cyber'][data-cyber='synthwave'] .surface {
+  --cy-a: #b57bff;
+  --cy-a-rgb: 181 123 255;
+  --cy-b: #ff4fa6;
+  --cy-b-rgb: 255 79 166;
+  --surface-fill: rgb(12 5 21 / calc(0.82 * var(--surface-alpha, 1)));
+  --text: #f4e9ff;
+  --muted: #c9a9ee;
+  --faint: #9a7cc2;
+  --logo: #f4e9ff;
+}
+
 html[data-surface='cyber'] .surface {
   color: var(--text);
   text-shadow: var(--text-halo);
@@ -194,6 +256,58 @@ html[data-surface='cyber'] .stage[data-edge='left'] .pill.surface {
     center;
 }
 
+/* Docked to the top: the two *bottom* corners face the screen and are cut. */
+html[data-surface='cyber'] .stage[data-edge='top'] .pill.surface {
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut))
+  );
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(315deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 0% 100%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 100% 100%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-position:
+    bottom left,
+    bottom right,
+    center,
+    center,
+    center,
+    center;
+}
+
+/* Docked to the bottom: the two *top* corners are the ones that are cut. */
+html[data-surface='cyber'] .stage[data-edge='bottom'] .pill.surface {
+  clip-path: polygon(
+    var(--cut) 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    0 100%,
+    0 var(--cut)
+  );
+  background-image:
+    linear-gradient(135deg, transparent 50%, var(--cy-a) 50%, var(--cy-a) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    linear-gradient(225deg, transparent 50%, var(--cy-b) 50%, var(--cy-b) calc(50% + 1.5px), transparent calc(50% + 1.5px)),
+    radial-gradient(120% 60% at 0% 0%, rgb(var(--cy-a-rgb) / 0.2) 0%, transparent 60%),
+    radial-gradient(120% 60% at 100% 0%, rgb(var(--cy-b-rgb) / 0.16) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgb(var(--cy-a-rgb) / 0.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgb(var(--cy-a-rgb) / 0.035) 0 1px, transparent 1px 12px);
+  background-position:
+    top left,
+    top right,
+    center,
+    center,
+    center,
+    center;
+}
+
 /* ---- rings ------------------------------------------------------------ */
 
 /* tracks become tick marks; butt caps read as instrument segments */
@@ -236,6 +350,15 @@ html[data-surface='cyber'] .surface .plan {
   color: var(--cy-a);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+/* extras read as HUD tags, like the plan pill */
+html[data-surface='cyber'] .surface .chip {
+  border-radius: 0;
+  border-color: rgb(var(--cy-a-rgb) / 0.4);
+  background: rgb(var(--cy-a-rgb) / 0.06);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* quota bars: squared, segmented, glowing in their own colour */

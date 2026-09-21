@@ -13,16 +13,24 @@
     getAppInfo,
     getMonitors,
     getPricing,
+    getProviders,
+    getShortcutStatus,
     isTauri,
     quitApp,
+    refreshPricing,
     reingestLogs,
     setPricing,
   } from '$lib/api';
+  import { formatAgo } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
-  import { settings } from '$lib/stores/settings.svelte';
+  import { providerDisplayName } from '$lib/providers';
+  import { shortcutProblem } from '$lib/shortcuts';
+  import { defaultSidebarItems, settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
+  import { update } from '$lib/stores/update.svelte';
   import type {
     AppInfo,
+    CyberAccent,
     Edge,
     Language,
     MonitorInfo,
@@ -30,7 +38,10 @@
     PricingEntry,
     PricingTable,
     ProviderId,
+    ProviderInfo,
     RingMode,
+    ShortcutStatus,
+    SidebarItems,
     SurfaceStyle,
     Theme,
     VerticalAlign,
@@ -41,6 +52,7 @@
   const s = $derived(settings.value);
 
   let monitors = $state<MonitorInfo[]>([]);
+  let providerInfos = $state<ProviderInfo[]>([]);
   let appInfo = $state<AppInfo | null>(null);
   let pricing = $state<PricingTable | null>(null);
   let pricingSaved = $state(false);
@@ -48,28 +60,79 @@
   let pricingSaving = $state(false);
   let pricingError = $state<string | null>(null);
   let pricingDirty = $state(false);
+  let pricingFetching = $state(false);
   let actionError = $state<string | null>(null);
   let rescanResult = $state<string | null>(null);
   let rescanning = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Why a global shortcut is not active, as reported by the backend. */
+  let shortcuts = $state<ShortcutStatus>({ toggleSidebar: null, openDashboard: null });
 
-  /** Provider rows: known providers from the snapshot, ordered by settings. */
+  /** Provider rows: every provider the backend reports, ordered by settings. */
   const providerRows = $derived.by(() => {
     const ids = new Set<ProviderId>((snapshot.value?.providers ?? []).map((p) => p.provider));
+    for (const info of providerInfos) ids.add(info.id);
     for (const id of Object.keys(s.providers)) ids.add(id as ProviderId);
     return [...ids].sort((a, b) => (s.providers[a]?.order ?? 0) - (s.providers[b]?.order ?? 0));
   });
 
+  /** `get_providers` is the authority on which providers exist and their state. */
+  const providerInfoOf = (id: ProviderId) => providerInfos.find((p) => p.id === id) ?? null;
+
   onMount(() => {
+    const disposeUpdate = update.init();
+    void getProviders().then((p) => (providerInfos = p)).catch((e) => (actionError = String(e)));
     void getMonitors().then((m) => (monitors = m)).catch((e) => (actionError = String(e)));
     void getAppInfo().then((i) => (appInfo = i)).catch((e) => (actionError = String(e)));
     void loadPricing();
-    return () => clearTimeout(savedTimer);
+    void refreshShortcutStatus();
+    return () => {
+      clearTimeout(savedTimer);
+      disposeUpdate();
+    };
   });
+
+  /** The backend re-registers on `settings-updated`; ask it what happened. */
+  async function refreshShortcutStatus() {
+    try { shortcuts = await getShortcutStatus(); }
+    catch (e) { actionError = String(e); }
+  }
+
+  async function patchShortcut(key: 'shortcutToggleSidebar' | 'shortcutOpenDashboard', value: string) {
+    await settings.patch({ [key]: value.trim() });
+    await refreshShortcutStatus();
+  }
+
+  /** Local complaint first (instant), then whatever registration reported. */
+  function shortcutHint(value: string, failure: string | null): string | undefined {
+    if (shortcutProblem(value)) return t('settings.shortcutInvalid');
+    if (failure) return t('settings.shortcutFailed', { message: failure });
+    return undefined;
+  }
+
+  const u = $derived(update.value);
+
+  const updateSummary = $derived.by(() => {
+    if (!u) return t('update.unknown');
+    if (u.checking) return t('update.checking');
+    if (u.available) return t('update.available', { version: u.available });
+    if (!u.checkedAt) return t('update.unknown');
+    return t('update.upToDate');
+  });
+
+  async function openUrl(url: string) {
+    if (isTauri()) {
+      const { openUrl: open } = await import('@tauri-apps/plugin-opener');
+      await open(url);
+    } else {
+      window.open(url, '_blank', 'noopener');
+    }
+  }
 
   const providerName = (id: ProviderId) =>
     snapshot.value?.providers.find((p) => p.provider === id)?.displayName ??
-    (id === 'claude' ? 'Claude' : 'Codex');
+    providerInfos.find((p) => p.id === id)?.displayName ??
+    providerDisplayName(id);
 
   /** Swap the `order` of two adjacent providers. */
   async function move(id: ProviderId, delta: -1 | 1) {
@@ -116,6 +179,20 @@
       savedTimer = setTimeout(() => (pricingSaved = false), 1500);
     } catch (e) { pricingError = String(e); }
     finally { pricingSaving = false; }
+  }
+
+  /** Opt-in: only ever reaches the network when `pricingUrl` is set. */
+  async function fetchPrices() {
+    if (pricingFetching) return;
+    pricingFetching = true;
+    pricingError = null;
+    try {
+      pricing = await refreshPricing();
+      pricingSaved = true;
+      clearTimeout(savedTimer);
+      savedTimer = setTimeout(() => (pricingSaved = false), 1500);
+    } catch (e) { pricingError = String(e); }
+    finally { pricingFetching = false; }
   }
 
   function addPricingRow() {
@@ -166,14 +243,7 @@
     }
   }
 
-  async function openGithub() {
-    if (isTauri()) {
-      const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl(GITHUB_URL);
-    } else {
-      window.open(GITHUB_URL, '_blank', 'noopener');
-    }
-  }
+  const openGithub = () => openUrl(GITHUB_URL);
 
   async function runAction(action: () => Promise<unknown>) {
     actionError = null;
@@ -182,10 +252,23 @@
 
   const THEMES: Theme[] = ['auto', 'dark', 'light'];
   const LANGUAGES: Language[] = ['auto', 'en', 'zh-CN'];
-  const EDGES: Edge[] = ['left', 'right'];
+  const EDGES: Edge[] = ['left', 'right', 'top', 'bottom'];
   const ALIGNS: VerticalAlign[] = ['top', 'center', 'bottom'];
+  /**
+   * `verticalAlign`/`verticalOffset` describe the position *along* the docked
+   * edge, so on a top/bottom edge they are horizontal. The wire values stay
+   * `top|center|bottom`; only the labels follow the orientation (top → left,
+   * bottom → right).
+   */
+  const alongIsHorizontal = $derived(s.edge === 'top' || s.edge === 'bottom');
+  const ALIGN_LABELS: Record<VerticalAlign, string> = { top: 'left', center: 'center', bottom: 'right' };
+  const alignLabel = (v: VerticalAlign) =>
+    alongIsHorizontal ? `settings.horizontalAlign.${ALIGN_LABELS[v]}` : `settings.verticalAlign.${v}`;
   const RING_MODES: RingMode[] = ['concentric', 'primary', 'all'];
+  /** "Sidebar items" rows, in the order they are declared in the contract. */
+  const SIDEBAR_ITEM_KEYS = Object.keys(defaultSidebarItems) as (keyof SidebarItems)[];
   const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
+  const CYBER_ACCENTS: CyberAccent[] = ['neon', 'matrix', 'amber', 'ice', 'synthwave'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
 </script>
 
@@ -239,14 +322,6 @@
       />
     </Field>
 
-    <Field label={t('settings.showPercentLabel')}>
-      <Toggle
-        checked={s.showPercentLabel}
-        label={t('settings.showPercentLabel')}
-        onchange={(v) => void settings.patch({ showPercentLabel: v })}
-      />
-    </Field>
-
     <Field label={t('settings.percentMode')}>
       <select aria-label={t('settings.percentMode')} class="field" value={s.percentMode} onchange={(e) => void settings.patch({ percentMode: e.currentTarget.value as PercentMode })}>
         {#each PERCENT_MODES as v (v)}<option value={v}>{tDyn(`settings.percentMode.${v}`)}</option>{/each}
@@ -259,20 +334,35 @@
       </select>
     </Field>
 
-    <Field label={t('settings.showScopedRing')}>
-      <Toggle
-        checked={s.showScopedRing}
-        label={t('settings.showScopedRing')}
-        disabled={s.ringMode !== 'concentric'}
-        onchange={(v) => void settings.patch({ showScopedRing: v })}
-      />
-    </Field>
-
     <Field label={t('settings.surfaceStyle')}>
       <select aria-label={t('settings.surfaceStyle')} class="field" value={s.surfaceStyle} onchange={(e) => void settings.patch({ surfaceStyle: e.currentTarget.value as SurfaceStyle })}>
         {#each SURFACE_STYLES as v (v)}<option value={v}>{tDyn(`settings.surfaceStyle.${v}`)}</option>{/each}
       </select>
     </Field>
+
+    <!-- the accent pair only paints the cyber HUD, so it only exists there -->
+    {#if s.surfaceStyle === 'cyber'}
+      <Field label={t('settings.cyberAccent')}>
+        <select aria-label={t('settings.cyberAccent')} class="field" value={s.cyberAccent} onchange={(e) => void settings.patch({ cyberAccent: e.currentTarget.value as CyberAccent })}>
+          {#each CYBER_ACCENTS as v (v)}<option value={v}>{tDyn(`settings.cyberAccent.${v}`)}</option>{/each}
+        </select>
+      </Field>
+    {/if}
+  </article>
+
+  <article class="card group">
+    <h3>{t('settings.sidebarItems')}</h3>
+    <p class="note">{t('settings.sidebarItems.hint')}</p>
+    {#each SIDEBAR_ITEM_KEYS as key (key)}
+      <Field label={tDyn(`settings.sidebarItems.${key}`)}>
+        <Toggle
+          checked={s.sidebarItems[key]}
+          label={tDyn(`settings.sidebarItems.${key}`)}
+          disabled={key === 'scoped' && s.ringMode !== 'concentric'}
+          onchange={(v) => void settings.patch({ sidebarItems: { [key]: v } })}
+        />
+      </Field>
+    {/each}
   </article>
 
   <SizeColourGroup />
@@ -286,20 +376,20 @@
       </select>
     </Field>
 
-    <Field label={t('settings.verticalAlign')}>
-      <select aria-label={t('settings.verticalAlign')} class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
-        {#each ALIGNS as v (v)}<option value={v}>{tDyn(`settings.verticalAlign.${v}`)}</option>{/each}
+    <Field label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')}>
+      <select aria-label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')} class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
+        {#each ALIGNS as v (v)}<option value={v}>{tDyn(alignLabel(v))}</option>{/each}
       </select>
     </Field>
 
-    <Field label={t('settings.verticalOffset')}>
+    <Field label={tDyn(alongIsHorizontal ? 'settings.horizontalOffset' : 'settings.verticalOffset')}>
       <input
         class="field num"
         type="number"
         step="1"
         value={s.verticalOffset}
         onchange={(e) => void settings.patch({ verticalOffset: Math.round(num(e)) })}
-        aria-label={t('settings.verticalOffset')}
+        aria-label={tDyn(alongIsHorizontal ? 'settings.horizontalOffset' : 'settings.verticalOffset')}
       />
     </Field>
 
@@ -350,6 +440,19 @@
       />
     </Field>
 
+    <Field label={t('settings.popoverTimeoutSec')} hint={t('settings.popoverTimeoutSec.hint')}>
+      <input
+        class="field num"
+        type="number"
+        min="0"
+        max="600"
+        step="1"
+        value={s.popoverTimeoutSec}
+        onchange={(e) => void settings.patch({ popoverTimeoutSec: Math.min(600, Math.max(0, Math.round(num(e)))) })}
+        aria-label={t('settings.popoverTimeoutSec')}
+      />
+    </Field>
+
     <Field label={t('settings.collapsedWidth')}>
       <input
         class="field num"
@@ -364,7 +467,7 @@
       />
     </Field>
 
-    <Field label={t('settings.refreshIntervalSec')}>
+    <Field label={t('settings.refreshIntervalSec')} hint={t('settings.refreshIntervalSec.hint')}>
       <input
         class="field num"
         type="number"
@@ -377,11 +480,35 @@
       />
     </Field>
 
+    <Field label={t('settings.adaptiveRefresh')} hint={t('settings.adaptiveRefresh.hint')}>
+      <Toggle
+        checked={s.adaptiveRefresh}
+        label={t('settings.adaptiveRefresh')}
+        onchange={(v) => void settings.patch({ adaptiveRefresh: v })}
+      />
+    </Field>
+
     <Field label={t('settings.notifications')}>
       <Toggle
         checked={s.notifications}
         label={t('settings.notifications')}
         onchange={(v) => void settings.patch({ notifications: v })}
+      />
+    </Field>
+
+    <Field label={t('settings.forecastNotifications')}>
+      <Toggle
+        checked={s.forecastNotifications}
+        disabled={!s.notifications}
+        label={t('settings.forecastNotifications')}
+        onchange={(v) => void settings.patch({ forecastNotifications: v })}
+      />
+    </Field>
+    <Field label={t('settings.hideAccountEmail')} hint={t('settings.hideAccountEmail.hint')}>
+      <Toggle
+        checked={s.hideAccountEmail}
+        label={t('settings.hideAccountEmail')}
+        onchange={(v) => void settings.patch({ hideAccountEmail: v })}
       />
     </Field>
 
@@ -404,23 +531,82 @@
         onchange={(v) => void settings.patch({ autostart: v })}
       />
     </Field>
+
+    <Field label={t('settings.autoUpdateCheck')}>
+      <Toggle
+        checked={s.autoUpdateCheck}
+        label={t('settings.autoUpdateCheck')}
+        onchange={(v) => void settings.patch({ autoUpdateCheck: v })}
+      />
+    </Field>
+
+    <!-- The overlays are dock windows and never take focus, so a global
+         shortcut is the only keyboard path to them. Empty = not registered. -->
+    <Field
+      label={t('settings.shortcutToggleSidebar')}
+      hint={shortcutHint(s.shortcutToggleSidebar, shortcuts.toggleSidebar) ?? t('settings.shortcutHint')}
+    >
+      <input
+        class="field shortcut"
+        type="text"
+        spellcheck="false"
+        placeholder="Ctrl+Alt+U"
+        value={s.shortcutToggleSidebar}
+        onchange={(e) => void patchShortcut('shortcutToggleSidebar', e.currentTarget.value)}
+        aria-label={t('settings.shortcutToggleSidebar')}
+      />
+    </Field>
+
+    <Field
+      label={t('settings.shortcutOpenDashboard')}
+      hint={shortcutHint(s.shortcutOpenDashboard, shortcuts.openDashboard) ?? t('settings.shortcutWayland')}
+    >
+      <input
+        class="field shortcut"
+        type="text"
+        spellcheck="false"
+        placeholder="Ctrl+Alt+D"
+        value={s.shortcutOpenDashboard}
+        onchange={(e) => void patchShortcut('shortcutOpenDashboard', e.currentTarget.value)}
+        aria-label={t('settings.shortcutOpenDashboard')}
+      />
+    </Field>
   </article>
 
   <article class="card group">
     <h3>{t('settings.providers')}</h3>
     {#each providerRows as id, i (id)}
+      {@const info = providerInfoOf(id)}
       <div class="prow">
         <span class="plogo"><ProviderLogo provider={id} size={20} /></span>
         <span class="pname">{providerName(id)}</span>
+        {#if info?.experimental}
+          <span class="badge" title={t('settings.provider.experimental.hint')}>
+            {t('settings.provider.experimental')}
+          </span>
+        {/if}
         <button class="btn icon" disabled={i === 0} onclick={() => void move(id, -1)} aria-label={t('common.up')}>↑</button>
         <button class="btn icon" disabled={i === providerRows.length - 1} onclick={() => void move(id, 1)} aria-label={t('common.down')}>↓</button>
-        <Toggle
-          checked={s.providers[id]?.enabled ?? true}
-          label={`${providerName(id)} — ${t('settings.providerEnabled')}`}
-          onchange={(v) => void settings.patchProvider(id, { enabled: v })}
-        />
+        <span class="pcol" title={t('settings.providerEnabled')}>
+          <span class="pcap">{t('settings.providerEnabled.short')}</span>
+          <Toggle
+            checked={s.providers[id]?.enabled ?? true}
+            label={`${providerName(id)} — ${t('settings.providerEnabled')}`}
+            onchange={(v) => void settings.patchProvider(id, { enabled: v })}
+          />
+        </span>
+        <span class="pcol" title={t('settings.sidebarItems.provider')}>
+          <span class="pcap">{t('settings.sidebarItems.provider.short')}</span>
+          <Toggle
+            checked={s.providers[id]?.showInSidebar ?? true}
+            label={`${providerName(id)} — ${t('settings.sidebarItems.provider')}`}
+            disabled={!(s.providers[id]?.enabled ?? true)}
+            onchange={(v) => void settings.patchProvider(id, { showInSidebar: v })}
+          />
+        </span>
       </div>
     {/each}
+    <p class="note">{t('settings.providers.hint')}</p>
   </article>
 
   <article class="card group wide">
@@ -431,6 +617,29 @@
         checked={s.ingestEnabled}
         label={t('settings.ingestEnabled')}
         onchange={(v) => void settings.patch({ ingestEnabled: v })}
+      />
+    </Field>
+
+    <Field label={t('settings.pricingUrl')} hint={t('settings.pricingUrl.hint')} wide>
+      <input
+        class="field url"
+        type="url"
+        inputmode="url"
+        placeholder="https://…/pricing.json"
+        value={s.pricingUrl}
+        onchange={(e) => void settings.patch({ pricingUrl: (e.currentTarget as HTMLInputElement).value.trim() })}
+        aria-label={t('settings.pricingUrl')}
+      />
+    </Field>
+    <Field label={t('settings.monthlyBudgetUsd')} hint={t('settings.monthlyBudgetHint')}>
+      <input
+        class="field num"
+        type="number"
+        min="0"
+        max="1000000"
+        step="1"
+        value={s.monthlyBudgetUsd}
+        onchange={(e) => void settings.patch({ monthlyBudgetUsd: Math.min(1_000_000, Math.max(0, e.currentTarget.valueAsNumber || 0)) })}
       />
     </Field>
 
@@ -511,6 +720,14 @@
 
       <div class="pricing-actions">
         {#if pricingDirty}<span class="muted small">{t('settings.pricing.unsaved')}</span>{/if}
+        <button
+          class="btn"
+          onclick={() => void fetchPrices()}
+          disabled={pricingSaving || pricingFetching || !s.pricingUrl.trim()}
+          title={s.pricingUrl.trim() ? undefined : t('settings.pricingUrl.hint')}
+        >
+          {pricingFetching ? t('common.refreshing') : t('settings.pricing.refresh')}
+        </button>
         <button class="btn" onclick={addPricingRow} disabled={!pricing || pricingSaving}>{t('settings.pricing.add')}</button>
         <button class="btn btn-primary" onclick={() => void savePricing()} disabled={!pricing || pricingSaving}>
           {pricingSaving ? t('common.saving') : pricingSaved ? t('common.saved') : t('settings.pricing.save')}
@@ -536,6 +753,35 @@
     <Field label={t('settings.about.configDir')}>
       <span class="mono path" title={appInfo?.configDir ?? ''}>{appInfo?.configDir ?? '—'}</span>
     </Field>
+
+    <!-- Updates are never installed without this click; a build owned by a
+         package manager only gets the release link. -->
+    <Field
+      label={t('settings.about.update')}
+      hint={u?.checkedAt ? t('update.checkedAt', { ago: formatAgo(u.checkedAt) }) : undefined}
+    >
+      <span class="upd-state" class:offer={!!u?.available}>{updateSummary}</span>
+      <button class="btn" disabled={u?.checking || u?.installing} onclick={() => void update.check()}>
+        {t('update.check')}
+      </button>
+    </Field>
+
+    {#if u?.available}
+      <p class="muted small">
+        {#if u.canInstall}
+          <button class="btn btn-primary" disabled={u.installing} onclick={() => void update.install()}>
+            {u.installing ? t('update.installing') : t('update.install')}
+          </button>
+        {:else}
+          {t('update.managed')}
+        {/if}
+        <button class="btn link" onclick={() => void runAction(() => openUrl(u.releaseUrl))}>
+          {u.canInstall ? t('update.notes') : t('update.openRelease')}
+        </button>
+      </p>
+    {/if}
+    {#if update.error}<p class="err" role="alert">{t('common.error', { message: update.error })}</p>{/if}
+
     <div class="actions">
       <button class="btn" onclick={() => void runAction(openGithub)}>{t('settings.about.github')}</button>
       <button class="btn danger" onclick={() => void runAction(quitApp)}>{t('settings.about.quit')}</button>
@@ -616,13 +862,68 @@
     white-space: nowrap;
   }
 
+  /* "experimental": the provider's quota source could not be verified against
+     a live account, so the row says so rather than the README alone */
+  .badge {
+    flex: none;
+    padding: 0.0625rem 0.375rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--warn);
+    white-space: nowrap;
+  }
+
   .icon {
     padding: 0.125rem 0.4375rem;
     line-height: 1.2;
   }
 
+  /* the two provider switches need a caption each to be told apart */
+  .pcol {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.125rem;
+    flex: none;
+  }
+
+  .pcap {
+    font-size: 0.625rem;
+    line-height: 1;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .note {
+    margin: 0.375rem 0;
+    font-size: 0.6875rem;
+    color: var(--faint);
+  }
+
   .danger {
     color: var(--critical);
+  }
+
+  .shortcut {
+    width: 9rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* an offer is worth noticing, but this is not an alert */
+  .upd-state.offer {
+    color: var(--focus);
+    font-weight: 500;
+  }
+
+  .link {
+    padding-inline: 0;
+    border: none;
+    background: none;
+    color: var(--focus);
+    text-decoration: underline;
   }
 
   .pricing {
@@ -679,6 +980,11 @@
   .pattern {
     width: 100%;
     min-width: 10rem;
+  }
+
+  .url {
+    width: 100%;
+    min-width: 0;
   }
 
   .price {
