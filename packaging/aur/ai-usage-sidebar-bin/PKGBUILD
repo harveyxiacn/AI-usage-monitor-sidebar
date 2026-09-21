@@ -1,0 +1,44 @@
+# Maintainer: Harvey Xia <https://github.com/harveyxiacn>
+#
+# Repackages the official .deb from the GitHub release. Nothing is compiled,
+# so this is the fast route for Arch/CachyOS/Manjaro users on x86_64.
+#
+# Before publishing: bump pkgver, then run `updpkgsums` (pacman-contrib) to
+# replace the SKIP placeholders below with real checksums, and regenerate
+# .SRCINFO with `makepkg --printsrcinfo > .SRCINFO`.
+
+pkgname=ai-usage-sidebar-bin
+_pkgname=ai-usage-sidebar
+_appname=AI.Usage.Sidebar
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Always-on-top edge sidebar showing Claude Code / Codex rate-limit quotas and token usage history'
+arch=('x86_64')
+url='https://github.com/harveyxiacn/AI-usage-monitor-sidebar'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'libayatana-appindicator' 'librsvg' 'gtk3')
+optdepends=(
+  'gnome-shell-extension-appindicator: tray icon on GNOME'
+  'gtk-layer-shell: native Wayland docking (AI_USAGE_SIDEBAR_BACKEND=wayland)'
+)
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source=(
+  "$pkgname-$pkgver.deb::$url/releases/download/v$pkgver/${_appname}_${pkgver}_amd64.deb"
+  "LICENSE-$pkgver::$url/raw/v$pkgver/LICENSE"
+)
+noextract=("$pkgname-$pkgver.deb")
+# TODO before publishing: `updpkgsums` fills these in. SKIP means "not verified".
+sha256sums=('SKIP'
+            'SKIP')
+
+package() {
+  # A .deb is an ar archive holding data.tar.<compression>; bsdtar reads both.
+  bsdtar -xf "$srcdir/$pkgname-$pkgver.deb" -C "$srcdir" 'data.tar.*'
+  bsdtar -xpf "$srcdir"/data.tar.* -C "$pkgdir"
+
+  # The .deb carries no licence file of its own.
+  install -Dm644 "$srcdir/LICENSE-$pkgver" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

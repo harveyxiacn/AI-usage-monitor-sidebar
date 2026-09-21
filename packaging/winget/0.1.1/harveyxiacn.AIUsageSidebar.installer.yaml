@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+#
+# TODO before submitting: replace both REPLACE_WITH_SHA256 values with the
+# real digests of the release assets, e.g. in PowerShell
+#
+#   (Get-FileHash .\AI.Usage.Sidebar_0.1.1_x64-setup.exe -Algorithm SHA256).Hash
+#   (Get-FileHash .\AI.Usage.Sidebar_0.1.1_x64_en-US.msi -Algorithm SHA256).Hash
+#
+# `wingetcreate update harveyxiacn.AIUsageSidebar --urls <exe> <msi> --version <v>`
+# does the same automatically for later releases.
+PackageIdentifier: harveyxiacn.AIUsageSidebar
+PackageVersion: 0.1.1
+MinimumOSVersion: 10.0.17763.0
+# The builds are unsigned, so SmartScreen warns on first run. Say so rather
+# than pretending otherwise; see packaging/README.md.
+ReleaseDate: 2026-09-21
+Installers:
+  # NSIS, per-user (tauri.conf.json → bundle.windows.nsis.installMode)
+  - Architecture: x64
+    InstallerType: nullsoft
+    Scope: user
+    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v0.1.1/AI.Usage.Sidebar_0.1.1_x64-setup.exe
+    InstallerSha256: REPLACE_WITH_SHA256_OF_THE_SETUP_EXE
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+    UpgradeBehavior: install
+  # WiX/MSI, the alternative for centrally managed machines
+  - Architecture: x64
+    InstallerType: wix
+    Scope: machine
+    InstallerLocale: en-US
+    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v0.1.1/AI.Usage.Sidebar_0.1.1_x64_en-US.msi
+    InstallerSha256: REPLACE_WITH_SHA256_OF_THE_MSI
+    UpgradeBehavior: install
+ManifestType: installer
+ManifestVersion: 1.6.0

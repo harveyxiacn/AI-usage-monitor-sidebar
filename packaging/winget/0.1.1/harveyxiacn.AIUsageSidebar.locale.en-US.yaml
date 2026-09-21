@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: harveyxiacn.AIUsageSidebar
+PackageVersion: 0.1.1
+PackageLocale: en-US
+Publisher: Harvey Xia
+PublisherUrl: https://github.com/harveyxiacn
+PublisherSupportUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/issues
+PackageName: AI Usage Sidebar
+PackageUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar
+License: MIT
+LicenseUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Harvey Xia
+ShortDescription: Edge sidebar showing Claude Code and Codex rate-limit quotas
+Description: |-
+  An always-on-top edge sidebar that shows one progress ring per AI coding
+  agent (Claude Code, OpenAI Codex) with the current rate-limit windows and
+  when they reset. Hovering a ring opens a detail popover; a dashboard window
+  holds settings and the token usage history parsed from the providers' local
+  session logs.
+
+  The app reads the credentials the official CLIs already store on the machine
+  and has no login of its own. Builds are not code-signed, so Windows
+  SmartScreen warns the first time the installer runs.
+Moniker: ai-usage-sidebar
+Tags:
+  - ai
+  - claude
+  - codex
+  - developer-tools
+  - quota
+  - sidebar
+  - usage
+ReleaseNotesUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/tag/v0.1.1
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

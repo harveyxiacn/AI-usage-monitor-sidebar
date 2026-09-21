@@ -1,0 +1,82 @@
+# Maintainer: Harvey Xia <https://github.com/harveyxiacn>
+#
+# Builds from the tagged source, doing by hand what `scripts/install-linux.sh`
+# does per user: `pnpm tauri build --no-bundle`, then install the binary, the
+# launcher entry and the icons.
+#
+# Heads-up for a clean-chroot build (`extra-x86_64-build`): build() downloads
+# the npm and crates.io dependencies, so it needs network access. Run makepkg
+# normally, or pre-populate the pnpm/cargo caches.
+#
+# Before publishing: bump pkgver, run `updpkgsums`, then
+# `makepkg --printsrcinfo > .SRCINFO`.
+
+pkgname=ai-usage-sidebar
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Always-on-top edge sidebar showing Claude Code / Codex rate-limit quotas and token usage history'
+arch=('x86_64' 'aarch64')
+url='https://github.com/harveyxiacn/AI-usage-monitor-sidebar'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'libayatana-appindicator' 'librsvg' 'gtk3')
+makedepends=('rust' 'nodejs' 'pnpm')
+optdepends=(
+  'gnome-shell-extension-appindicator: tray icon on GNOME'
+  'gtk-layer-shell: native Wayland docking (AI_USAGE_SIDEBAR_BACKEND=wayland)'
+)
+conflicts=("$pkgname-bin")
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# TODO before publishing: `updpkgsums` fills this in. SKIP means "not verified".
+sha256sums=('SKIP')
+
+_srcdir="AI-usage-monitor-sidebar-$pkgver"
+
+build() {
+  cd "$_srcdir"
+  export PNPM_HOME="$srcdir/.pnpm"
+  export CARGO_HOME="${CARGO_HOME:-$srcdir/.cargo}"
+  pnpm install --frozen-lockfile
+  # --no-bundle: this PKGBUILD *is* the packaging, no .deb/.AppImage needed.
+  # --locked mirrors CI so the build cannot silently pick newer crates.
+  pnpm tauri build --no-bundle -- --locked
+}
+
+check() {
+  cd "$_srcdir/src-tauri"
+  cargo test --locked --release
+}
+
+package() {
+  cd "$_srcdir"
+  install -Dm755 "src-tauri/target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  # Same icon sizes and the same StartupWMClass as scripts/install-linux.sh.
+  local size source_icon
+  for size in 32 64 128 256 512; do
+    case $size in
+      32) source_icon=32x32.png ;;
+      64) source_icon=64x64.png ;;
+      128) source_icon=128x128.png ;;
+      256) source_icon='128x128@2x.png' ;;
+      512) source_icon=icon.png ;;
+    esac
+    install -Dm644 "src-tauri/icons/$source_icon" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$pkgname.png"
+  done
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$pkgname.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=AI Usage Sidebar
+Name[zh_CN]=AI 使用量侧边栏
+Comment=Claude Code / Codex quota sidebar
+Comment[zh_CN]=Claude Code / Codex 额度侧边栏
+Exec=/usr/bin/$pkgname
+Icon=$pkgname
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=$pkgname
+EOF
+}
