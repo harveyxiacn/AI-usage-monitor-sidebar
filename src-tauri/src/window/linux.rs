@@ -401,7 +401,7 @@ pub fn apply_blur(win: &WebviewWindow, style: SurfaceStyle) {
                     gdk::PropMode::Replace,
                     gdk::ChangeData::ULongs(&[]),
                 ),
-                SurfaceStyle::Solid => gdk::property_delete(&surface, &atom),
+                SurfaceStyle::Solid | SurfaceStyle::Cyber => gdk::property_delete(&surface, &atom),
             }
         };
         if native.is_realized() {
