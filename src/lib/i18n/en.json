@@ -148,6 +148,7 @@
   "settings.surfaceStyle": "Surface",
   "settings.surfaceStyle.glass": "Liquid glass",
   "settings.surfaceStyle.solid": "Solid",
+  "settings.surfaceStyle.cyber": "Cyber HUD",
   "settings.position": "Position",
   "settings.edge": "Screen edge",
   "settings.edge.left": "Left",

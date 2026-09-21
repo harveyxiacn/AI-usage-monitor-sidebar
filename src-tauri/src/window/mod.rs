@@ -225,7 +225,9 @@ pub fn apply_surface_style(win: &WebviewWindow, style: SurfaceStyle) {
                         None,
                         Some(16.0),
                     ),
-                    SurfaceStyle::Solid => clear_vibrancy(&native_window).map(|_| ()),
+                    SurfaceStyle::Solid | SurfaceStyle::Cyber => {
+                        clear_vibrancy(&native_window).map(|_| ())
+                    }
                 }
             };
             #[cfg(target_os = "windows")]
@@ -233,7 +235,7 @@ pub fn apply_surface_style(win: &WebviewWindow, style: SurfaceStyle) {
                 use window_vibrancy::{apply_acrylic, clear_acrylic};
                 match style {
                     SurfaceStyle::Glass => apply_acrylic(&native_window, Some((0, 0, 0, 10))),
-                    SurfaceStyle::Solid => clear_acrylic(&native_window),
+                    SurfaceStyle::Solid | SurfaceStyle::Cyber => clear_acrylic(&native_window),
                 }
             };
             if let Err(e) = result {
