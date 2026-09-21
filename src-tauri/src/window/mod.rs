@@ -141,7 +141,40 @@ pub fn apply_stacking(win: &WebviewWindow, always_on_top: bool) {
     if let Err(e) = win.set_skip_taskbar(true) {
         log::debug!("set_skip_taskbar on `{}`: {e}", win.label());
     }
+    macos_full_screen_auxiliary(win);
 }
+
+/// tao's `set_visible_on_all_workspaces` only sets `CanJoinAllSpaces`, which
+/// covers ordinary Spaces but *not* the full-screen Space another app creates:
+/// the overlays disappear as soon as anything goes full screen. Adding
+/// `FullScreenAuxiliary` tells AppKit the window may float over that Space too.
+///
+/// AppKit is main-thread-only, and settings changes arrive on an async worker.
+#[cfg(target_os = "macos")]
+fn macos_full_screen_auxiliary(win: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let native_window = win.clone();
+    if let Err(e) = win.run_on_main_thread(move || {
+        let ptr = match native_window.ns_window() {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                log::debug!("ns_window on `{}`: {e}", native_window.label());
+                return;
+            }
+        };
+        // SAFETY: on the main thread `ns_window()` hands out this window's
+        // live `NSWindow`, which outlives the borrow taken here.
+        let ns_window: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
+        let behavior = ns_window.collectionBehavior();
+        ns_window.setCollectionBehavior(behavior | NSWindowCollectionBehavior::FullScreenAuxiliary);
+    }) {
+        log::debug!("scheduling the full-screen behaviour: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_full_screen_auxiliary(_win: &WebviewWindow) {}
 
 /// GTK treats non-resizable windows as their webview's natural size (200px),
 /// which prevents a narrow sidebar or collapsed handle. Equal min/max hints

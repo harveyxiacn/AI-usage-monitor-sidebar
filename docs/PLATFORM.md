@@ -293,6 +293,14 @@ and the dashboard hides, so the app keeps living in the tray. A second launch
 * **macOS** windows are not notarised yet; `set_focusable(false)` cannot unfocus
   an already-focused window (an OS limitation), which is why the popover is made
   non-focusable *before* it is ever shown.
+* **macOS full-screen Spaces.** tao's `set_visible_on_all_workspaces(true)`
+  only sets `NSWindowCollectionBehaviorCanJoinAllSpaces`, which covers ordinary
+  Spaces but not the Space another app creates when it goes full screen — the
+  overlays vanished there. `window::apply_stacking` therefore ORs
+  `NSWindowCollectionBehaviorFullScreenAuxiliary` (1 << 8) into the NSWindow's
+  `collectionBehavior` on the main thread, through the `objc2-app-kit` that
+  tao/wry already pull in. Compiled only in CI; not verified on real hardware
+  by the author of that code.
 
 ## Overlay window type (X11)
 
