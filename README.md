@@ -47,6 +47,7 @@ quota is left, and when does it reset?*
 | Pinning | Click a ring to pin the popover open while you read it; click again to close it. A pinned popover closes by itself 8 s after the pointer left |
 | Always on top | Re-asserted after every map on X11, visible on all workspaces |
 | Glass surface | `surfaceStyle: "glass"` uses a real blurred backdrop where the OS has one (macOS vibrancy, Windows acrylic); `"solid"` turns it off |
+| Cyber HUD | `surfaceStyle: "cyber"` — a neon sci-fi look: chamfered plate, scanlines, tick-mark rings with glowing arcs, segmented bars |
 | Themes | Dark / light / follow the system |
 | i18n | English and 简体中文 (tray menu included) |
 | History | Incremental ingestion of session logs into SQLite; per-model, per-day/-week/-month totals; native CSV save and clipboard copy |
@@ -289,6 +290,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 固定弹层 | 点击环可固定弹层，方便慢慢看；再次点击立即关闭。固定的弹层在鼠标离开 8 秒后也会自动关闭 |
 | 始终置顶 | X11 下每次映射后重新置顶，并在所有工作区可见 |
 | 玻璃质感 | `surfaceStyle: "glass"` 在系统支持时使用原生毛玻璃背景（macOS vibrancy、Windows acrylic）；`"solid"` 关闭 |
+| 赛博 HUD | `surfaceStyle: "cyber"`：霓虹科幻风——切角面板、扫描线、刻度式圆环与发光用量弧、分段进度条 |
 | 主题 | 深色 / 浅色 / 跟随系统 |
 | 多语言 | English 与简体中文（含托盘菜单） |
 | 历史 | 增量解析会话日志入 SQLite，支持按模型、按日/周/月统计，以及原生 CSV 保存与复制 |

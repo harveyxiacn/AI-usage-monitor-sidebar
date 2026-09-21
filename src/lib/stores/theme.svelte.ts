@@ -107,7 +107,7 @@ export function applyTheme(s: Settings): void {
   // multiplied by Settings.opacity, exactly like the stylesheet does it.
   const tint = s.colors.surface ? hexToRgbChannels(s.colors.surface) : null;
   if (tint) {
-    const base = s.surfaceStyle !== 'glass' ? 1 : theme === 'light' ? 0.6 : 0.66;
+    const base = s.surfaceStyle === 'cyber' ? 0.82 : s.surfaceStyle !== 'glass' ? 1 : theme === 'light' ? 0.6 : 0.66;
     setVar(root, '--surface-fill', `rgb(${tint} / calc(${base} * var(--surface-alpha)))`);
     // the ring/percent badge halo is keyed off the surface colour too
     setVar(root, '--bar-bg-rgb', tint);
