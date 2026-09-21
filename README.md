@@ -106,6 +106,12 @@ session logs those CLIs leave on disk.
 
 ## Install
 
+> **Let your AI agent do it.** Tell Claude Code, Codex or any coding agent:
+> *"Install and set up AI Usage Sidebar by following
+> https://github.com/harveyxiacn/AI-usage-monitor-sidebar/blob/main/AGENTS.md"*.
+> [`AGENTS.md`](AGENTS.md) covers platform detection, download or source build,
+> verification, every setting and uninstalling.
+
 ### Releases
 
 Tagged releases will appear on the
@@ -337,6 +343,11 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 > 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
 
 ## 安装
+
+> **让 AI agent 代劳。** 对 Claude Code、Codex 或任意编码 agent 说：
+> *“按照 https://github.com/harveyxiacn/AI-usage-monitor-sidebar/blob/main/AGENTS.md
+> 安装并设置 AI Usage Sidebar”*。
+> [`AGENTS.md`](AGENTS.md) 涵盖平台识别、下载或源码构建、启动验证、全部设置项与卸载。
 
 ### 下载安装包
 
