@@ -68,6 +68,7 @@ export const defaultSettings: Settings = {
   percentMode: 'used',
   showPercentLabel: true,
   refreshIntervalSec: 60,
+  adaptiveRefresh: true,
   providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
   ingestEnabled: true,
   autostart: false,

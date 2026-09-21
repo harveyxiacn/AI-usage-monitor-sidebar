@@ -43,6 +43,35 @@ impl Backoff {
     }
 }
 
+/// Adaptive polling bookkeeping, shared between the refresh loop and the log
+/// watcher thread. All timestamps are unix ms; a missing entry means "never".
+#[derive(Clone, Debug, Default)]
+pub struct PollClocks {
+    /// When each provider was last polled (or deliberately skipped as idle).
+    pub last_poll_ms: HashMap<String, i64>,
+    /// When each provider's session logs last changed.
+    pub last_activity_ms: HashMap<String, i64>,
+}
+
+impl PollClocks {
+    /// Seconds since `provider` was last seen working, `None` if never.
+    pub fn idle_secs(&self, provider: &str, now_ms: i64) -> Option<u64> {
+        let last = *self.last_activity_ms.get(provider)?;
+        Some((now_ms.saturating_sub(last).max(0) / 1000) as u64)
+    }
+
+    /// Treat every provider as active again — used when the user explicitly
+    /// asks for fresh numbers (tray refresh, dashboard opening).
+    pub fn mark_interaction(&mut self, now_ms: i64) {
+        for id in [
+            crate::commands::providers::CLAUDE_ID,
+            crate::commands::providers::CODEX_ID,
+        ] {
+            self.last_activity_ms.insert(id.to_string(), now_ms);
+        }
+    }
+}
+
 pub struct AppState {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -62,6 +91,8 @@ pub struct AppState {
     /// overwrite a newer provider snapshot or race the disk cache writer.
     pub refresh_lock: tokio::sync::Mutex<()>,
     pub backoff: Mutex<HashMap<String, Backoff>>,
+    /// Adaptive polling clocks; the log watcher thread holds a clone.
+    pub poll_clocks: Arc<Mutex<PollClocks>>,
 }
 
 impl AppState {
@@ -97,6 +128,7 @@ impl AppState {
             ingest_running: Arc::new(AtomicBool::new(false)),
             refresh_lock: tokio::sync::Mutex::new(()),
             backoff: Mutex::new(HashMap::new()),
+            poll_clocks: Arc::new(Mutex::new(PollClocks::default())),
         }
     }
 

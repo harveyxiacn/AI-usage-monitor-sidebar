@@ -242,6 +242,9 @@ pub struct Settings {
     pub percent_mode: PercentMode,
     pub show_percent_label: bool,
     pub refresh_interval_sec: u64,
+    /// Stretch the polling period for providers whose session logs have been
+    /// quiet for a while (see `scheduler::poll_interval_secs`).
+    pub adaptive_refresh: bool,
     pub providers: BTreeMap<String, ProviderSettings>,
     pub ingest_enabled: bool,
     pub autostart: bool,
@@ -288,6 +291,7 @@ impl Default for Settings {
             percent_mode: PercentMode::Used,
             show_percent_label: true,
             refresh_interval_sec: 60,
+            adaptive_refresh: true,
             providers,
             ingest_enabled: true,
             autostart: false,

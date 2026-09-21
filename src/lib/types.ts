@@ -128,6 +128,8 @@ export interface Settings {
   percentMode: PercentMode;
   showPercentLabel: boolean;
   refreshIntervalSec: number;
+  /** Poll a provider less often while its session logs are quiet (10 min → ×2, 30 min → ×5, capped at 10 min) */
+  adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
   ingestEnabled: boolean;
   autostart: boolean;

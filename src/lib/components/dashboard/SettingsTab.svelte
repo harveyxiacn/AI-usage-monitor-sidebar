@@ -377,6 +377,14 @@
       />
     </Field>
 
+    <Field label={t('settings.adaptiveRefresh')} hint={t('settings.adaptiveRefresh.hint')}>
+      <Toggle
+        checked={s.adaptiveRefresh}
+        label={t('settings.adaptiveRefresh')}
+        onchange={(v) => void settings.patch({ adaptiveRefresh: v })}
+      />
+    </Field>
+
     <Field label={t('settings.notifications')}>
       <Toggle
         checked={s.notifications}
