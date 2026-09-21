@@ -733,6 +733,39 @@ mod tests {
         assert_eq!(merged.thresholds.critical, base.thresholds.critical);
     }
 
+    /// A `settings.json` written before the updater and the global shortcuts
+    /// existed must keep working and pick up their defaults.
+    #[test]
+    fn settings_files_without_the_newer_keys_keep_working() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"edge":"left","autostart":true,"theme":"light"}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.edge, Edge::Left);
+        assert!(loaded.autostart, "the old keys still apply");
+        assert!(
+            loaded.auto_update_check,
+            "checking for updates is the default"
+        );
+        assert_eq!(loaded.shortcut_toggle_sidebar, "");
+        assert_eq!(
+            loaded.shortcut_open_dashboard, "",
+            "no global shortcut is registered unless the user asks for one"
+        );
+
+        let patched = merge(
+            &loaded,
+            &json!({"autoUpdateCheck": false, "shortcutToggleSidebar": "Ctrl+Alt+U"}),
+        );
+        assert!(!patched.auto_update_check);
+        assert_eq!(patched.shortcut_toggle_sidebar, "Ctrl+Alt+U");
+        assert_eq!(patched.shortcut_open_dashboard, "");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn an_old_settings_file_keeps_the_predictive_notification_default() {
         let dir = tempdir();

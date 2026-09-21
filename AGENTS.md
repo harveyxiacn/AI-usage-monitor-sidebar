@@ -161,6 +161,9 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
+| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer release once a day; never installs on its own |
+| `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS) |
+| `shortcutOpenDashboard` | `""` (off), e.g. `"Ctrl+Alt+D"` | global shortcut opening the dashboard |
 | `alwaysOnTop` | `true` | |
 | `opacity` | `1` (0.3 – 1) | |
 | `scale` | `1` (0.75 – 1.5) | |

@@ -27,10 +27,13 @@ import type {
   SessionRow,
   SessionsResult,
   Settings,
+  ShortcutStatus,
   TokenTotals,
+  UpdateStatus,
 } from './types';
 import { localDateInput } from './history';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
+import { shortcutProblem } from './shortcuts';
 
 const now = Date.now();
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -126,6 +129,9 @@ export const mockSettings: Settings = {
   pricingUrl: '',
   monthlyBudgetUsd: 0,
   autostart: false,
+  autoUpdateCheck: true,
+  shortcutToggleSidebar: '',
+  shortcutOpenDashboard: '',
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
@@ -208,6 +214,25 @@ export const mockAppInfo: AppInfo = {
   configDir: '~/.config/ai-usage-sidebar',
   platform: 'linux',
   backend: 'browser',
+};
+
+/**
+ * The preview always has an update to offer, so the banner, the release notes
+ * and the "package manager" branch can be exercised without a real release.
+ * `canInstall` is false here because the preview is not a bundle we own.
+ */
+export const mockUpdateAvailable = '9.9.9';
+
+let updateStatus: UpdateStatus = {
+  available: null,
+  currentVersion: '0.1.1-mock',
+  notes: null,
+  releaseUrl: 'https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases',
+  canInstall: false,
+  checking: false,
+  installing: false,
+  error: null,
+  checkedAt: null,
 };
 
 // ------------------------------------------------------------ fake events ---
@@ -787,6 +812,31 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       const done: IngestStats = { filesScanned: 1248, filesUpdated: 29, eventsAdded: 7361, durationMs: 940, errors: [], running: false };
       setTimeout(() => mockEmit('ingest-progress', done), 900);
       return new Promise<T>((resolve) => setTimeout(() => resolve(done as T), 900));
+    }
+    case 'get_update_status':
+      return structuredClone(updateStatus) as T;
+    case 'check_for_updates': {
+      updateStatus = {
+        ...updateStatus,
+        available: mockUpdateAvailable,
+        notes: 'Sample release notes for the browser preview.',
+        checking: false,
+        error: null,
+        checkedAt: iso(Date.now()),
+      };
+      mockEmit('update-status', structuredClone(updateStatus));
+      return structuredClone(updateStatus) as T;
+    }
+    case 'install_update':
+      throw new Error('the browser preview cannot install anything');
+    case 'get_shortcut_status': {
+      // Mirrors the Rust registration report closely enough for the preview.
+      const reason = (value: string) => (shortcutProblem(value) ? `invalid shortcut: ${value}` : null);
+      const status: ShortcutStatus = {
+        toggleSidebar: reason(settings.shortcutToggleSidebar),
+        openDashboard: reason(settings.shortcutOpenDashboard),
+      };
+      return status as T;
     }
     case 'get_providers':
       return structuredClone(mockProviders) as T;

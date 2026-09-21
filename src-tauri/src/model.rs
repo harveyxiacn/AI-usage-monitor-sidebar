@@ -438,6 +438,14 @@ pub struct Settings {
     /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
     pub monthly_budget_usd: f64,
     pub autostart: bool,
+    /// Ask GitHub once a day whether a newer release exists. Never installs
+    /// anything on its own — the user always confirms (docs/RELEASING.md).
+    pub auto_update_check: bool,
+    /// Global shortcut that shows/hides the bar, e.g. `"Ctrl+Alt+U"`.
+    /// Empty (the default) registers nothing, so no key is hijacked.
+    pub shortcut_toggle_sidebar: String,
+    /// Global shortcut that opens the dashboard; empty = disabled.
+    pub shortcut_open_dashboard: String,
     pub opacity: f64,
     pub scale: f64,
     pub thresholds: Thresholds,
@@ -496,6 +504,9 @@ impl Default for Settings {
             pricing_url: String::new(),
             monthly_budget_usd: 0.0,
             autostart: false,
+            auto_update_check: true,
+            shortcut_toggle_sidebar: String::new(),
+            shortcut_open_dashboard: String::new(),
             opacity: 1.0,
             scale: 1.0,
             thresholds: Thresholds {
@@ -742,6 +753,37 @@ pub struct AppInfo {
     pub backend: String,
 }
 
+/// What the in-app updater currently knows. Never changes on its own without
+/// the user asking — see `src-tauri/src/updater.rs` and docs/RELEASING.md.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    /// Version offered by the release feed; `None` when up to date.
+    pub available: Option<String>,
+    pub current_version: String,
+    /// Release notes of the offered version, as published.
+    pub notes: Option<String>,
+    /// Release page, for builds we must not replace in place.
+    pub release_url: String,
+    /// False for `.deb`/`.rpm` and `scripts/install-linux.sh` installs: the
+    /// package manager owns those files, so we only link to the release.
+    pub can_install: bool,
+    pub checking: bool,
+    pub installing: bool,
+    pub error: Option<String>,
+    /// RFC 3339 UTC of the last completed check.
+    pub checked_at: Option<String>,
+}
+
+/// Why a configured global shortcut is not active; `None` = registered (or
+/// the setting is empty, which disables it).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutStatus {
+    pub toggle_sidebar: Option<String>,
+    pub open_dashboard: Option<String>,
+}
+
 // ---------- platform / window ----------
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -788,6 +830,7 @@ pub mod events {
     pub const POPOVER_TARGET: &str = "popover-target";
     pub const SIDEBAR_STATE: &str = "sidebar-state";
     pub const DASHBOARD_NAVIGATE: &str = "dashboard-navigate";
+    pub const UPDATE_STATUS: &str = "update-status";
 }
 
 /// Window labels.

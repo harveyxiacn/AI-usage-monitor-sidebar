@@ -15,6 +15,7 @@
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
+  import { update } from '$lib/stores/update.svelte';
   import type { DashboardTab } from '$lib/types';
 
   // stamped before the first applyTheme() effect so the theme store knows
@@ -26,9 +27,11 @@
   let tab = $state<DashboardTab>('overview');
   /** resolved palette name; the chart canvas needs to rebuild when it changes */
   let themeKey = $state('dark');
+  /** the update banner is a nudge, not a modal: one click makes it go away */
+  let updateDismissed = $state(false);
 
   onMount(() => {
-    const disposers: Array<() => void> = [settings.init(), snapshot.init()];
+    const disposers: Array<() => void> = [settings.init(), snapshot.init(), update.init()];
 
     // applyTheme() writes data-theme on <html>; watching the attribute also
     // catches the prefers-color-scheme listener firing under theme 'auto'.
@@ -73,6 +76,14 @@
       {/each}
     </nav>
   </header>
+
+  {#if update.available && !updateDismissed}
+    <aside class="update-bar">
+      <span>{t('update.banner', { version: update.available })}</span>
+      <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.update')}</button>
+      <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
+    </aside>
+  {/if}
 
   <main>
     {#if tab === 'overview'}
@@ -150,6 +161,24 @@
     height: 2px;
     border-radius: 2px;
     background: var(--focus);
+  }
+
+  /* one quiet line under the topbar — no dialog, no colour alarm */
+  .update-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: none;
+    flex-wrap: wrap;
+    padding: 0.4375rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 0.8125rem;
+  }
+
+  .update-bar .link {
+    color: var(--focus);
+    text-decoration: underline;
   }
 
   main {

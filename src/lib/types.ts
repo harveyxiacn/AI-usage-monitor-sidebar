@@ -226,6 +226,12 @@ export interface Settings {
   /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
   monthlyBudgetUsd: number;
   autostart: boolean;
+  /** ask GitHub once a day for a newer release; never installs on its own */
+  autoUpdateCheck: boolean;
+  /** global shortcut showing/hiding the bar, e.g. "Ctrl+Alt+U"; empty = off */
+  shortcutToggleSidebar: string;
+  /** global shortcut opening the dashboard; empty = off */
+  shortcutOpenDashboard: string;
   /** 0.3 .. 1 */
   opacity: number;
   /** UI scale 0.75 .. 1.5 */
@@ -409,6 +415,30 @@ export interface AppInfo {
   platform: 'linux' | 'macos' | 'windows' | 'unknown';
   /** "x11" | "wayland" | "cocoa" | "win32" */
   backend: string;
+}
+
+/** What the in-app updater knows right now. Mirror of `model.rs`. */
+export interface UpdateStatus {
+  /** version offered by the release feed, null when up to date */
+  available: string | null;
+  currentVersion: string;
+  /** release notes of the offered version */
+  notes: string | null;
+  /** release page, for builds we must not replace in place */
+  releaseUrl: string;
+  /** false for .deb/.rpm and script installs — link to the release instead */
+  canInstall: boolean;
+  checking: boolean;
+  installing: boolean;
+  error: string | null;
+  /** RFC 3339 UTC of the last completed check */
+  checkedAt: string | null;
+}
+
+/** Why a configured global shortcut is not active; null = fine (or disabled). */
+export interface ShortcutStatus {
+  toggleSidebar: string | null;
+  openDashboard: string | null;
 }
 
 // ---------- platform / window ----------

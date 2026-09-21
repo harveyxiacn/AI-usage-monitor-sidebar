@@ -278,11 +278,45 @@ menu:
 | Refresh now | Emits `refresh-requested`, which the scheduler consumes |
 | Open dashboard | `open_dashboard(None)` |
 | Settings… | `open_dashboard(Some("settings"))` |
+| Check for updates / Update x.y.z available… | One item with two faces (`tray::update_label`): a manual `updater::check()` while nothing is on offer, and `open_dashboard(Some("settings"))` once there is |
 | Quit | `app.exit(0)` |
 
 Labels follow `settings.language` (English / 简体中文, `auto` reads `LANG`).
 On macOS and Windows a left-click on the icon toggles the dashboard; on Linux
 the AppIndicator protocol has no click event, so the menu is all there is.
+
+## 4b. Global shortcuts (`window/shortcuts.rs`)
+
+Because the overlays are dock windows (see the last section) they never take
+keyboard focus, so nothing about the widget can be reached from the keyboard.
+Two optional, desktop-wide shortcuts fill that gap:
+
+| Setting | Action |
+|---|---|
+| `shortcutToggleSidebar` | `tray::toggle_sidebar` — shows/hides the bar window |
+| `shortcutOpenDashboard` | `dashboard::open(None)` |
+
+Both default to the **empty string**, which registers nothing: a widget has no
+business taking a key combination the user did not ask it to take. They are
+(re-)registered in `window::setup` and again from `apply_settings`, i.e. on
+every `settings-updated`. `shortcuts::parse` refuses a combination without a
+modifier — a bare `U` would be swallowed in every application on the desktop —
+and whatever fails to parse or to register is reported through the
+`get_shortcut_status` command and shown under the field in Settings.
+
+**Where this works.** The plugin uses `global-hotkey`, which grabs keys with
+`XGrabKey` on X11, `RegisterHotKey` on Windows and a Carbon event handler on
+macOS. Linux runs on XWayland by default, so the X11 path applies and the
+shortcut works. On a **native Wayland session** (`AI_USAGE_SIDEBAR_BACKEND=wayland`)
+there is no protocol that lets an application grab a global key: some
+compositors expose `org.freedesktop.portal.GlobalShortcuts`, several do not,
+and the plugin does not use the portal. Treat global shortcuts as an X11
+feature and bind the equivalent in the compositor's own keybinding
+configuration on native Wayland.
+
+macOS additionally requires Accessibility permission for some combinations,
+and a shortcut another application already owns simply fails to register —
+which is exactly what the settings field then says.
 
 ## 5. Windows and their lifecycle
 
@@ -329,6 +363,14 @@ and the dashboard hides, so the app keeps living in the tray. A second launch
 * **macOS** windows are not notarised yet; `set_focusable(false)` cannot unfocus
   an already-focused window (an OS limitation), which is why the popover is made
   non-focusable *before* it is ever shown.
+* **macOS full-screen Spaces.** tao's `set_visible_on_all_workspaces(true)`
+  only sets `NSWindowCollectionBehaviorCanJoinAllSpaces`, which covers ordinary
+  Spaces but not the Space another app creates when it goes full screen — the
+  overlays vanished there. `window::apply_stacking` therefore ORs
+  `NSWindowCollectionBehaviorFullScreenAuxiliary` (1 << 8) into the NSWindow's
+  `collectionBehavior` on the main thread, through the `objc2-app-kit` that
+  tao/wry already pull in. Compiled only in CI; not verified on real hardware
+  by the author of that code.
 
 ## Overlay window type (X11)
 
