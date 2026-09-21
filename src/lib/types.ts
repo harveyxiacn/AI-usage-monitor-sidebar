@@ -69,8 +69,36 @@ export type Language = 'auto' | 'en' | 'zh-CN';
 export type SurfaceStyle = 'glass' | 'solid';
 
 export interface ProviderSettings {
+  /** off = not polled at all, and gone from the dashboard too */
   enabled: boolean;
+  /**
+   * off = hidden from the floating bar only. The provider is still polled and
+   * still shown in the dashboard, the history and the threshold warnings.
+   */
+  showInSidebar: boolean;
   order: number;
+}
+
+/**
+ * What the floating bar may draw. Everything switched off here stays polled,
+ * stays in the dashboard and can still raise a warning — see
+ * `src/lib/sidebar-items.ts`.
+ */
+export interface SidebarItems {
+  /** account-wide 5-hour windows */
+  fiveHour: boolean;
+  /** account-wide weekly windows */
+  weekly: boolean;
+  /** per-model / per-feature windows (any window with a `scope`) */
+  scoped: boolean;
+  /** account-wide windows that are neither 5-hour nor weekly */
+  other: boolean;
+  /** provider mark in the middle of a ring group */
+  logo: boolean;
+  /** percent under a ring group */
+  percentLabel: boolean;
+  /** the "⋯" button (a grip is still drawn when nothing else is left) */
+  moreButton: boolean;
 }
 
 export interface Thresholds {

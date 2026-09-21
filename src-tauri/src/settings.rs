@@ -61,7 +61,7 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         let mut candidate = current.clone();
         if matches!(
             key.as_str(),
-            "providers" | "colors" | "sizes" | "thresholds"
+            "providers" | "colors" | "sizes" | "thresholds" | "sidebarItems"
         ) {
             // per-key merge so a patch can toggle one provider / one colour only
             let mut merged = match current.get(key.as_str()) {
@@ -110,7 +110,33 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         }
     }
     let merged = serde_json::from_value::<Settings>(Value::Object(current)).unwrap_or_default();
-    clamp(merged)
+    clamp(reconcile_legacy(merged, patch))
+}
+
+/// Bridge between the deprecated top-level `showScopedRing` /
+/// `showPercentLabel` and their new home in `sidebarItems`.
+///
+/// * an old settings file (or anything still writing the flat keys) has its
+///   value copied into `sidebarItems`, so nothing changes under the user;
+/// * when the same patch carries both spellings the nested one wins, because
+///   that is the one the UI writes;
+/// * afterwards the flat fields are kept as a mirror of the nested ones, so a
+///   file written by this version is still understood by an older build.
+///
+/// Every `Settings` that leaves `merge` is therefore consistent, which is what
+/// makes the first rule safe to apply to a merged (not raw) value.
+fn reconcile_legacy(mut s: Settings, patch: &serde_json::Map<String, Value>) -> Settings {
+    let nested = patch.get("sidebarItems").and_then(Value::as_object);
+    let patched = |key: &str| nested.is_some_and(|o| o.contains_key(key));
+    if patch.contains_key("showScopedRing") && !patched("scoped") {
+        s.sidebar_items.scoped = s.show_scoped_ring;
+    }
+    if patch.contains_key("showPercentLabel") && !patched("percentLabel") {
+        s.sidebar_items.percent_label = s.show_percent_label;
+    }
+    s.show_scoped_ring = s.sidebar_items.scoped;
+    s.show_percent_label = s.sidebar_items.percent_label;
+    s
 }
 
 /// `value` if it is a CSS hex colour (or empty), otherwise `fallback`.
@@ -173,6 +199,7 @@ pub fn clamp(mut s: Settings) -> Settings {
             .entry(id.to_string())
             .or_insert(ProviderSettings {
                 enabled: true,
+                show_in_sidebar: true,
                 order,
             });
     }
@@ -281,7 +308,7 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
 mod tests {
     use super::*;
     use crate::commands::test_support::tempdir;
-    use crate::model::{Edge, RingMode, Theme};
+    use crate::model::{Edge, RingMode, SidebarItems, Theme};
     use serde_json::json;
 
     #[test]
@@ -342,6 +369,83 @@ mod tests {
         );
         assert!(!merged.providers["codex"].enabled);
         assert_eq!(merged.providers["codex"].order, 5);
+        assert!(
+            merged.providers["codex"].show_in_sidebar,
+            "a patch that does not mention showInSidebar keeps it"
+        );
+    }
+
+    #[test]
+    fn sidebar_items_merge_per_key_and_default_to_visible() {
+        let base = Settings::default();
+        assert_eq!(base.sidebar_items, SidebarItems::default());
+        let merged = merge(
+            &base,
+            &json!({"sidebarItems": {"weekly": false, "logo": "maybe"}}),
+        );
+        assert!(!merged.sidebar_items.weekly);
+        assert!(merged.sidebar_items.logo, "the invalid member is ignored");
+        assert!(
+            merged.sidebar_items.five_hour && merged.sidebar_items.more_button,
+            "untouched members survive the per-key merge"
+        );
+    }
+
+    #[test]
+    fn legacy_show_flags_migrate_into_sidebar_items() {
+        let base = Settings::default();
+        // an old settings file only knows the flat keys
+        let merged = merge(
+            &base,
+            &json!({"showScopedRing": false, "showPercentLabel": false}),
+        );
+        assert!(!merged.sidebar_items.scoped);
+        assert!(!merged.sidebar_items.percent_label);
+        assert!(
+            merged.sidebar_items.weekly && merged.sidebar_items.logo,
+            "migration touches nothing else"
+        );
+
+        // the UI writes the nested keys; the flat ones follow so a downgrade
+        // still sees the user's choice
+        let merged = merge(&base, &json!({"sidebarItems": {"percentLabel": false}}));
+        assert!(!merged.show_percent_label);
+        assert!(merged.show_scoped_ring);
+
+        // both spellings in one patch: the nested one wins
+        let merged = merge(
+            &base,
+            &json!({"showScopedRing": true, "sidebarItems": {"scoped": false}}),
+        );
+        assert!(!merged.sidebar_items.scoped);
+        assert!(!merged.show_scoped_ring);
+    }
+
+    #[test]
+    fn old_settings_files_load_with_the_new_fields_filled_in() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"showPercentLabel":false,"providers":{"claude":{"enabled":true,"order":0},
+                "codex":{"enabled":false,"order":1}}}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert!(!loaded.sidebar_items.percent_label, "flat flag migrated");
+        assert!(
+            loaded.sidebar_items.scoped,
+            "unmentioned flag keeps its default"
+        );
+        assert!(
+            loaded.providers["claude"].show_in_sidebar && loaded.providers["codex"].show_in_sidebar,
+            "a provider entry without showInSidebar is shown on the bar"
+        );
+        assert!(!loaded.providers["codex"].enabled, "the rest still loads");
+
+        // round trip: what we write must read back identically
+        save(&dir, &loaded).unwrap();
+        assert_eq!(load(&dir), loaded);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

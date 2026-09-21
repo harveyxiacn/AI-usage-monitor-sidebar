@@ -162,7 +162,54 @@ pub enum SurfaceStyle {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSettings {
     pub enabled: bool,
+    /// Hide this provider from the *bar* only: it keeps being polled and stays
+    /// in the dashboard, the history and the threshold warnings. `enabled`
+    /// switches the provider off entirely.
+    #[serde(default = "default_true")]
+    pub show_in_sidebar: bool,
     pub order: i32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// What the floating bar is allowed to draw. Everything switched off here is
+/// still polled, still in the dashboard and still able to raise a warning —
+/// see `src/lib/sidebar-items.ts` for the filtering rules.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SidebarItems {
+    /// account-wide 5-hour windows
+    pub five_hour: bool,
+    /// account-wide weekly windows
+    pub weekly: bool,
+    /// per-model / per-feature windows (any window with a `scope`); replaces
+    /// the deprecated top-level `showScopedRing`
+    pub scoped: bool,
+    /// account-wide windows that are neither 5-hour nor weekly
+    pub other: bool,
+    /// provider mark in the middle of a ring group
+    pub logo: bool,
+    /// percent under a ring group; replaces the deprecated top-level
+    /// `showPercentLabel`
+    pub percent_label: bool,
+    /// the "⋯" button (a grip is still drawn when nothing else is left)
+    pub more_button: bool,
+}
+
+impl Default for SidebarItems {
+    fn default() -> Self {
+        SidebarItems {
+            five_hour: true,
+            weekly: true,
+            scoped: true,
+            other: true,
+            logo: true,
+            percent_label: true,
+            more_button: true,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -238,9 +285,13 @@ pub struct Settings {
     pub auto_hide_delay_ms: u64,
     pub collapsed_width: u32,
     pub ring_mode: RingMode,
+    /// Deprecated, mirrors `sidebar_items.scoped` (kept so older builds and
+    /// hand-written settings files keep working).
     pub show_scoped_ring: bool,
     pub percent_mode: PercentMode,
+    /// Deprecated, mirrors `sidebar_items.percent_label`.
     pub show_percent_label: bool,
+    pub sidebar_items: SidebarItems,
     pub refresh_interval_sec: u64,
     pub providers: BTreeMap<String, ProviderSettings>,
     pub ingest_enabled: bool,
@@ -261,6 +312,7 @@ impl Default for Settings {
             "claude".to_string(),
             ProviderSettings {
                 enabled: true,
+                show_in_sidebar: true,
                 order: 0,
             },
         );
@@ -268,6 +320,7 @@ impl Default for Settings {
             "codex".to_string(),
             ProviderSettings {
                 enabled: true,
+                show_in_sidebar: true,
                 order: 1,
             },
         );
@@ -287,6 +340,7 @@ impl Default for Settings {
             show_scoped_ring: true,
             percent_mode: PercentMode::Used,
             show_percent_label: true,
+            sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
             providers,
             ingest_enabled: true,
