@@ -333,8 +333,11 @@ pub fn plan_label(plan_type: Option<&str>) -> Option<String> {
     }
     Some(match raw {
         "plus" => "ChatGPT Plus".to_string(),
-        "pro" => "ChatGPT Pro".to_string(),
-        "prolite" => "ChatGPT Pro Lite".to_string(),
+        // The API only reports a tier id, never a multiplier. OpenAI sells the
+        // two Pro tiers as "Pro 5x" (id `prolite`) and "Pro 20x" (id `pro`), as
+        // confirmed by the maintainer on a live `prolite` account.
+        "pro" => "ChatGPT Pro 20x".to_string(),
+        "prolite" => "ChatGPT Pro 5x".to_string(),
         "free" => "ChatGPT Free".to_string(),
         "team" => "ChatGPT Team".to_string(),
         "business" => "ChatGPT Business".to_string(),
@@ -1034,7 +1037,7 @@ mod tests {
 
         assert_eq!(
             plan_label(usage.plan_type.as_deref()).as_deref(),
-            Some("ChatGPT Pro Lite")
+            Some("ChatGPT Pro 5x")
         );
         let c = credits_from(&usage.credits).unwrap();
         assert!(!c.has_credits);
@@ -1075,8 +1078,8 @@ mod tests {
     fn plan_labels() {
         for (raw, want) in [
             ("plus", "ChatGPT Plus"),
-            ("pro", "ChatGPT Pro"),
-            ("prolite", "ChatGPT Pro Lite"),
+            ("pro", "ChatGPT Pro 20x"),
+            ("prolite", "ChatGPT Pro 5x"),
             ("free", "ChatGPT Free"),
             ("team", "ChatGPT Team"),
             ("business", "ChatGPT Business"),

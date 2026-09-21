@@ -68,7 +68,7 @@ quota is left, and when does it reset?*
 | Claude Code (OAuth) | verified against a live account | Pro | 5-hour session **+** weekly (all models) |
 | Claude Code (OAuth) | verified against a live account | Max 5× / Max 20× | 5-hour session **+** weekly, plus per-model weekly windows (e.g. Opus) when the API reports them |
 | OpenAI Codex (ChatGPT login) | verified against a live account | Plus | 5-hour **+** weekly |
-| OpenAI Codex (ChatGPT login) | verified against a live account | Pro / "prolite" | API-reported windows, including weekly-only responses |
+| OpenAI Codex (ChatGPT login) | verified against a live account | Pro 20x (`pro`) / Pro 5x (`prolite`) | API-reported windows, including weekly-only responses |
 | OpenAI Codex | verified against a live account | Team / Business / Enterprise / Edu | whatever the API reports, classified by window length |
 | OpenAI Codex | verified against a live account | API-key mode (`auth_mode: "apikey"`) | no quota windows exist; the ring shows "not signed in" |
 | GitHub Copilot | **experimental — never tested against a live account** | Pro / Pro+ / Business / Enterprise | monthly premium-request pool; chat and completions are unmetered on paid plans |
@@ -389,7 +389,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | Claude Code（OAuth） | 已在真实账号上验证 | Pro | 5 小时会话 **+** 每周（全模型） |
 | Claude Code（OAuth） | 已在真实账号上验证 | Max 5× / Max 20× | 5 小时会话 **+** 每周，API 返回时还包括按模型（如 Opus）的每周窗口 |
 | OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Plus | 5 小时 **+** 每周 |
-| OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Pro / prolite | 以 API 返回为准，兼容仅返回每周窗口的情况 |
+| OpenAI Codex（ChatGPT 登录） | 已在真实账号上验证 | Pro 20x（`pro`）/ Pro 5x（`prolite`） | 以 API 返回为准，兼容仅返回每周窗口的情况 |
 | OpenAI Codex | 已在真实账号上验证 | Team / Business / Enterprise / Edu | 以 API 返回为准，按窗口时长归类 |
 | OpenAI Codex | 已在真实账号上验证 | API Key 模式（`auth_mode: "apikey"`） | 不存在额度窗口，环显示“未登录” |
 | GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Pro / Pro+ / Business / Enterprise | 每月 premium 请求额度池；付费套餐的 chat 与补全不计量 |
