@@ -6,7 +6,12 @@
 // other two modes a group is a plain single-arc ring. Everything downstream
 // (hover targeting, popover requests, the collapsed handle colour) works on the
 // group, so the sidebar loop is identical in all three modes.
-import { severityOf, worstSeverity, type Severity } from '$lib/format';
+//
+// *Which* providers and windows reach this file is decided by
+// `$lib/sidebar-items` (Settings.sidebarItems / ProviderSettings.showInSidebar)
+// before any group is built; everything here is pure presentation.
+import { severityColor, severityOf, worstSeverity, type Severity } from '$lib/format';
+import { barGroups, barProviders, barSeverity, labelWindowOf } from '$lib/sidebar-items';
 import { settings } from './settings.svelte';
 import { snapshot } from './snapshot.svelte';
 import type { AppSnapshot, ProviderId, ProviderQuota, QuotaWindow, Settings } from '$lib/types';
@@ -32,7 +37,11 @@ export interface RingItem {
   index: number;
   /** accent of the outermost arc — collapsed handle, hover affordances */
   accent: string;
-  /** worst severity across every arc of the group */
+  /**
+   * Worst severity across every arc of the group — a *drawn* value. The
+   * bar-wide alarm level is `barSeverity()`, which also counts the windows the
+   * user hid from the bar.
+   */
   severity: Severity;
 }
 
@@ -63,65 +72,21 @@ export function rampFor(provider: ProviderId, depth: number): string {
   return ramp[Math.min(depth, ramp.length - 1)];
 }
 
-/** primary window first, then the remaining account-wide windows in backend order. */
-function nonScopedWindows(quota: ProviderQuota): QuotaWindow[] {
-  return quota.windows
-    .filter((w) => w.scope == null)
-    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
-}
-
-function primaryOf(quota: ProviderQuota): QuotaWindow | null {
-  const nonScoped = nonScopedWindows(quota);
-  return nonScoped.find((w) => w.isPrimary) ?? nonScoped[0] ?? null;
-}
-
 /**
- * Arcs of a concentric group, outer → inner:
- *   outer  = the account-wide weekly window
- *   inner  = the account-wide 5-hour window, omitted when the plan has none
- *            (Codex Pro / prolite only get the weekly window)
- *   third  = the first *per-model* scoped weekly window, Claude only and only
- *            when showScopedRing is on. Codex' scoped windows are per-feature
- *            additional limits, not a slice of the account limit, so stacking
- *            them inside the same group would be misleading — they stay in the
- *            popover's "More limits" section.
- * If the provider reports neither a weekly nor a 5-hour window (e.g. only
- * `other`-kind windows) the group falls back to the account-wide windows with
- * the primary one outermost, so something sensible is still drawn.
+ * Colour of the collapsed auto-hide handle: the worst threshold reached by
+ * *any* window of *any* polled provider, in the accent of the provider closest
+ * to its limit. It reads the snapshot rather than the ring items on purpose —
+ * hiding a ring (or a whole provider) from the bar must never hide a warning.
  */
-function concentricWindows(quota: ProviderQuota, s: Settings): QuotaWindow[] {
-  const nonScoped = nonScopedWindows(quota);
-  const weekly = nonScoped.find((w) => w.kind === 'seven_day');
-  const fiveHour = nonScoped.find((w) => w.kind === 'five_hour');
-
-  const out: QuotaWindow[] = [];
-  if (weekly) out.push(weekly);
-  if (fiveHour) out.push(fiveHour);
-  if (out.length === 0) out.push(...nonScoped.slice(0, 2));
-
-  if (s.showScopedRing && quota.provider !== 'codex') {
-    const scoped = quota.windows.find((w) => w.scope != null && w.kind === 'seven_day');
-    if (scoped) out.push(scoped);
-  }
-  return out.slice(0, 3);
-}
-
-/** Windows that each get their own plain ring in "primary" / "all". */
-function plainWindows(quota: ProviderQuota, mode: Settings['ringMode']): QuotaWindow[] {
-  const ordered = nonScopedWindows(quota);
-  return mode === 'all' ? ordered : ordered.slice(0, 1);
+export function handleColorOf(snap: AppSnapshot | null, s: Settings): string {
+  const { severity, leader } = barSeverity(snap, s);
+  if (!leader) return 'var(--surface-track)';
+  const accent = s.ringMode === 'concentric' ? rampFor(leader, 0) : accentFor(leader, 0);
+  return severityColor(accent, severity);
 }
 
 export function buildRingItems(snap: AppSnapshot | null, s: Settings): RingItem[] {
   if (!snap) return [];
-  const visible = snap.providers
-    .filter((p) => {
-      const cfg = s.providers[p.provider];
-      // explicitly switched off, or the backend reports the provider disabled
-      return (cfg?.enabled ?? true) && p.status !== 'disabled';
-    })
-    .sort((a, b) => (s.providers[a.provider]?.order ?? 0) - (s.providers[b.provider]?.order ?? 0));
-
   const items: RingItem[] = [];
 
   const push = (
@@ -148,27 +113,32 @@ export function buildRingItems(snap: AppSnapshot | null, s: Settings): RingItem[
     });
   };
 
-  for (const quota of visible) {
+  for (const quota of barProviders(snap, s)) {
+    // no group at all = every window of this provider is hidden on the bar
+    const groups = barGroups(quota, s);
     if (s.ringMode === 'concentric') {
-      const windows = concentricWindows(quota, s);
-      push(
-        quota,
-        `${quota.provider}:group`,
-        windows,
-        (depth) => rampFor(quota.provider, depth),
-        primaryOf(quota)
-      );
+      for (const arcs of groups) {
+        push(
+          quota,
+          `${quota.provider}:group`,
+          arcs,
+          (depth) => rampFor(quota.provider, depth),
+          labelWindowOf(arcs)
+        );
+      }
       continue;
     }
 
-    const windows = plainWindows(quota, s.ringMode);
-    if (windows.length === 0) {
-      // not_logged_in / error with no cached windows — still show a dimmed ring
-      push(quota, `${quota.provider}:none`, [], (d) => accentFor(quota.provider, d), null);
-      continue;
-    }
-    windows.forEach((w, slot) => {
-      push(quota, `${quota.provider}:${w.kind}:${slot}`, [w], () => accentFor(quota.provider, slot), w);
+    groups.forEach((group, slot) => {
+      // an empty group is the not_logged_in / no-cached-windows placeholder
+      const w = group[0] ?? null;
+      push(
+        quota,
+        w ? `${quota.provider}:${w.kind}:${slot}` : `${quota.provider}:none`,
+        group,
+        () => accentFor(quota.provider, slot),
+        w
+      );
     });
   }
   return items;

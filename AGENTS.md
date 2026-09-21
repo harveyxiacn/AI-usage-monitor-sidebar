@@ -146,9 +146,10 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `autoHideDelayMs` | `800` | |
 | `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, or one per window |
 | `percentMode` | `"used"`, `"remaining"` | |
-| `showPercentLabel` | `true` | |
+| `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |
+| `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
 | `refreshIntervalSec` | `60` | quota polling period |
-| `providers` | `{"claude":{"enabled":true,"order":0},"codex":{"enabled":true,"order":1}}` | hide or reorder a provider |
+| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `autostart` | `false`, `true` | start at login |

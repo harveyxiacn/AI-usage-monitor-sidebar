@@ -36,9 +36,8 @@
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
-  import { severityColor, worstSeverity } from '$lib/format';
   import { t } from '$lib/i18n/i18n.svelte';
-  import { rings, type RingItem } from '$lib/stores/rings.svelte';
+  import { handleColorOf, rings, type RingItem } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
@@ -66,17 +65,12 @@
   }
 
   /**
-   * Colour of the collapsed handle: the worst threshold reached by any ring.
-   * When nothing crossed a threshold the handle takes the accent of the ring
-   * that is closest to its limit, so the sliver still says *who* is busy.
+   * Colour of the collapsed handle: the worst threshold reached by any window,
+   * in the accent of the provider closest to its limit, so the sliver still
+   * says *who* is busy. Computed from the snapshot, not from `items`: a window
+   * the user removed from the bar must still be able to raise the alarm.
    */
-  const handleColor = $derived.by(() => {
-    if (items.length === 0) return 'var(--surface-track)';
-    const worst = worstSeverity(items.map((i) => i.severity));
-    const pct = (i: RingItem) => i.labelWindow?.usedPercent ?? -1;
-    const leader = items.reduce((a, b) => (pct(b) > pct(a) ? b : a));
-    return severityColor(leader.accent, worst);
-  });
+  const handleColor = $derived(handleColorOf(snapshot.value, s));
 
   onMount(() => {
     const disposers: Array<() => void> = [settings.init(), snapshot.init()];
@@ -181,10 +175,13 @@
       {#if loading}
         {#each [0, 1] as i (i)}
           <div class="slot">
-            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.showPercentLabel} />
+            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} />
           </div>
         {/each}
       {:else if items.length === 0}
+        <!-- Nothing to draw (no provider enabled, or everything hidden from the
+             bar): the grip is rendered whatever `moreButton` says, so the pill
+             keeps a non-zero box and stays hoverable, draggable and clickable. -->
         <div class="slot empty" title={t('overview.noProviders')}>
           <button class="dots" onclick={() => void openDashboard('settings')} aria-label={t('sidebar.more')}>⋯</button>
         </div>
@@ -210,18 +207,20 @@
               arcs={item.arcs.map((a) => ({ percent: a.window.usedPercent, accent: a.accent }))}
               labelPercent={item.labelWindow?.usedPercent ?? null}
               thresholds={s.thresholds}
-              showPercentLabel={s.showPercentLabel}
+              showPercentLabel={s.sidebarItems.percentLabel}
               percentMode={s.percentMode}
               status={item.quota.status}
               interactive
             >
               {#snippet logo(logoSize)}
-                <ProviderLogo provider={item.provider} size={logoSize} />
+                {#if s.sidebarItems.logo}<ProviderLogo provider={item.provider} size={logoSize} />{/if}
               {/snippet}
             </Ring>
           </div>
         {/each}
-        <button class="dots" onclick={() => void openDashboard('overview')} aria-label={t('sidebar.more')}>⋯</button>
+        {#if s.sidebarItems.moreButton}
+          <button class="dots" onclick={() => void openDashboard('overview')} aria-label={t('sidebar.more')}>⋯</button>
+        {/if}
       {/if}
     </div>
   {/if}

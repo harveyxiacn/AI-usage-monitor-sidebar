@@ -89,8 +89,12 @@ export const mockSettings: Settings = {
   showScopedRing: true,
   percentMode: 'used',
   showPercentLabel: true,
+  sidebarItems: { fiveHour: true, weekly: true, scoped: true, other: true, logo: true, percentLabel: true, moreButton: true },
   refreshIntervalSec: 60,
-  providers: { claude: { enabled: true, order: 0 }, codex: { enabled: true, order: 1 } },
+  providers: {
+    claude: { enabled: true, showInSidebar: true, order: 0 },
+    codex: { enabled: true, showInSidebar: true, order: 1 },
+  },
   ingestEnabled: true,
   autostart: false,
   opacity: 1,
@@ -427,7 +431,24 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
 
 // ------------------------------------------------------------- event bus ----
 
-let settings = structuredClone(mockSettings);
+/**
+ * `?settings=<url-encoded JSON patch>` seeds the mock settings for this page
+ * load. The sidebar route has no UI of its own to change settings with, so
+ * this is how the e2e suite renders the bar in a given configuration.
+ */
+function seededSettings(): Settings {
+  const base = structuredClone(mockSettings);
+  if (typeof window === 'undefined') return base;
+  const raw = new URLSearchParams(window.location.search).get('settings');
+  if (!raw) return base;
+  try {
+    return mergeSettings(base, JSON.parse(raw) as SettingsPatch);
+  } catch {
+    return base;
+  }
+}
+
+let settings = seededSettings();
 let snapshot = structuredClone(mockSnapshot);
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 

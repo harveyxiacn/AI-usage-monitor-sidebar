@@ -151,10 +151,13 @@ export interface Settings {
   /** width of the visible handle when collapsed (px) */
   collapsedWidth: number;
   ringMode: RingMode;
-  /** concentric mode: show a third innermost ring for the first scoped window (e.g. Claude per-model weekly) */
+  /** @deprecated mirror of `sidebarItems.scoped`, kept so old settings files load */
   showScopedRing: boolean;
   percentMode: PercentMode;
+  /** @deprecated mirror of `sidebarItems.percentLabel` */
   showPercentLabel: boolean;
+  /** what the floating bar may draw; hidden items are still tracked */
+  sidebarItems: SidebarItems;
   refreshIntervalSec: number;
   providers: Record<string, ProviderSettings>;
   ingestEnabled: boolean;

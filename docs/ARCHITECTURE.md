@@ -156,7 +156,7 @@ Key semantics:
   `ringMode = "concentric"` (default): one ring *group* per provider — outer
   ring = non-scoped weekly window, inner ring = 5-hour window (omitted when the
   plan has none, e.g. Codex Pro), optional innermost third ring = first scoped
-  window (e.g. Claude "Weekly · Fable") when `showScopedRing` is on; Codex
+  window (e.g. Claude "Weekly · Fable") when `sidebarItems.scoped` is on; Codex
   never gets a third ring (its scoped windows are additional per-feature
   limits). Rings of one group share the provider hue in decreasing intensity;
   threshold colours override per ring. The percent label shows the primary
@@ -192,7 +192,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_snapshot` | – | `AppSnapshot` (cached, never blocks on network) |
 | `refresh_now` | `provider?: ProviderId` | `AppSnapshot` (forces network fetch) |
 | `get_settings` | – | `Settings` |
-| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
+| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds`, `sidebarItems` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
 | `get_usage_history` | `query: HistoryQuery` | `HistoryResult` |
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
 | `get_pricing` | – | `PricingTable` |
@@ -245,9 +245,44 @@ follow-up.
 ## 7. Settings (`settings.json` in the app config dir)
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
-shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
+shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member on, `percentMode="used"`,
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90.
+
+### Sidebar items (what the bar shows)
+
+`Settings.sidebarItems` (`fiveHour`, `weekly`, `scoped`, `other`, `logo`,
+`percentLabel`, `moreButton`, all default `true`) and
+`ProviderSettings.showInSidebar` (default `true`) decide what the **bar**
+draws. They are presentation only: a provider hidden from the bar is still
+polled and still appears in the dashboard, the history and the popover, unlike
+`ProviderSettings.enabled`, which switches the provider off entirely.
+
+Rules, implemented in `src/lib/sidebar-items.ts` and unit-tested in
+`tests/sidebar-items.unit.ts`:
+* windows are filtered **before** the ring groups are built, so the same rules
+  apply in all three `ringMode`s. A window with a `scope` counts as `scoped`
+  whatever its `kind`; `other` means an account-wide window that is neither
+  5-hour nor weekly;
+* the percent label of a group describes its primary window, falling back to
+  the first *visible* window;
+* a provider whose windows are all hidden disappears from the bar (only from
+  the bar). A provider that reports no windows at all keeps its dimmed
+  placeholder ring, because that is status, not a hidden item;
+* `barSeverity()` — the collapsed handle colour, and anything that warns the
+  user — reads **every** window of **every** polled provider, so hiding a ring
+  can never hide a warning;
+* if the configuration would leave the pill empty, the "⋯" grip is rendered
+  anyway (whatever `moreButton` says), so the bar stays hoverable, draggable
+  and never measures zero.
+
+`showScopedRing` and `showPercentLabel` are **deprecated** aliases of
+`sidebarItems.scoped` / `sidebarItems.percentLabel`. `settings.rs` migrates an
+old file into the nested object on load and keeps writing both (the nested
+value wins when a patch carries both spellings). Writing both was chosen over
+dropping the flat keys because it costs two lines and keeps hand-written
+settings files, older builds and downgrades working; nothing in the UI reads
+the flat fields any more.
 
 ### Colours and sizes
 
