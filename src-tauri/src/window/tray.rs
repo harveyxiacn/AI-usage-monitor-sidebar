@@ -19,6 +19,8 @@ pub struct MenuItems {
     refresh: MenuItem<tauri::Wry>,
     dashboard: MenuItem<tauri::Wry>,
     settings: MenuItem<tauri::Wry>,
+    /// "Check for updates" until one is found, then "Update x.y.z available…".
+    update: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
 }
 
@@ -28,6 +30,7 @@ mod ids {
     pub const REFRESH: &str = "refresh_now";
     pub const DASHBOARD: &str = "open_dashboard";
     pub const SETTINGS: &str = "open_settings";
+    pub const UPDATE: &str = "update";
     pub const QUIT: &str = "quit";
 }
 
@@ -38,6 +41,9 @@ struct Labels {
     refresh: &'static str,
     dashboard: &'static str,
     settings: &'static str,
+    update_check: &'static str,
+    /// `{version}` is replaced with the offered version.
+    update_available: &'static str,
     quit: &'static str,
 }
 
@@ -58,6 +64,8 @@ fn labels(settings: &Settings) -> Labels {
             refresh: "立即刷新",
             dashboard: "打开仪表盘",
             settings: "设置…",
+            update_check: "检查更新",
+            update_available: "有新版本 {version}…",
             quit: "退出",
         }
     } else {
@@ -67,8 +75,19 @@ fn labels(settings: &Settings) -> Labels {
             refresh: "Refresh now",
             dashboard: "Open dashboard",
             settings: "Settings…",
+            update_check: "Check for updates",
+            update_available: "Update {version} available…",
             quit: "Quit",
         }
+    }
+}
+
+/// Tray label for the update item: an offer when there is one, otherwise the
+/// manual "check" action that must always be reachable.
+fn update_label(l: &Labels, status: &crate::model::UpdateStatus) -> String {
+    match status.available.as_deref() {
+        Some(version) => l.update_available.replace("{version}", version),
+        None => l.update_check.to_string(),
     }
 }
 
@@ -90,6 +109,13 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
     let refresh = MenuItem::with_id(app, ids::REFRESH, l.refresh, true, None::<&str>)?;
     let open_dashboard = MenuItem::with_id(app, ids::DASHBOARD, l.dashboard, true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, ids::SETTINGS, l.settings, true, None::<&str>)?;
+    let update = MenuItem::with_id(
+        app,
+        ids::UPDATE,
+        update_label(&l, &crate::updater::status(app)),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, ids::QUIT, l.quit, true, None::<&str>)?;
 
@@ -101,6 +127,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             &refresh,
             &open_dashboard,
             &open_settings,
+            &update,
             &separator,
             &quit,
         ],
@@ -150,6 +177,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             refresh,
             dashboard: open_dashboard,
             settings: open_settings,
+            update,
             quit,
         });
     }
@@ -172,6 +200,18 @@ fn on_menu(app: &AppHandle, id: &str) {
         }
         ids::DASHBOARD => dashboard::open(app, None),
         ids::SETTINGS => dashboard::open(app, Some("settings".into())),
+        // An offer takes the user to the About card, which holds the release
+        // notes and the install button; otherwise this is the manual check.
+        ids::UPDATE => {
+            if crate::updater::status(app).available.is_some() {
+                dashboard::open(app, Some("settings".into()));
+            } else {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::updater::check(&handle).await;
+                });
+            }
+        }
         ids::QUIT => {
             log::info!("quit from tray");
             app.exit(0);
@@ -181,7 +221,8 @@ fn on_menu(app: &AppHandle, id: &str) {
 }
 
 /// Show or hide the whole bar window (different from collapse/expand).
-fn toggle_sidebar(app: &AppHandle) {
+/// Also the target of the `shortcutToggleSidebar` global shortcut.
+pub fn toggle_sidebar(app: &AppHandle) {
     let Some(win) = app.get_webview_window(windows::SIDEBAR) else {
         log::warn!("sidebar window is missing");
         return;
@@ -244,5 +285,25 @@ pub fn sync(app: &AppHandle, settings: &Settings) {
         if let Err(e) = items.always_show.set_text(l.always_show) {
             log::debug!("tray check label update failed: {e}");
         }
+        if let Err(e) = items
+            .update
+            .set_text(update_label(&l, &crate::updater::status(app)))
+        {
+            log::debug!("tray update label failed: {e}");
+        }
+    }
+}
+
+/// Re-label the update item after a check. Separate from [`sync`] because the
+/// updater has no reason to touch the rest of the menu.
+pub fn sync_update(app: &AppHandle, status: &crate::model::UpdateStatus) {
+    let Some(state) = app.try_state::<window::PlatformState>() else {
+        return;
+    };
+    let items = state.tray_items.lock().clone();
+    let Some(items) = items else { return };
+    let text = update_label(&labels(&window::settings_of(app)), status);
+    if let Err(e) = items.update.set_text(text) {
+        log::debug!("tray update label failed: {e}");
     }
 }

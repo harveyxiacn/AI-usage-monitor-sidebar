@@ -125,6 +125,7 @@ src-tauri/
   src/store/              sqlite schema + queries                  [BACKEND]
   src/pricing.rs          default pricing table + cost estimation [BACKEND]
   src/scheduler.rs        periodic refresh + ingest, emits events  [BACKEND]
+  src/updater.rs          in-app update check, never auto-installs [PLATFORM]
   tauri.conf.json, capabilities/, icons/                          [PLATFORM]
 docs/                     this file, PLATFORM.md, reference images
 .github/workflows/        CI builds for linux/macos/windows        [PLATFORM]
@@ -202,6 +203,13 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_app_info` | – | `AppInfo` |
 | `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
 
+### Updater commands — `src-tauri/src/updater.rs`
+| command | args | returns |
+|---|---|---|
+| `get_update_status` | – | `UpdateStatus` (cached; never touches the network) |
+| `check_for_updates` | – | `UpdateStatus` (reads `latest.json`; never downloads a bundle) |
+| `install_update` | – | `()` — downloads, installs and restarts. Only valid while `UpdateStatus.canInstall`; errors otherwise |
+
 ### Platform (window) commands — `src-tauri/src/window/`
 | command | args | effect |
 |---|---|---|
@@ -216,6 +224,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `open_dashboard` | `tab?: "overview" \| "history" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` |
 | `apply_window_settings` | – | re-read settings (edge, monitor, vertical position, opacity, autoHide, always-on-top) and reposition windows |
 | `get_monitors` | – | `MonitorInfo[]` |
+| `get_shortcut_status` | – | `ShortcutStatus` — why a configured global shortcut is not active (`null` = registered, or disabled because the setting is empty) |
 | `quit_app` | – | exit |
 
 ### Events (Rust → JS, `listen()`)
@@ -227,6 +236,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `popover-target` | `PopoverRequest` | platform, tells the popover window what to render |
 | `sidebar-state` | `SidebarState` | platform |
 | `dashboard-navigate` | `{ tab: string }` | platform |
+| `update-status` | `UpdateStatus` | updater, after every state change |
 
 ## 6. Windows
 
@@ -247,7 +257,20 @@ follow-up.
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
-autostart off, thresholds warn 70 / critical 90.
+autostart off, thresholds warn 70 / critical 90, `autoUpdateCheck=true`,
+`shortcutToggleSidebar`/`shortcutOpenDashboard` empty (= no global shortcut
+registered).
+
+### Updates
+
+`autoUpdateCheck` only governs the *automatic* check (30 s after start-up,
+then daily); the manual "Check for updates" action always exists. A check
+never downloads anything, and installing is always an explicit click.
+`UpdateStatus.canInstall` is false for `.deb`/`.rpm` and
+`scripts/install-linux.sh` installs (detected through the `APPIMAGE`
+environment variable), where the UI links to the release page instead. The
+signing key, `latest.json` and what a release looks like without either are
+documented in `docs/RELEASING.md`.
 
 ### Colours and sizes
 

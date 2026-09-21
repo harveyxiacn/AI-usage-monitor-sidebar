@@ -152,6 +152,9 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `autostart` | `false`, `true` | start at login |
+| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer release once a day; never installs on its own |
+| `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS) |
+| `shortcutOpenDashboard` | `""` (off), e.g. `"Ctrl+Alt+D"` | global shortcut opening the dashboard |
 | `alwaysOnTop` | `true` | |
 | `opacity` | `1` (0.3 – 1) | |
 | `scale` | `1` (0.75 – 1.5) | |

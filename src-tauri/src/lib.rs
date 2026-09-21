@@ -6,6 +6,7 @@ pub mod export;
 pub mod model;
 pub mod scheduler;
 pub mod state;
+pub mod updater;
 pub mod window;
 
 use tauri::Manager;
@@ -46,6 +47,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_log::Builder::new().level(log_level()).build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(window::shortcuts::plugin())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
@@ -68,6 +71,7 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).ok();
             app.manage(state::AppState::new(config_dir, data_dir));
             window::setup(app.handle())?;
+            updater::setup(app.handle());
             scheduler::start(app.handle().clone());
 
             #[cfg(debug_assertions)]
@@ -94,7 +98,12 @@ pub fn run() {
             commands::get_providers,
             commands::get_app_info,
             export::export_usage_csv,
+            // updater
+            updater::get_update_status,
+            updater::check_for_updates,
+            updater::install_update,
             // platform
+            window::shortcuts::get_shortcut_status,
             window::sidebar_set_expanded,
             window::sidebar_relayout,
             window::sidebar_drag,

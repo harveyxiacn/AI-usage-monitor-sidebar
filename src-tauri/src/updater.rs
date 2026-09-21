@@ -121,7 +121,11 @@ pub async fn check(app: &AppHandle) -> UpdateStatus {
         s.checked_at = Some(now);
         match result {
             Ok(Some(update)) => {
-                log::info!("update {} available (running {})", update.version, s.current_version);
+                log::info!(
+                    "update {} available (running {})",
+                    update.version,
+                    s.current_version
+                );
                 s.available = Some(update.version);
                 s.notes = update.body;
             }

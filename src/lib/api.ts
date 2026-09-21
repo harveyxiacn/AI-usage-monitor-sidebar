@@ -17,7 +17,9 @@ import type {
   QuotaHistoryQuery,
   QuotaSample,
   Settings,
+  ShortcutStatus,
   SidebarState,
+  UpdateStatus,
 } from './types';
 import { mockInvoke, mockListen } from './mock';
 import type { SettingsPatch } from './settings-writer';
@@ -72,7 +74,15 @@ export async function exportUsageCsv(csv: string, suggestedName: string): Promis
   return suggestedName;
 }
 
+// ---- updater ----
+export const getUpdateStatus = () => invoke<UpdateStatus>('get_update_status');
+/** Reads the release feed; never downloads anything. */
+export const checkForUpdates = () => invoke<UpdateStatus>('check_for_updates');
+/** Downloads, installs and restarts — only for bundles we may replace. */
+export const installUpdate = () => invoke<void>('install_update');
+
 // ---- platform ----
+export const getShortcutStatus = () => invoke<ShortcutStatus>('get_shortcut_status');
 export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_set_expanded', { expanded });
 export const sidebarRelayout = (width: number, height: number) => invoke<void>('sidebar_relayout', { width, height });
 /** dx/dy: CSS px the pointer travelled since the drag started */
@@ -94,3 +104,4 @@ export const onIngestProgress = (h: (s: IngestStats) => void) => listen<IngestSt
 export const onPopoverTarget = (h: (r: PopoverRequest) => void) => listen<PopoverRequest>('popover-target', h);
 export const onSidebarState = (h: (s: SidebarState) => void) => listen<SidebarState>('sidebar-state', h);
 export const onDashboardNavigate = (h: (p: { tab: DashboardTab }) => void) => listen<{ tab: DashboardTab }>('dashboard-navigate', h);
+export const onUpdateStatus = (h: (s: UpdateStatus) => void) => listen<UpdateStatus>('update-status', h);

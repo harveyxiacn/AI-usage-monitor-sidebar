@@ -9,6 +9,7 @@
 //! * [`drag`]     — dragging the bar to another edge / height / monitor
 //! * [`dashboard`]— the normal window (settings + history)
 //! * [`tray`]     — tray icon and menu
+//! * [`shortcuts`]— optional global (desktop-wide) hotkeys
 //! * [`linux`]    — Wayland layer-shell docking and the KDE X11 blur hint
 //!
 //! Everything positional works in **logical** (CSS) pixels; see
@@ -21,6 +22,7 @@ pub mod hover;
 pub mod linux;
 pub mod monitors;
 pub mod popover;
+pub mod shortcuts;
 pub mod sidebar;
 pub mod tray;
 
@@ -362,6 +364,7 @@ pub fn setup(app: &AppHandle) -> anyhow::Result<()> {
         log::error!("tray icon could not be created: {e:#}");
     }
     autostart::apply(app, settings.autostart);
+    shortcuts::apply(app, &settings);
 
     // The backend owns settings; whenever it publishes a change, re-apply the
     // parts that are ours (geometry, stacking, autostart, tray check state).
@@ -445,6 +448,7 @@ pub fn apply_settings(app: &AppHandle) {
     }
     tray::sync(app, &settings);
     autostart::apply(app, settings.autostart);
+    shortcuts::apply(app, &settings);
 }
 
 /// Autostart (login item) handling; failures are never fatal.

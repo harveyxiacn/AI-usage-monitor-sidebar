@@ -122,6 +122,18 @@ Intel), `-setup.exe` / `.msi` (Windows x64). These builds are unsigned: macOS
 needs `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`,
 Windows shows a SmartScreen warning.
 
+### Staying up to date
+
+The app checks GitHub for a newer release once a day (Settings → Behaviour →
+*Check for updates daily*, on by default) and never installs anything on its
+own: a new version shows up as a tray item, a one-line banner in the dashboard
+and an *Updates* row under Settings → About, where "Install and restart" is a
+deliberate click. Copies installed from a `.deb`/`.rpm` or by
+`scripts/install-linux.sh` are owned by the package manager, so they get a
+link to the release page instead of an in-place install. Maintainers: see
+[`docs/RELEASING.md`](docs/RELEASING.md). Draft manifests for AUR, Homebrew
+and winget live in [`packaging/`](packaging/README.md).
+
 ### Build prerequisites
 
 **CachyOS / Arch**
@@ -357,6 +369,15 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 Linux x86_64 的 `.deb` / `.rpm` / `.AppImage`，macOS 的 `.dmg`（Apple Silicon 与 Intel 各一个），
 Windows x64 的 `-setup.exe` / `.msi`。这些构建尚未签名：macOS 需执行
 `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`，Windows 会出现 SmartScreen 提示。
+
+### 保持更新
+
+应用每天检查一次 GitHub 上是否有新版本（设置 → 行为 → *每天检查更新*，默认开启），
+但从不自动安装：有新版本时，托盘菜单、仪表盘顶部的一行提示以及“设置 → 关于 → 更新”
+都会显示，安装始终需要你点击“安装并重启”。通过 `.deb` / `.rpm` 或
+`scripts/install-linux.sh` 安装的副本由包管理器接管，只会给出发布页链接，不做原地替换。
+维护者请看 [`docs/RELEASING.md`](docs/RELEASING.md)；AUR、Homebrew 与 winget 的打包草稿在
+[`packaging/`](packaging/README.md)。
 
 ### 自行构建所需依赖
 

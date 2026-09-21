@@ -13,14 +13,18 @@
     getAppInfo,
     getMonitors,
     getPricing,
+    getShortcutStatus,
     isTauri,
     quitApp,
     reingestLogs,
     setPricing,
   } from '$lib/api';
+  import { formatAgo } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { shortcutProblem } from '$lib/shortcuts';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
+  import { update } from '$lib/stores/update.svelte';
   import type {
     AppInfo,
     Edge,
@@ -31,6 +35,7 @@
     PricingTable,
     ProviderId,
     RingMode,
+    ShortcutStatus,
     SurfaceStyle,
     Theme,
     VerticalAlign,
@@ -52,6 +57,8 @@
   let rescanResult = $state<string | null>(null);
   let rescanning = $state(false);
   let savedTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Why a global shortcut is not active, as reported by the backend. */
+  let shortcuts = $state<ShortcutStatus>({ toggleSidebar: null, openDashboard: null });
 
   /** Provider rows: known providers from the snapshot, ordered by settings. */
   const providerRows = $derived.by(() => {
@@ -61,11 +68,53 @@
   });
 
   onMount(() => {
+    const disposeUpdate = update.init();
     void getMonitors().then((m) => (monitors = m)).catch((e) => (actionError = String(e)));
     void getAppInfo().then((i) => (appInfo = i)).catch((e) => (actionError = String(e)));
     void loadPricing();
-    return () => clearTimeout(savedTimer);
+    void refreshShortcutStatus();
+    return () => {
+      clearTimeout(savedTimer);
+      disposeUpdate();
+    };
   });
+
+  /** The backend re-registers on `settings-updated`; ask it what happened. */
+  async function refreshShortcutStatus() {
+    try { shortcuts = await getShortcutStatus(); }
+    catch (e) { actionError = String(e); }
+  }
+
+  async function patchShortcut(key: 'shortcutToggleSidebar' | 'shortcutOpenDashboard', value: string) {
+    await settings.patch({ [key]: value.trim() });
+    await refreshShortcutStatus();
+  }
+
+  /** Local complaint first (instant), then whatever registration reported. */
+  function shortcutHint(value: string, failure: string | null): string | undefined {
+    if (shortcutProblem(value)) return t('settings.shortcutInvalid');
+    if (failure) return t('settings.shortcutFailed', { message: failure });
+    return undefined;
+  }
+
+  const u = $derived(update.value);
+
+  const updateSummary = $derived.by(() => {
+    if (!u) return t('update.unknown');
+    if (u.checking) return t('update.checking');
+    if (u.available) return t('update.available', { version: u.available });
+    if (!u.checkedAt) return t('update.unknown');
+    return t('update.upToDate');
+  });
+
+  async function openUrl(url: string) {
+    if (isTauri()) {
+      const { openUrl: open } = await import('@tauri-apps/plugin-opener');
+      await open(url);
+    } else {
+      window.open(url, '_blank', 'noopener');
+    }
+  }
 
   const providerName = (id: ProviderId) =>
     snapshot.value?.providers.find((p) => p.provider === id)?.displayName ??
@@ -166,14 +215,7 @@
     }
   }
 
-  async function openGithub() {
-    if (isTauri()) {
-      const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl(GITHUB_URL);
-    } else {
-      window.open(GITHUB_URL, '_blank', 'noopener');
-    }
-  }
+  const openGithub = () => openUrl(GITHUB_URL);
 
   async function runAction(action: () => Promise<unknown>) {
     actionError = null;
@@ -404,6 +446,46 @@
         onchange={(v) => void settings.patch({ autostart: v })}
       />
     </Field>
+
+    <Field label={t('settings.autoUpdateCheck')}>
+      <Toggle
+        checked={s.autoUpdateCheck}
+        label={t('settings.autoUpdateCheck')}
+        onchange={(v) => void settings.patch({ autoUpdateCheck: v })}
+      />
+    </Field>
+
+    <!-- The overlays are dock windows and never take focus, so a global
+         shortcut is the only keyboard path to them. Empty = not registered. -->
+    <Field
+      label={t('settings.shortcutToggleSidebar')}
+      hint={shortcutHint(s.shortcutToggleSidebar, shortcuts.toggleSidebar) ?? t('settings.shortcutHint')}
+    >
+      <input
+        class="field shortcut"
+        type="text"
+        spellcheck="false"
+        placeholder="Ctrl+Alt+U"
+        value={s.shortcutToggleSidebar}
+        onchange={(e) => void patchShortcut('shortcutToggleSidebar', e.currentTarget.value)}
+        aria-label={t('settings.shortcutToggleSidebar')}
+      />
+    </Field>
+
+    <Field
+      label={t('settings.shortcutOpenDashboard')}
+      hint={shortcutHint(s.shortcutOpenDashboard, shortcuts.openDashboard) ?? t('settings.shortcutWayland')}
+    >
+      <input
+        class="field shortcut"
+        type="text"
+        spellcheck="false"
+        placeholder="Ctrl+Alt+D"
+        value={s.shortcutOpenDashboard}
+        onchange={(e) => void patchShortcut('shortcutOpenDashboard', e.currentTarget.value)}
+        aria-label={t('settings.shortcutOpenDashboard')}
+      />
+    </Field>
   </article>
 
   <article class="card group">
@@ -536,6 +618,35 @@
     <Field label={t('settings.about.configDir')}>
       <span class="mono path" title={appInfo?.configDir ?? ''}>{appInfo?.configDir ?? '—'}</span>
     </Field>
+
+    <!-- Updates are never installed without this click; a build owned by a
+         package manager only gets the release link. -->
+    <Field
+      label={t('settings.about.update')}
+      hint={u?.checkedAt ? t('update.checkedAt', { ago: formatAgo(u.checkedAt) }) : undefined}
+    >
+      <span class="upd-state" class:offer={!!u?.available}>{updateSummary}</span>
+      <button class="btn" disabled={u?.checking || u?.installing} onclick={() => void update.check()}>
+        {t('update.check')}
+      </button>
+    </Field>
+
+    {#if u?.available}
+      <p class="muted small">
+        {#if u.canInstall}
+          <button class="btn btn-primary" disabled={u.installing} onclick={() => void update.install()}>
+            {u.installing ? t('update.installing') : t('update.install')}
+          </button>
+        {:else}
+          {t('update.managed')}
+        {/if}
+        <button class="btn link" onclick={() => void runAction(() => openUrl(u.releaseUrl))}>
+          {u.canInstall ? t('update.notes') : t('update.openRelease')}
+        </button>
+      </p>
+    {/if}
+    {#if update.error}<p class="err" role="alert">{t('common.error', { message: update.error })}</p>{/if}
+
     <div class="actions">
       <button class="btn" onclick={() => void runAction(openGithub)}>{t('settings.about.github')}</button>
       <button class="btn danger" onclick={() => void runAction(quitApp)}>{t('settings.about.quit')}</button>
@@ -623,6 +734,25 @@
 
   .danger {
     color: var(--critical);
+  }
+
+  .shortcut {
+    width: 9rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* an offer is worth noticing, but this is not an alert */
+  .upd-state.offer {
+    color: var(--focus);
+    font-weight: 500;
+  }
+
+  .link {
+    padding-inline: 0;
+    border: none;
+    background: none;
+    color: var(--focus);
+    text-decoration: underline;
   }
 
   .pricing {

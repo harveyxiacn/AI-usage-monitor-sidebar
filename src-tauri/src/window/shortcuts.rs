@@ -59,7 +59,7 @@ pub fn parse(value: &str) -> Result<Option<Shortcut>, String> {
 }
 
 /// The plugin, with the handler that maps a pressed shortcut to its action.
-pub fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+pub fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app, shortcut, event| {
             // Key-up fires a second event for the same combination.
@@ -78,7 +78,7 @@ pub fn plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
-fn action_of<R: tauri::Runtime>(app: &AppHandle<R>, shortcut: &Shortcut) -> Option<Action> {
+fn action_of(app: &AppHandle, shortcut: &Shortcut) -> Option<Action> {
     let state = app.try_state::<Shortcuts>()?;
     let registered = state.inner.lock();
     if registered.toggle_sidebar.as_ref() == Some(shortcut) {
