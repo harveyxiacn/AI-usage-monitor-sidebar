@@ -177,6 +177,8 @@
   "settings.collapsedWidth": "Handle width (px)",
   "settings.refreshIntervalSec": "Refresh interval (s)",
   "settings.notifications": "Notify near the limit",
+  "settings.hideAccountEmail": "Hide account e-mail",
+  "settings.hideAccountEmail.hint": "Masks it as h•••@g•••.com everywhere, for screenshots and screen sharing.",
   "settings.autostart": "Start at login",
   "settings.sizeColour": "Size & colour",
   "settings.sizes": "Sizes",

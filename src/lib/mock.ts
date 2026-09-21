@@ -104,6 +104,7 @@ export const mockSettings: Settings = {
   colors: { claude: '#ff5c1a', codex: '#10a37f', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
+  hideAccountEmail: false,
   alwaysOnTop: true,
 };
 

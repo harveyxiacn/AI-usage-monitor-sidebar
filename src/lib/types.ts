@@ -159,6 +159,8 @@ export interface Settings {
   colors: ColorSettings;
   sizes: SizeSettings;
   notifications: boolean;
+  /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
+  hideAccountEmail: boolean;
   alwaysOnTop: boolean;
 }
 

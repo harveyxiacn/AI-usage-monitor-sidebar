@@ -385,6 +385,14 @@
       />
     </Field>
 
+    <Field label={t('settings.hideAccountEmail')} hint={t('settings.hideAccountEmail.hint')}>
+      <Toggle
+        checked={s.hideAccountEmail}
+        label={t('settings.hideAccountEmail')}
+        onchange={(v) => void settings.patch({ hideAccountEmail: v })}
+      />
+    </Field>
+
     <Field label={t('settings.warnThreshold')}>
       <input class="field num" type="number" min="1" max={s.thresholds.critical - 1} step="1"
         value={s.thresholds.warn} aria-label={t('settings.warnThreshold')}

@@ -451,6 +451,24 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_written_before_hide_account_email_keeps_working() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"edge":"left","notifications":true}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert!(loaded.notifications, "the old field still applies");
+        assert!(!loaded.hide_account_email, "the new one takes its default");
+
+        let merged = merge(&Settings::default(), &json!({"hideAccountEmail": true}));
+        assert!(merged.hide_account_email);
+        assert_eq!(merged.notifications, Settings::default().notifications);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn persistence_failure_leaves_live_settings_unchanged() {
         let dir = tempdir();
         let impossible_dir = dir.join("plain-file");

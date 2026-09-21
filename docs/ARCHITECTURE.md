@@ -260,6 +260,12 @@ shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `perce
 `refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90.
 
+`hideAccountEmail` (default false) is a privacy switch for screenshots and
+screen sharing: every place that renders an account address — card text,
+`title` attributes, exports — goes through `accountEmail()` in
+`src/lib/privacy.ts`, which masks it as `h•••@g•••.com`. The backend keeps
+sending the real address; only the rendering changes.
+
 ### Colours and sizes
 
 `Settings.colors` (hex strings; `surface`/`text` empty = theme default) and

@@ -311,6 +311,8 @@ pub struct Settings {
     pub colors: ColorSettings,
     pub sizes: SizeSettings,
     pub notifications: bool,
+    /// Mask account e-mails everywhere they render (screen sharing).
+    pub hide_account_email: bool,
     pub always_on_top: bool,
 }
 
@@ -360,6 +362,7 @@ impl Default for Settings {
             colors: ColorSettings::default(),
             sizes: SizeSettings::default(),
             notifications: false,
+            hide_account_email: false,
             always_on_top: true,
         }
     }

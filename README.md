@@ -54,6 +54,7 @@ quota is left, and when does it reset?*
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
 | Autostart | Optional login item (`--hidden`) |
 | Notifications | Optional warning when a window crosses your editable threshold |
+| Screen-share safe | `hideAccountEmail` masks account addresses as `h•••@g•••.com` wherever they appear |
 
 ## Providers
 
@@ -297,6 +298,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 费用估算 | 可选的 API 等价价格估算，界面明确标注仅作横向参考 |
 | 开机自启 | 可选登录项（带 `--hidden` 参数） |
 | 通知 | 额度超过可编辑阈值时可选提醒 |
+| 屏幕共享友好 | `hideAccountEmail` 将账号邮箱在所有位置显示为 `h•••@g•••.com` |
 
 ## 支持的服务与套餐
 

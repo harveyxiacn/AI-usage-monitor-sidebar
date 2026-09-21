@@ -177,6 +177,8 @@
   "settings.collapsedWidth": "细条宽度（px）",
   "settings.refreshIntervalSec": "刷新间隔（秒）",
   "settings.notifications": "接近限额时通知",
+  "settings.hideAccountEmail": "隐藏账号邮箱",
+  "settings.hideAccountEmail.hint": "在所有位置显示为 h•••@g•••.com，便于截图和共享屏幕。",
   "settings.autostart": "开机自启",
   "settings.sizeColour": "尺寸与颜色",
   "settings.sizes": "尺寸",
