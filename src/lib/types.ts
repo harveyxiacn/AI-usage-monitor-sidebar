@@ -34,6 +34,24 @@ export interface CreditsInfo {
   balance: string | null;
 }
 
+export type ExtraSeverity = 'info' | 'warn' | 'critical';
+
+/**
+ * One provider-neutral fact that is not a rate-limit window (a credit balance,
+ * a spend limit that was hit, models the plan cannot use right now, …).
+ * `kind` is a stable machine id; the UI renders `extras.<kind>` as the label,
+ * so the backend never ships English prose.
+ */
+export interface QuotaExtra {
+  /** credits_balance | reset_credits | spend_limit_reached | model_unavailable | … */
+  kind: string;
+  /** Already-formatted display value; null when the label alone says it. */
+  value: string | null;
+  /** Optional secondary text (a model list, the user's own cap, …). */
+  detail: string | null;
+  severity: ExtraSeverity;
+}
+
 export interface ProviderQuota {
   provider: ProviderId;
   displayName: string;
@@ -49,6 +67,8 @@ export interface ProviderQuota {
   status: ProviderStatus;
   error: string | null;
   credits: CreditsInfo | null;
+  /** Extras beyond the windows; empty when the provider reported none. */
+  extras: QuotaExtra[];
 }
 
 export interface AppSnapshot {

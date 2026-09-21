@@ -45,6 +45,7 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: null,
+      extras: [],
       windows: [
         { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true },
         { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false },

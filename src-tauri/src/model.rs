@@ -86,6 +86,60 @@ pub struct CreditsInfo {
     pub balance: Option<String>,
 }
 
+/// How loudly the UI should render a `QuotaExtra`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtraSeverity {
+    #[default]
+    Info,
+    Warn,
+    Critical,
+}
+
+/// One provider-neutral fact that is not a rate-limit window: a credit
+/// balance, a spend limit that was hit, models the plan cannot use right now…
+///
+/// `kind` is a stable machine id; the frontend looks up `extras.<kind>` for the
+/// label, so the backend never ships English prose. `value` / `detail` are
+/// already-formatted numbers or names.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaExtra {
+    pub kind: String,
+    /// None = the label alone carries the meaning (a flag).
+    pub value: Option<String>,
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub severity: ExtraSeverity,
+}
+
+impl QuotaExtra {
+    /// Flag-style extra: label only.
+    pub fn flag(kind: &str, severity: ExtraSeverity) -> Self {
+        QuotaExtra {
+            kind: kind.to_string(),
+            value: None,
+            detail: None,
+            severity,
+        }
+    }
+
+    /// Extra with a display value ("2", "gpt-5.3-codex", …).
+    pub fn value(kind: &str, value: impl Into<String>, severity: ExtraSeverity) -> Self {
+        QuotaExtra {
+            kind: kind.to_string(),
+            value: Some(value.into()),
+            detail: None,
+            severity,
+        }
+    }
+
+    pub fn with_detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuota {
@@ -102,6 +156,10 @@ pub struct ProviderQuota {
     pub status: ProviderStatus,
     pub error: Option<String>,
     pub credits: Option<CreditsInfo>,
+    /// Provider-neutral extras (credits, spend limits, unavailable models …).
+    /// `default` so a cache file written by an older build still deserializes.
+    #[serde(default)]
+    pub extras: Vec<QuotaExtra>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
