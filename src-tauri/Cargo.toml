@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage-sidebar"
-version = "0.1.1"
+version = "0.2.0"
 description = "Edge sidebar widget showing Claude Code / Codex rate-limit quotas and token usage history"
 authors = ["Harvey Xia"]
 license = "MIT"
