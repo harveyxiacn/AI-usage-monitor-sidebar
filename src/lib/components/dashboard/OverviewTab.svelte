@@ -9,7 +9,7 @@
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
   import { getQuotaHistory } from '$lib/api';
-  import { formatAgo, windowLabel } from '$lib/format';
+  import { formatAgo, staleHint, windowLabel } from '$lib/format';
   import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
@@ -69,6 +69,8 @@
 
   function statusHint(q: ProviderQuota): string | null {
     if (q.status === 'ok') return null;
+    // Being rate-limited is a schedule, not a fault: explain the staleness.
+    if (q.status === 'rate_limited') return staleHint(q, now);
     if (q.error) return q.error;
     const specific = `status.hint.${q.provider}.${q.status}`;
     if (hasKey(specific)) return tDyn(specific);
@@ -274,7 +276,8 @@
   }
 
   .dot[data-status='not_logged_in'],
-  .dot[data-status='token_expired'] {
+  .dot[data-status='token_expired'],
+  .dot[data-status='rate_limited'] {
     background: var(--warn);
   }
 

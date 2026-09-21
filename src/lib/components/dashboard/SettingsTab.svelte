@@ -364,7 +364,7 @@
       />
     </Field>
 
-    <Field label={t('settings.refreshIntervalSec')}>
+    <Field label={t('settings.refreshIntervalSec')} hint={t('settings.refreshIntervalSec.hint')}>
       <input
         class="field num"
         type="number"

@@ -45,6 +45,7 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: null,
+      nextAttemptAt: null,
       windows: [
         { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 73, resetsAt: iso(now + 51 * 60_000), scope: null, isPrimary: true },
         { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 31, resetsAt: iso(now + 3 * DAY), scope: null, isPrimary: false },
@@ -63,6 +64,7 @@ export const mockSnapshot: AppSnapshot = {
       status: 'ok',
       error: null,
       credits: { hasCredits: false, unlimited: false, balance: '0' },
+      nextAttemptAt: null,
       windows: [
         { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 21, resetsAt: iso(now + 2 * HOUR + 5 * 60_000), scope: null, isPrimary: true },
         { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 41, resetsAt: iso(now + 5 * DAY), scope: null, isPrimary: false },
@@ -428,8 +430,36 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
 
 // ------------------------------------------------------------- event bus ----
 
+/**
+ * `?mock=rate-limited` puts Claude into the rate-limited state so the browser
+ * preview (and the e2e suite) can exercise the "stale, not broken" UI.
+ */
+function mockScenario(): string {
+  if (typeof location === 'undefined') return '';
+  return new URLSearchParams(location.search).get('mock') ?? '';
+}
+
+function applyScenario(base: AppSnapshot): AppSnapshot {
+  if (mockScenario() !== 'rate-limited') return base;
+  return {
+    ...base,
+    providers: base.providers.map((p) =>
+      p.provider === 'claude'
+        ? {
+            ...p,
+            status: 'rate_limited',
+            source: 'cache',
+            fetchedAt: iso(Date.now() - 8 * 60_000),
+            nextAttemptAt: iso(Date.now() + 4 * 60_000),
+            error: 'Anthropic is rate-limiting the usage endpoint (HTTP 429)',
+          }
+        : p
+    ),
+  };
+}
+
 let settings = structuredClone(mockSettings);
-let snapshot = structuredClone(mockSnapshot);
+let snapshot = applyScenario(structuredClone(mockSnapshot));
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 
 export function mockEmit(event: string, payload: unknown) {
@@ -450,6 +480,9 @@ function jitterSnapshot(provider?: ProviderId | null) {
     generatedAt: stamp,
     providers: snapshot.providers.map((p) => {
       if (provider && p.provider !== provider) return p;
+      // A rate-limited provider is skipped by the backend, so its numbers and
+      // its timestamp stay where they were.
+      if (p.status === 'rate_limited') return p;
       return {
         ...p,
         fetchedAt: stamp,

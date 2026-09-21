@@ -162,10 +162,13 @@ Key semantics:
   threshold colours override per ring. The percent label shows the primary
   window. `ringMode = "primary"`: one plain ring per provider (primary window).
   `ringMode = "all"`: one ring per non-scoped window.
-* `ProviderQuota.status`: `ok | not_logged_in | token_expired | error |
-  disabled`. Any status other than `ok` still returns the last known windows
-  (from cache or local logs) if available, with `source` telling where they
-  came from.
+* `ProviderQuota.status`: `ok | not_logged_in | token_expired | rate_limited |
+  error | disabled`. Any status other than `ok` still returns the last known
+  windows (from cache or local logs) if available, with `source` telling where
+  they came from. `rate_limited` (`HTTP 429`) is **not** an error: the numbers
+  are merely ageing, the UI presents them as stale, and
+  `ProviderQuota.nextAttemptAt` (RFC 3339 UTC, else null) says when the
+  scheduler will try again.
 * Times/timestamps in the DB are unix **milliseconds** (INTEGER).
 * `HistoryQuery.project` is optional: null/absent selects all projects, an
   empty string selects events whose `cwd` is null or empty, and any other
@@ -246,8 +249,40 @@ follow-up.
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, `showScopedRing=true`, `percentMode="used"`,
-`refreshIntervalSec=60`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
+`refreshIntervalSec=60`, `adaptiveRefresh=true`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90.
+
+### Polling schedule (`scheduler.rs`)
+
+`refreshIntervalSec` is the *steady-state* interval of a provider that is
+being used. On top of it the scheduler applies, per provider, the **longest**
+of these waits — the decision functions (`poll_interval_secs`,
+`next_poll_due_ms`, `should_poll`, `should_force_poll`) are pure and unit
+tested:
+
+* **floor** — Claude is never polled more often than every 120 s
+  (`CLAUDE_MIN_INTERVAL_SEC`). `/api/oauth/usage` shares its budget with
+  Claude Code's own calls and a 5-hour window only moves ~1 % per 3 min, so a
+  shorter interval buys nothing and earns `HTTP 429`. Codex uses the
+  configured value (minimum 15 s).
+* **idle stretch** (`adaptiveRefresh`) — the log watcher records when each
+  provider's session logs last changed; after ~10 min of quiet the interval
+  doubles, after ~30 min it is ×5, capped at 10 min. Fresh log activity, the
+  tray's "Refresh now", `refresh_now` and opening the dashboard end the
+  stretch at once.
+* **learned stretch (AIMD)** — every `429` doubles a per-provider multiplier
+  (cap ×8 and 15 min) which halves again only after five consecutive good
+  polls, so one success cannot put the app back on the cadence that caused
+  the limit.
+* **gates** — the exponential error backoff (cap 5 min) and, for a `429`, the
+  server's `Retry-After` (delta-seconds or HTTP-date, clamped to 30 s–1 h,
+  default 5 min). An explicit refresh ignores the schedule and the error
+  backoff but still honours `Retry-After`.
+
+The learned multiplier and both gates are persisted in
+`<data_dir>/cache/poll-state.json`, and the cached snapshot's `fetchedAt`
+counts as the last poll, so restarting the app does not produce a burst of
+requests.
 
 ### Colours and sizes
 

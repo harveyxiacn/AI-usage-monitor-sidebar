@@ -2,7 +2,7 @@
 // Everything user-visible goes through t(), so these functions are reactive to
 // the language rune just like the templates that call them.
 import { intlLocale, t } from '$lib/i18n/i18n.svelte';
-import type { PercentMode, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
+import type { PercentMode, ProviderQuota, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -103,6 +103,29 @@ export function formatAgo(iso: string | null, now: number = Date.now()): string 
   if (diff < HOUR) return t('ago.minutes', { n: Math.floor(diff / MINUTE) });
   if (diff < DAY) return t('ago.hours', { n: Math.floor(diff / HOUR) });
   return t('ago.days', { n: Math.floor(diff / DAY) });
+}
+
+/** "in 4 min" / "4 分钟后" — the wait until an upcoming moment. */
+export function formatIn(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return t('in.unknown');
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return t('in.unknown');
+  const diff = ts - now;
+  if (diff < MINUTE) return t('in.soon');
+  if (diff < HOUR) return t('in.minutes', { n: Math.round(diff / MINUTE) });
+  return t('in.hours', { n: Math.round(diff / HOUR) });
+}
+
+/**
+ * Why a rate-limited provider shows old numbers. The provider is not broken —
+ * it asked us to stop polling — so the message says how stale the data is and
+ * when the app will look again.
+ */
+export function staleHint(q: ProviderQuota, now: number = Date.now()): string {
+  return t('status.hint.rate_limited', {
+    ago: formatAgo(q.fetchedAt, now),
+    next: formatIn(q.nextAttemptAt, now),
+  });
 }
 
 /** Short date/time label for a history bucket, tuned per bucket size. */

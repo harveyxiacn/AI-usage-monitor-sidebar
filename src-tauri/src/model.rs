@@ -59,6 +59,9 @@ pub enum ProviderStatus {
     Ok,
     NotLoggedIn,
     TokenExpired,
+    /// The provider answered `HTTP 429`. Not an error: the last known windows
+    /// are simply getting stale until `ProviderQuota.next_attempt_at`.
+    RateLimited,
     Error,
     Disabled,
 }
@@ -102,6 +105,11 @@ pub struct ProviderQuota {
     pub status: ProviderStatus,
     pub error: Option<String>,
     pub credits: Option<CreditsInfo>,
+    /// Only for `rate_limited`: when a new attempt is allowed (RFC 3339 UTC).
+    /// The provider fills in what the server asked for (`Retry-After`); the
+    /// scheduler replaces it with the time it will actually try again.
+    #[serde(default)]
+    pub next_attempt_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]

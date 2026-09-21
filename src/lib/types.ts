@@ -20,7 +20,14 @@ export interface QuotaWindow {
   isPrimary: boolean;
 }
 
-export type ProviderStatus = 'ok' | 'not_logged_in' | 'token_expired' | 'error' | 'disabled';
+/** `rate_limited` is not an error: the last known windows are only getting stale. */
+export type ProviderStatus =
+  | 'ok'
+  | 'not_logged_in'
+  | 'token_expired'
+  | 'rate_limited'
+  | 'error'
+  | 'disabled';
 export type DataSource = 'api' | 'local_log' | 'cache';
 
 export interface AccountInfo {
@@ -49,6 +56,8 @@ export interface ProviderQuota {
   status: ProviderStatus;
   error: string | null;
   credits: CreditsInfo | null;
+  /** Only for `rate_limited`: RFC 3339 UTC of the scheduler's next attempt */
+  nextAttemptAt: string | null;
 }
 
 export interface AppSnapshot {

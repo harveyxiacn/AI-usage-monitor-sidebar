@@ -70,68 +70,114 @@ pub fn start(app: AppHandle) {
 
 /// Lower bound on `refreshIntervalSec` (also enforced by `settings::clamp`).
 pub const MIN_INTERVAL_SEC: u64 = 15;
+/// Anthropic's `/api/oauth/usage` shares its budget with Claude Code's own
+/// calls and answers `HTTP 429` when polled too eagerly. A 5-hour window moves
+/// about 1 % per 3 min, so polling faster than this buys nothing (§7).
+pub const CLAUDE_MIN_INTERVAL_SEC: u64 = 120;
 /// `(idle seconds, multiplier)` — the first matching row wins, so keep this
 /// ordered from the longest idle period down.
 const ADAPTIVE_STEPS: &[(u64, u64)] = &[(1_800, 5), (600, 2)];
 /// However long a provider stays quiet, never poll it less often than this.
 const ADAPTIVE_MAX_SEC: u64 = 600;
+/// Ceiling for the interval learned from `HTTP 429` answers.
+const LEARNED_MAX_SEC: u64 = 900;
+
+/// The floor below which a provider is never polled, whatever the user
+/// configured. Only Claude needs one today.
+pub fn provider_min_interval_secs(provider: &str) -> u64 {
+    match provider {
+        providers::CLAUDE_ID => CLAUDE_MIN_INTERVAL_SEC,
+        _ => MIN_INTERVAL_SEC,
+    }
+}
 
 /// Everything the scheduler knows about one provider when it decides whether
-/// to poll it this round. Deliberately plain data so the decision below is a
-/// pure function.
+/// to poll it this round. Deliberately plain data so the decisions below are
+/// pure functions.
 #[derive(Clone, Copy, Debug)]
 pub struct PollInput {
     /// `settings.refreshIntervalSec`.
     pub configured_secs: u64,
     /// `settings.adaptiveRefresh`.
     pub adaptive: bool,
+    /// Hard floor for this provider (`provider_min_interval_secs`).
+    pub min_interval_secs: u64,
     /// Seconds since this provider's logs last changed; `None` = never seen.
     pub idle_secs: Option<u64>,
     /// unix ms of the last poll; 0 = never polled.
     pub last_poll_ms: i64,
     /// unix ms before which the error backoff forbids a retry; 0 = none.
     pub backoff_until_ms: i64,
+    /// unix ms the server asked us to wait until (`Retry-After`); 0 = none.
+    /// Unlike the other waits this one also holds for an explicit refresh.
+    pub retry_after_ms: i64,
+    /// AIMD multiplier learned from `HTTP 429` answers (1 = none).
+    pub rate_limit_factor: u32,
 }
 
-/// Effective polling period for one provider.
+/// The steady-state interval before any adaptive or learned stretching.
+fn base_interval_secs(input: &PollInput) -> u64 {
+    input
+        .configured_secs
+        .max(MIN_INTERVAL_SEC)
+        .max(input.min_interval_secs)
+}
+
+/// Effective polling period for one provider: the longest of the applicable
+/// waits.
 ///
-/// A provider whose session logs changed recently is polled at the configured
-/// interval; after ~10 min of quiet the period doubles and after ~30 min it is
-/// five times as long, capped at `ADAPTIVE_MAX_SEC` (but never shorter than
-/// what the user configured). Anthropic answers `HTTP 429` when polled too
-/// often, so an idle sidebar should not keep knocking.
-pub fn poll_interval_secs(configured_secs: u64, adaptive: bool, idle_secs: Option<u64>) -> u64 {
-    let base = configured_secs.max(MIN_INTERVAL_SEC);
-    if !adaptive {
-        return base;
-    }
+/// * **idle stretch** — a provider whose session logs changed recently is
+///   polled at the configured interval; after ~10 min of quiet the period
+///   doubles and after ~30 min it is five times as long (cap
+///   `ADAPTIVE_MAX_SEC`).
+/// * **learned stretch** — every `HTTP 429` doubles a per-provider multiplier
+///   (cap `LEARNED_MAX_SEC`) which only decays after a run of good polls, so
+///   the scheduler cannot oscillate straight back into the limit.
+///
+/// Neither stretch ever shortens what the user configured.
+pub fn poll_interval_secs(input: &PollInput) -> u64 {
+    let base = base_interval_secs(input);
     // An unknown activity time means "assume the user is working".
-    let Some(idle) = idle_secs else {
-        return base;
+    let idle_factor = match (input.adaptive, input.idle_secs) {
+        (true, Some(idle)) => ADAPTIVE_STEPS
+            .iter()
+            .find(|(after, _)| idle >= *after)
+            .map_or(1, |(_, factor)| *factor),
+        _ => 1,
     };
-    let factor = ADAPTIVE_STEPS
-        .iter()
-        .find(|(after, _)| idle >= *after)
-        .map_or(1, |(_, factor)| *factor);
-    base.saturating_mul(factor).min(base.max(ADAPTIVE_MAX_SEC))
+    let idle = base
+        .saturating_mul(idle_factor)
+        .min(base.max(ADAPTIVE_MAX_SEC));
+    let learned = base
+        .saturating_mul(input.rate_limit_factor.max(1) as u64)
+        .min(base.max(LEARNED_MAX_SEC));
+    idle.max(learned)
 }
 
-/// unix ms at which `input`'s provider may be polled again: the adaptive
-/// period after the last poll, and never before the error backoff expires.
+/// unix ms at which `input`'s provider may be polled again: the effective
+/// period after the last poll, and never before the error backoff or a
+/// server-supplied `Retry-After` has elapsed.
 pub fn next_poll_due_ms(input: &PollInput) -> i64 {
+    let gate = input.backoff_until_ms.max(input.retry_after_ms);
     if input.last_poll_ms == 0 {
         // Never polled (start-up, or a provider the user just enabled).
-        return input.backoff_until_ms;
+        return gate;
     }
-    let period = poll_interval_secs(input.configured_secs, input.adaptive, input.idle_secs) as i64;
     input
         .last_poll_ms
-        .saturating_add(period.saturating_mul(1_000))
-        .max(input.backoff_until_ms)
+        .saturating_add((poll_interval_secs(input) as i64).saturating_mul(1_000))
+        .max(gate)
 }
 
 pub fn should_poll(input: &PollInput, now_ms: i64) -> bool {
     now_ms >= next_poll_due_ms(input)
+}
+
+/// An explicit refresh (tray, dashboard button, `refresh_now`) ignores the
+/// schedule and the error backoff, but not a `Retry-After`: the server told us
+/// in so many words to stop asking.
+pub fn should_force_poll(input: &PollInput, now_ms: i64) -> bool {
+    now_ms >= input.retry_after_ms
 }
 
 fn poll_input(
@@ -141,12 +187,16 @@ fn poll_input(
     provider: &str,
     now_ms: i64,
 ) -> PollInput {
+    let entry = backoff.get(provider).copied().unwrap_or_default();
     PollInput {
         configured_secs: settings.refresh_interval_sec,
         adaptive: settings.adaptive_refresh,
+        min_interval_secs: provider_min_interval_secs(provider),
         idle_secs: clocks.idle_secs(provider, now_ms),
         last_poll_ms: clocks.last_poll_ms.get(provider).copied().unwrap_or(0),
-        backoff_until_ms: backoff.get(provider).map_or(0, |b| b.next_attempt_ms),
+        backoff_until_ms: entry.next_attempt_ms,
+        retry_after_ms: entry.retry_after_ms,
+        rate_limit_factor: entry.factor(),
     }
 }
 
@@ -208,19 +258,25 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
     };
     let now = store::now_ms();
 
-    // Providers that are not due yet — either still inside their error backoff
-    // window or quiet enough for the adaptive interval — keep their previous
-    // value. An explicit refresh (`respect_backoff == false`) polls everything.
-    let skipped: HashSet<String> = if respect_backoff {
+    // Providers that are not due yet — still inside their error backoff or a
+    // `Retry-After`, or quiet enough for the adaptive interval — keep their
+    // previous value. An explicit refresh (`respect_backoff == false`) polls
+    // everything except providers the server explicitly told us to leave alone.
+    let skipped: HashSet<String> = {
         let state = app.state::<AppState>();
         let clocks = state.poll_clocks.lock();
         let backoff = state.backoff.lock();
         pollable_providers(&settings)
             .into_iter()
-            .filter(|id| !should_poll(&poll_input(&settings, &clocks, &backoff, id, now), now))
+            .filter(|id| {
+                let input = poll_input(&settings, &clocks, &backoff, id, now);
+                if respect_backoff {
+                    !should_poll(&input, now)
+                } else {
+                    !should_force_poll(&input, now)
+                }
+            })
             .collect()
-    } else {
-        HashSet::new()
     };
     if !skipped.is_empty() {
         log::debug!("refresh: not due yet {:?}", skipped);
@@ -237,7 +293,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         }
     }
 
-    let snapshot =
+    let mut snapshot =
         providers::fetch_snapshot(&ctx, &http, &settings, only.as_deref(), &previous, |id| {
             skipped.contains(id)
         })
@@ -245,17 +301,40 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
 
     {
         let state = app.state::<AppState>();
+        let clocks = state.poll_clocks.lock();
         let mut backoff = state.backoff.lock();
-        for q in &snapshot.providers {
-            if skipped.contains(&q.provider) || only.as_deref().is_some_and(|id| id != q.provider) {
-                continue;
+        let before = backoff.clone();
+        let done = store::now_ms();
+        for q in &mut snapshot.providers {
+            let fetched =
+                !skipped.contains(&q.provider) && only.as_deref().is_none_or(|id| id == q.provider);
+            if fetched {
+                let entry = backoff.entry(q.provider.clone()).or_default();
+                match q.status {
+                    ProviderStatus::RateLimited => {
+                        let wait = retry_after_secs(q, done);
+                        entry.on_rate_limited(done, wait);
+                        // Once per 429, so the log can answer "how often?".
+                        log::warn!(
+                            "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}",
+                            q.provider,
+                            wait,
+                            entry.factor()
+                        );
+                    }
+                    ProviderStatus::Error => entry.on_error(done),
+                    // Nothing to retry faster for: these need the user to act.
+                    _ => entry.on_success(),
+                }
             }
-            let entry = backoff.entry(q.provider.clone()).or_default();
-            match q.status {
-                ProviderStatus::Error => entry.on_error(store::now_ms()),
-                // Nothing to retry faster for: these need the user to act.
-                _ => entry.on_success(),
+            if q.status == ProviderStatus::RateLimited {
+                // Replace the server's answer with the time we will really try.
+                let input = poll_input(&settings, &clocks, &backoff, &q.provider, done);
+                q.next_attempt_at = providers::rfc3339_from_unix_ms(next_poll_due_ms(&input));
             }
+        }
+        if *backoff != before {
+            crate::state::save_backoff(&state.data_dir, &backoff);
         }
         *state.snapshot.write() = snapshot.clone();
     }
@@ -283,6 +362,17 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
     }
     snapshot
+}
+
+/// How long the provider asked us to wait, read back from the `next_attempt_at`
+/// it derived from `Retry-After`. Falls back to the default wait.
+fn retry_after_secs(q: &crate::model::ProviderQuota, now_ms: i64) -> u64 {
+    q.next_attempt_at
+        .as_deref()
+        .and_then(providers::rfc3339_to_ms)
+        .map(|ms| (ms.saturating_sub(now_ms).max(0) / 1_000) as u64)
+        .filter(|secs| *secs > 0)
+        .unwrap_or(providers::RETRY_AFTER_DEFAULT_SECS)
 }
 
 fn should_sample(
@@ -502,29 +592,148 @@ mod tests {
         PollInput {
             configured_secs: 60,
             adaptive: true,
+            min_interval_secs: MIN_INTERVAL_SEC,
             idle_secs,
             last_poll_ms,
             backoff_until_ms: 0,
+            retry_after_ms: 0,
+            rate_limit_factor: 1,
         }
+    }
+
+    fn interval(configured: u64, adaptive: bool, idle: Option<u64>) -> u64 {
+        poll_interval_secs(&PollInput {
+            configured_secs: configured,
+            adaptive,
+            idle_secs: idle,
+            ..input(idle, 0)
+        })
     }
 
     #[test]
     fn the_interval_stretches_while_a_provider_is_quiet() {
         // Busy, or activity not known yet → exactly what the user configured.
-        assert_eq!(poll_interval_secs(60, true, Some(0)), 60);
-        assert_eq!(poll_interval_secs(60, true, Some(599)), 60);
-        assert_eq!(poll_interval_secs(60, true, None), 60);
+        assert_eq!(interval(60, true, Some(0)), 60);
+        assert_eq!(interval(60, true, Some(599)), 60);
+        assert_eq!(interval(60, true, None), 60);
         // 10 min quiet → ×2, 30 min quiet → ×5.
-        assert_eq!(poll_interval_secs(60, true, Some(600)), 120);
-        assert_eq!(poll_interval_secs(60, true, Some(1_799)), 120);
-        assert_eq!(poll_interval_secs(60, true, Some(1_800)), 300);
-        assert_eq!(poll_interval_secs(60, true, Some(86_400)), 300);
+        assert_eq!(interval(60, true, Some(600)), 120);
+        assert_eq!(interval(60, true, Some(1_799)), 120);
+        assert_eq!(interval(60, true, Some(1_800)), 300);
+        assert_eq!(interval(60, true, Some(86_400)), 300);
         // The cap applies to the stretch, never to the configured value.
-        assert_eq!(poll_interval_secs(300, true, Some(86_400)), 600);
-        assert_eq!(poll_interval_secs(900, true, Some(86_400)), 900);
+        assert_eq!(interval(300, true, Some(86_400)), 600);
+        assert_eq!(interval(900, true, Some(86_400)), 900);
         // Opting out, and the hard minimum, still hold.
-        assert_eq!(poll_interval_secs(60, false, Some(86_400)), 60);
-        assert_eq!(poll_interval_secs(0, true, Some(86_400)), 75);
+        assert_eq!(interval(60, false, Some(86_400)), 60);
+        assert_eq!(interval(0, true, Some(86_400)), 75);
+    }
+
+    #[test]
+    fn claude_keeps_a_two_minute_floor_and_codex_does_not() {
+        assert_eq!(provider_min_interval_secs("claude"), 120);
+        assert_eq!(provider_min_interval_secs("codex"), MIN_INTERVAL_SEC);
+        let floored = PollInput {
+            configured_secs: 15,
+            min_interval_secs: provider_min_interval_secs("claude"),
+            ..input(Some(0), 0)
+        };
+        assert_eq!(poll_interval_secs(&floored), 120);
+        // A longer configured interval still wins over the floor.
+        assert_eq!(
+            poll_interval_secs(&PollInput {
+                configured_secs: 300,
+                ..floored
+            }),
+            300
+        );
+        // Codex follows the user's setting all the way down to the clamp.
+        assert_eq!(interval(15, true, Some(0)), 15);
+    }
+
+    #[test]
+    fn a_learned_rate_limit_stretches_the_interval_and_composes_with_idling() {
+        let busy = |factor| PollInput {
+            rate_limit_factor: factor,
+            ..input(Some(0), 0)
+        };
+        assert_eq!(poll_interval_secs(&busy(1)), 60);
+        assert_eq!(poll_interval_secs(&busy(2)), 120);
+        assert_eq!(poll_interval_secs(&busy(8)), 480);
+        // The longest applicable wait wins: ×5 idle beats ×2 learned…
+        assert_eq!(
+            poll_interval_secs(&PollInput {
+                rate_limit_factor: 2,
+                ..input(Some(3_600), 0)
+            }),
+            300
+        );
+        // …and ×8 learned beats the idle stretch.
+        assert_eq!(
+            poll_interval_secs(&PollInput {
+                rate_limit_factor: 8,
+                ..input(Some(3_600), 0)
+            }),
+            480
+        );
+        // The learned stretch is capped too.
+        assert_eq!(
+            poll_interval_secs(&PollInput {
+                configured_secs: 600,
+                rate_limit_factor: 8,
+                ..input(Some(0), 0)
+            }),
+            900
+        );
+    }
+
+    #[test]
+    fn aimd_grows_fast_and_decays_only_after_a_run_of_successes() {
+        let now = 1_700_000_000_000i64;
+        let mut b = Backoff::default();
+        assert_eq!(b.factor(), 1);
+        b.on_rate_limited(now, 300);
+        assert_eq!(b.factor(), 2);
+        assert_eq!(b.retry_after_ms, now + 300_000);
+        assert_eq!(b.next_attempt_ms, now + 300_000);
+        b.on_rate_limited(now, 60);
+        assert_eq!(b.factor(), 4);
+        // One success is not enough to go back to the old cadence.
+        b.on_success();
+        assert_eq!(b.factor(), 4);
+        assert_eq!(b.retry_after_ms, 0, "the server gate is released");
+        for _ in 1..crate::state::RATE_LIMIT_DECAY_AFTER {
+            b.on_success();
+        }
+        assert_eq!(b.factor(), 2, "decays after a run of good polls");
+        // Growth is capped.
+        for _ in 0..10 {
+            b.on_rate_limited(now, 30);
+        }
+        assert_eq!(b.factor(), crate::state::RATE_LIMIT_FACTOR_MAX);
+    }
+
+    #[test]
+    fn an_explicit_refresh_obeys_retry_after_but_not_the_error_backoff() {
+        let now = 1_700_000_000_000i64;
+        let backed_off = PollInput {
+            backoff_until_ms: now + 60_000,
+            ..input(Some(0), now)
+        };
+        assert!(!should_poll(&backed_off, now));
+        assert!(should_force_poll(&backed_off, now), "the user asked");
+
+        let told_to_wait = PollInput {
+            retry_after_ms: now + 60_000,
+            ..input(Some(0), now - 600_000)
+        };
+        assert!(!should_poll(&told_to_wait, now));
+        assert!(
+            !should_force_poll(&told_to_wait, now),
+            "hammering a 429 only makes it worse"
+        );
+        assert_eq!(next_poll_due_ms(&told_to_wait), now + 60_000);
+        assert!(should_force_poll(&told_to_wait, now + 60_000));
     }
 
     #[test]

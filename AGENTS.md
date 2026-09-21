@@ -147,7 +147,8 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, or one per window |
 | `percentMode` | `"used"`, `"remaining"` | |
 | `showPercentLabel` | `true` | |
-| `refreshIntervalSec` | `60` | quota polling period |
+| `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |
+| `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
 | `providers` | `{"claude":{"enabled":true,"order":0},"codex":{"enabled":true,"order":1}}` | hide or reorder a provider |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |

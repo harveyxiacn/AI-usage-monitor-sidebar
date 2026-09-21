@@ -15,6 +15,22 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
 });
 
+test('a rate-limited provider reads as stale, not as an error', async ({ page }) => {
+  await page.goto('/dashboard?mock=rate-limited');
+  const claude = page.locator('.provider').filter({ hasText: 'Claude' });
+  // the message says how old the data is and when the app will look again
+  await expect(
+    claude.getByText(/rate-limiting the usage endpoint .* showing values from .* next attempt in/)
+  ).toBeVisible();
+  await expect(claude.locator('.dot[data-status="rate_limited"]')).toHaveAttribute(
+    'title',
+    'Rate-limited'
+  );
+  // amber staleness, not a red error badge, and the last windows stay visible
+  await expect(page.locator('.provider .hint.bad')).toHaveCount(0);
+  await expect(claude.locator('.win').first()).toBeVisible();
+});
+
 test('overview refreshes and history filters and exports the visible rows', async ({ page }) => {
   await expect(page.locator('.provider')).toHaveCount(2);
   await page.getByRole('button', { name: 'Refresh all', exact: true }).click();

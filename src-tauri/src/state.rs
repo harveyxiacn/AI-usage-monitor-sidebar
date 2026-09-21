@@ -12,34 +12,96 @@ use crate::commands::pricing;
 use crate::commands::providers::{self, ProviderCtx};
 use crate::commands::settings;
 use crate::commands::store::Db;
-use crate::model::{AppSnapshot, PricingTable, Settings};
+use crate::model::{AppSnapshot, DataSource, PricingTable, Settings};
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-/// Per-provider error backoff bookkeeping (exponential, capped at 5 min).
-#[derive(Clone, Copy, Debug, Default)]
+/// Per-provider error backoff bookkeeping (exponential, capped at 5 min) plus
+/// the AIMD multiplier learned from `HTTP 429` answers. Persisted across
+/// restarts so restarting the app cannot walk straight back into a limit.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Backoff {
     pub consecutive_errors: u32,
     /// unix ms before which the scheduler should not retry
     pub next_attempt_ms: i64,
+    /// unix ms the *server* asked us to wait until (`Retry-After`). Honoured
+    /// even by an explicit refresh — hammering a 429 only makes it worse.
+    pub retry_after_ms: i64,
+    /// Multiplier on this provider's steady-state interval: doubled by every
+    /// `429`, halved only after a run of good polls (0 reads as 1).
+    pub rate_limit_factor: u32,
+    pub consecutive_successes: u32,
 }
 
 pub const BACKOFF_MAX_MS: i64 = 5 * 60 * 1000;
+/// A `429` at most doubles the interval each time, up to this multiplier.
+pub const RATE_LIMIT_FACTOR_MAX: u32 = 8;
+/// Consecutive good polls before the learned multiplier halves again — one
+/// lucky success must not put us back on the cadence that caused the 429.
+pub const RATE_LIMIT_DECAY_AFTER: u32 = 5;
 
 impl Backoff {
+    /// The learned multiplier, never below 1 (also repairs an older file).
+    pub fn factor(&self) -> u32 {
+        self.rate_limit_factor.max(1)
+    }
+
     pub fn on_error(&mut self, now_ms: i64) {
         self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+        self.consecutive_successes = 0;
         let step = 15_000i64
             .saturating_mul(1i64 << self.consecutive_errors.min(6))
             .min(BACKOFF_MAX_MS);
         self.next_attempt_ms = now_ms + step;
     }
+
+    /// `HTTP 429`: wait at least `retry_after_secs` and remember that this
+    /// provider dislikes the current cadence.
+    pub fn on_rate_limited(&mut self, now_ms: i64, retry_after_secs: u64) {
+        self.consecutive_successes = 0;
+        self.rate_limit_factor = self.factor().saturating_mul(2).min(RATE_LIMIT_FACTOR_MAX);
+        self.retry_after_ms = now_ms.saturating_add(retry_after_secs as i64 * 1_000);
+        self.next_attempt_ms = self.next_attempt_ms.max(self.retry_after_ms);
+    }
+
     pub fn on_success(&mut self) {
         self.consecutive_errors = 0;
         self.next_attempt_ms = 0;
+        self.retry_after_ms = 0;
+        self.consecutive_successes = self.consecutive_successes.saturating_add(1);
+        if self.consecutive_successes >= RATE_LIMIT_DECAY_AFTER {
+            self.consecutive_successes = 0;
+            self.rate_limit_factor = (self.factor() / 2).max(1);
+        }
+    }
+}
+
+pub const POLL_STATE_FILE: &str = "poll-state.json";
+
+fn poll_state_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("cache").join(POLL_STATE_FILE)
+}
+
+/// Backoff state remembered from the last run; anything unreadable is simply
+/// forgotten (the app then behaves like a first start).
+pub fn load_backoff(data_dir: &Path) -> HashMap<String, Backoff> {
+    std::fs::read_to_string(poll_state_path(data_dir))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_backoff(data_dir: &Path, map: &HashMap<String, Backoff>) {
+    let Ok(bytes) = serde_json::to_vec(map) else {
+        return;
+    };
+    if let Err(e) = settings::write_atomic(&poll_state_path(data_dir), &bytes) {
+        log::debug!("could not persist the poll state: {e:#}");
     }
 }
 
@@ -116,6 +178,20 @@ impl AppState {
         // `get_snapshot` (before the scheduler's first fetch) is not empty.
         let snapshot = providers::snapshot_from_cache(&provider_ctx, &settings);
 
+        // …and pretend those cached values were polled when they were
+        // fetched, so restarting the app does not fire a burst of requests at
+        // providers whose numbers are still fresh.
+        let backoff = load_backoff(&data_dir);
+        let mut poll_clocks = PollClocks::default();
+        for q in &snapshot.providers {
+            if q.source != DataSource::Cache {
+                continue;
+            }
+            if let Some(ms) = providers::rfc3339_to_ms(&q.fetched_at) {
+                poll_clocks.last_poll_ms.insert(q.provider.clone(), ms);
+            }
+        }
+
         Self {
             config_dir,
             data_dir,
@@ -127,8 +203,8 @@ impl AppState {
             provider_ctx,
             ingest_running: Arc::new(AtomicBool::new(false)),
             refresh_lock: tokio::sync::Mutex::new(()),
-            backoff: Mutex::new(HashMap::new()),
-            poll_clocks: Arc::new(Mutex::new(PollClocks::default())),
+            backoff: Mutex::new(backoff),
+            poll_clocks: Arc::new(Mutex::new(poll_clocks)),
         }
     }
 

@@ -133,6 +133,13 @@ pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// RFC 3339 → unix **milliseconds**.
+pub fn rfc3339_to_ms(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
 /// Unix **seconds** → RFC 3339 UTC.
 pub fn rfc3339_from_unix_secs(secs: i64) -> Option<String> {
     chrono::DateTime::from_timestamp(secs, 0)
@@ -197,6 +204,7 @@ pub fn empty_quota(provider: &str, display_name: &str, status: ProviderStatus) -
         status,
         error: None,
         credits: None,
+        next_attempt_at: None,
     }
 }
 
@@ -221,6 +229,75 @@ pub fn degraded(
         // `fetchedAt` of the *data*, not of this attempt, so the UI can age it.
         q.fetched_at = cached.fetched_at;
     }
+    q
+}
+
+// ---------- rate limiting ----------
+
+/// Bounds for a server-supplied `Retry-After`. A value below the minimum is
+/// not worth obeying literally (we would walk straight back into the limit),
+/// one above the maximum would freeze the widget for the rest of the day.
+pub const RETRY_AFTER_MIN_SECS: u64 = 30;
+pub const RETRY_AFTER_MAX_SECS: u64 = 3_600;
+/// Used when the server sends `429` without a usable `Retry-After`.
+pub const RETRY_AFTER_DEFAULT_SECS: u64 = 300;
+
+/// Parse an HTTP `Retry-After` header into seconds from `now`.
+///
+/// Both forms of RFC 9110 §10.2.3 are accepted: delta-seconds (`"120"`) and
+/// an HTTP-date (`"Wed, 21 Oct 2026 07:28:00 GMT"`). The result is clamped
+/// into `RETRY_AFTER_MIN_SECS..=RETRY_AFTER_MAX_SECS`; anything unparsable is
+/// `None` so the caller can fall back to its own schedule.
+pub fn parse_retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+    let raw = value.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let secs = if let Ok(delta) = raw.parse::<i64>() {
+        delta
+    } else {
+        let parsed = chrono::DateTime::parse_from_rfc2822(raw)
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .or_else(|_| {
+                chrono::NaiveDateTime::parse_from_str(raw, "%a, %d %b %Y %H:%M:%S GMT")
+                    .map(|d| d.and_utc())
+            })
+            .ok()?;
+        (parsed - now).num_seconds()
+    };
+    Some((secs.max(0) as u64).clamp(RETRY_AFTER_MIN_SECS, RETRY_AFTER_MAX_SECS))
+}
+
+/// `Retry-After` of a response, already parsed and clamped.
+pub fn retry_after_of(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    parse_retry_after(value, chrono::Utc::now())
+}
+
+/// RFC 3339 timestamp `retry_after_secs` (or the default wait) from now.
+pub fn next_attempt_at(retry_after_secs: Option<u64>) -> Option<String> {
+    let wait = retry_after_secs.unwrap_or(RETRY_AFTER_DEFAULT_SECS);
+    rfc3339_from_unix_secs(chrono::Utc::now().timestamp() + wait as i64)
+}
+
+/// `HTTP 429` result: the last good windows stay on screen, the status says
+/// why they are ageing and `next_attempt_at` says when the app may try again.
+/// The scheduler may push that time further out (see `scheduler::PollInput`).
+pub fn rate_limited(
+    ctx: &ProviderCtx,
+    provider: &str,
+    display_name: &str,
+    retry_after_secs: Option<u64>,
+    message: impl Into<String>,
+) -> ProviderQuota {
+    let mut q = degraded(
+        ctx,
+        provider,
+        display_name,
+        ProviderStatus::RateLimited,
+        message,
+    );
+    q.next_attempt_at = next_attempt_at(retry_after_secs);
     q
 }
 
@@ -362,6 +439,32 @@ mod tests {
             scope: scope.map(|s| s.to_string()),
             is_primary: false,
         }
+    }
+
+    #[test]
+    fn retry_after_accepts_both_header_forms_and_stays_in_range() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T07:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        // delta-seconds
+        assert_eq!(parse_retry_after("120", now), Some(120));
+        assert_eq!(parse_retry_after("  600 ", now), Some(600));
+        // HTTP-date (RFC 9110 §10.2.3)
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT", now),
+            Some(1_680)
+        );
+        // clamped: too eager, too far away, already in the past
+        assert_eq!(parse_retry_after("1", now), Some(RETRY_AFTER_MIN_SECS));
+        assert_eq!(parse_retry_after("99999", now), Some(RETRY_AFTER_MAX_SECS));
+        assert_eq!(parse_retry_after("-5", now), Some(RETRY_AFTER_MIN_SECS));
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2026 06:00:00 GMT", now),
+            Some(RETRY_AFTER_MIN_SECS)
+        );
+        // unusable values fall back to the caller's own schedule
+        assert_eq!(parse_retry_after("", now), None);
+        assert_eq!(parse_retry_after("soon", now), None);
     }
 
     #[test]
