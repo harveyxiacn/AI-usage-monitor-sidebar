@@ -68,6 +68,26 @@ pub async fn get_usage_history(
 }
 
 #[tauri::command]
+pub async fn get_usage_calendar(
+    state: State<'_, AppState>,
+    query: CalendarQuery,
+) -> Result<CalendarResult, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_calendar(&db, &query, &pricing)).await
+}
+
+#[tauri::command]
+pub async fn get_usage_sessions(
+    state: State<'_, AppState>,
+    query: SessionQuery,
+) -> Result<SessionsResult, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_sessions(&db, &query, &pricing)).await
+}
+
+#[tauri::command]
 pub async fn get_quota_history(
     state: State<'_, AppState>,
     query: QuotaHistoryQuery,
