@@ -43,10 +43,26 @@ const test = base.extend<{ historyRequests: PendingHistory[] }>({
     await page.addInitScript(() => {
       let callbackId = 0;
       let settledHistory = 0;
+      const callbacks = new Map<number, (event: unknown) => void>();
+      const listeners = new Map<string, number>();
+      Reflect.set(window, '__emitIngest', (eventsAdded: number) => {
+        const id = listeners.get('ingest-progress');
+        if (id !== undefined) callbacks.get(id)?.({ event: 'ingest-progress', id, payload: {
+          running: false, filesScanned: 1, filesUpdated: eventsAdded ? 1 : 0,
+          eventsAdded, durationMs: 1, errors: [],
+        } });
+      });
       const invoke = Reflect.get(window, '__controlledTauriInvoke') as (command: string, args: unknown) => Promise<unknown>;
       Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {
-        transformCallback: () => ++callbackId,
+        transformCallback: (callback: (event: unknown) => void) => {
+          callbacks.set(++callbackId, callback);
+          return callbackId;
+        },
         invoke: async (command: string, args: unknown) => {
+          if (command === 'plugin:event|listen') {
+            const { event, handler } = args as { event: string; handler: number };
+            listeners.set(event, handler);
+          }
           try { return await invoke(command, args); }
           finally {
             if (command === 'get_usage_history') {
@@ -132,3 +148,59 @@ test('changing the provider recovers after a history request fails', async ({ pa
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Export CSV', exact: true })).toBeEnabled();
 });
+
+test('a background time refresh preserves the chart and rows while fetching', async ({ page, historyRequests }) => {
+  await page.clock.install();
+  await openHistory(page, historyRequests);
+  const canvas = page.locator('canvas').last();
+  await expect(canvas).toBeVisible();
+  await canvas.evaluate((node) => node.setAttribute('data-original-chart', 'yes'));
+  await page.clock.fastForward(60_000);
+  await expect.poll(() => historyRequests.length).toBe(2);
+  await expect(page.locator('tbody .strong')).toHaveText('111');
+  await expect(page.locator('canvas[data-original-chart="yes"]')).toBeVisible();
+  historyRequests[1].resolve(result('claude', 222));
+  await expect(page.locator('tbody .strong')).toHaveText('222');
+  await expect(page.locator('canvas[data-original-chart="yes"]')).toBeVisible();
+});
+
+
+test('empty log scans do not reload history; new events update it in place', async ({ page, historyRequests }) => {
+  await openHistory(page, historyRequests);
+  await page.evaluate(async () => {
+    Reflect.get(window, '__emitIngest')(0);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  });
+  expect(historyRequests).toHaveLength(1);
+  await page.evaluate(() => Reflect.get(window, '__emitIngest')(1));
+  await expect.poll(() => historyRequests.length).toBe(2);
+  await expect(page.locator('tbody .strong')).toHaveText('111');
+  historyRequests[1].resolve(result('claude', 333));
+  await expect(page.locator('tbody .strong')).toHaveText('333');
+});
+
+for (const scenario of [
+  { name: 'mixed prices', full: null, known: 12.34, missing: 3, expected: '$12.34 (partial estimate)' },
+  { name: 'free known records mixed with unpriced records', full: null, known: 0, missing: 2, expected: '$0.00 (partial estimate)' },
+  { name: 'only unpriced records', full: null, known: null, missing: 4, expected: '—' },
+  { name: 'fully priced records', full: 15, known: 15, missing: 0, expected: '$15.00' },
+]) {
+  test(`cost display distinguishes ${scenario.name}`, async ({ page, historyRequests }) => {
+    await page.goto('/dashboard');
+    await page.getByRole('button', { name: 'History', exact: true }).click();
+    await expect.poll(() => historyRequests.length).toBe(1);
+    const data = result('codex', 1000);
+    const cost = { estimatedCostUsd: scenario.full, knownCostUsd: scenario.known, unpricedRequests: scenario.missing };
+    Object.assign(data.totals, cost);
+    Object.assign(data.rows[0], cost);
+    historyRequests[0].resolve(data);
+    const card = page.locator('article.cmp').filter({ hasText: 'Codex' });
+    await expect(card.locator('dd').last()).toHaveText(scenario.expected);
+    await expect(page.locator('tbody tr td').last()).toHaveText(scenario.expected);
+    if (scenario.full == null && scenario.known != null) {
+      await expect(card).toContainText(`${scenario.missing} unpriced requests are excluded`);
+    } else {
+      await expect(card).not.toContainText('partial estimate');
+    }
+  });
+}

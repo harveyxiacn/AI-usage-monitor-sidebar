@@ -245,6 +245,8 @@ export function historyCsv(rows: readonly HistoryRow[]): string {
     ['total_tokens', (r) => r.totalTokens],
     ['requests', (r) => r.requests],
     ['estimated_cost_usd', (r) => r.estimatedCostUsd == null ? '' : r.estimatedCostUsd.toFixed(4)],
+    ['known_cost_usd', (r) => r.knownCostUsd == null ? '' : r.knownCostUsd.toFixed(4)],
+    ['unpriced_requests', (r) => r.unpricedRequests ?? ''],
   ];
   return [columns.map(([name]) => name).join(','), ...rows.map((row) => columns.map(([, get]) => csvCell(get(row))).join(','))].join('\r\n') + '\r\n';
 }
@@ -267,6 +269,8 @@ export function sessionsCsv(rows: readonly SessionRow[]): string {
     ['total_tokens', (r) => r.totalTokens],
     ['requests', (r) => r.requests],
     ['estimated_cost_usd', (r) => r.estimatedCostUsd == null ? '' : r.estimatedCostUsd.toFixed(4)],
+    ['known_cost_usd', (r) => r.knownCostUsd == null ? '' : r.knownCostUsd.toFixed(4)],
+    ['unpriced_requests', (r) => r.unpricedRequests ?? ''],
   ];
   return [columns.map(([name]) => name).join(','), ...rows.map((row) => columns.map(([, get]) => csvCell(get(row))).join(','))].join('\r\n') + '\r\n';
 }

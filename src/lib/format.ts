@@ -4,7 +4,7 @@
 import { forecastLine } from '$lib/forecast';
 import { intlLocale, t } from '$lib/i18n/i18n.svelte';
 import { clampPercent } from '$lib/severity';
-import type { PercentMode, ProviderQuota, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
+import type { PercentMode, ProviderQuota, QuotaWindow, Thresholds, TokenTotals, WindowKind } from '$lib/types';
 
 // Threshold helpers live in `$lib/severity` (no i18n import, so pure modules
 // and unit tests can use them); they stay part of this module's surface.
@@ -32,6 +32,13 @@ export function formatTokens(n: number | null | undefined): string {
 export function formatCost(usd: number | null | undefined): string {
   if (usd == null || !Number.isFinite(usd)) return '—';
   return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** A known subtotal is explicitly marked so it cannot be mistaken for a full total. */
+export function formatEstimatedCost(totals: TokenTotals): string {
+  if (totals.estimatedCostUsd != null) return formatCost(totals.estimatedCostUsd);
+  if (totals.knownCostUsd == null) return '—';
+  return `${formatCost(totals.knownCostUsd)} (${t('history.partialCost')})`;
 }
 
 export function formatInt(n: number): string {

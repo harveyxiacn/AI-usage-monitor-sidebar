@@ -166,13 +166,13 @@ test('the session CSV exports counters and identifiers only', () => {
   const csv = sessionsCsv([row]);
   const [header, first] = csv.split('\r\n');
   expect(header).toBe(
-    'session_id,provider,project,first_activity,last_activity,duration_ms,models,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd'
+    'session_id,provider,project,first_activity,last_activity,duration_ms,models,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd,known_cost_usd,unpriced_requests'
   );
   expect(first).toContain('"thread-1,alpha",codex,');
   // the exact path survives, quoted; the cost stays empty rather than 0
   expect(first).toContain('"C:\\团队\\comma, quote"" project"');
   expect(first).toContain('gpt-5.3-codex gpt-5.3-codex-spark');
-  expect(first.endsWith(',190,7,')).toBe(true);
+  expect(first.endsWith(',190,7,,,')).toBe(true);
   expect(csv.endsWith('\r\n')).toBe(true);
   // a priced session renders four decimals, like the bucket export
   expect(sessionsCsv([{ ...row, estimatedCostUsd: 1.5 }])).toContain(',190,7,1.5000');
