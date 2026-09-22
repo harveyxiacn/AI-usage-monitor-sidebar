@@ -1,4 +1,4 @@
-import type { CalendarDay, HistoryRow, ProviderId, SessionRow, TokenTotals } from './types';
+import type { CalendarDay, HistoryRow, ModelVariant, ProviderId, SessionRow, TokenTotals } from './types';
 
 export type HistoryPreset = 'today' | '7d' | '30d' | '90d' | 'custom';
 export interface HistoryRange { from: number; to: number }
@@ -40,8 +40,35 @@ export interface HistorySeries {
   key: string;
   provider: ProviderId;
   model: string | null;
+  reasoningEffort: string | null;
   project: string | null;
   values: Array<number | null>;
+}
+
+/** Display the recorded API name and effort verbatim, never infer a default. */
+export function modelVariantLabel(
+  model: string | null | undefined,
+  effort: string | null | undefined,
+  unknownModel = 'Unknown model',
+  unknownEffort = ''
+): string {
+  const name = model || unknownModel;
+  const detail = effort || unknownEffort;
+  return detail ? `${name} · ${detail}` : name;
+}
+
+/** Preserve model switches in a session, with a fallback for older backends. */
+export function sessionModelVariants(row: Pick<SessionRow, 'models' | 'modelVariants'>): ModelVariant[] {
+  const variants = new Map<string, ModelVariant>();
+  for (const variant of row.modelVariants ?? []) {
+    const value = { model: variant.model, reasoningEffort: variant.reasoningEffort ?? null };
+    variants.set(JSON.stringify([value.model, value.reasoningEffort]), value);
+  }
+  const recordedModels = new Set([...variants.values()].map((variant) => variant.model));
+  for (const model of row.models) {
+    if (!recordedModels.has(model)) variants.set(JSON.stringify([model, null]), { model, reasoningEffort: null });
+  }
+  return [...variants.values()].sort((a, b) => a.model.localeCompare(b.model) || (a.reasoningEffort ?? '').localeCompare(b.reasoningEffort ?? ''));
 }
 
 /** Stable, collision-free identities keep similarly named models/projects apart. */
@@ -51,11 +78,12 @@ export function historySeries(rows: readonly HistoryRow[], groupByModel: boolean
   const series = new Map<string, HistorySeries>();
   for (const row of rows) {
     const model = groupByModel ? row.model : null;
+    const reasoningEffort = groupByModel ? row.reasoningEffort ?? null : null;
     const project = groupByProject ? row.project ?? '' : null;
-    const key = JSON.stringify([row.provider, model, project]);
+    const key = JSON.stringify([row.provider, model, reasoningEffort, project]);
     let entry = series.get(key);
     if (!entry) {
-      entry = { key, provider: row.provider, model, project, values: new Array(buckets.length).fill(0) };
+      entry = { key, provider: row.provider, model, reasoningEffort, project, values: new Array(buckets.length).fill(0) };
       series.set(key, entry);
     }
     const index = indices.get(row.bucketStart)!;
@@ -236,6 +264,7 @@ export function historyCsv(rows: readonly HistoryRow[]): string {
     ['bucket_start', (r) => r.bucketStart],
     ['provider', (r) => r.provider],
     ['model', (r) => r.model ?? ''],
+    ['reasoning_effort', (r) => r.reasoningEffort ?? ''],
     ['project', (r) => r.project ?? ''],
     ['input_tokens', (r) => r.inputTokens],
     ['cache_write_tokens', (r) => r.cacheWriteTokens],
@@ -261,6 +290,7 @@ export function sessionsCsv(rows: readonly SessionRow[]): string {
     ['last_activity', (r) => r.lastTs],
     ['duration_ms', (r) => r.durationMs],
     ['models', (r) => r.models.join(' ')],
+    ['model_variants', (r) => JSON.stringify(sessionModelVariants(r))],
     ['input_tokens', (r) => r.inputTokens],
     ['cache_write_tokens', (r) => r.cacheWriteTokens],
     ['cache_read_tokens', (r) => r.cacheReadTokens],

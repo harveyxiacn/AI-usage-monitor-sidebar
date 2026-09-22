@@ -576,6 +576,9 @@ pub struct HistoryRow {
     pub bucket_start: String,
     pub provider: String,
     pub model: Option<String>,
+    /// Explicit effort recorded by the CLI; None for unknown or ungrouped rows.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     /// None only for cross-project aggregation; empty means unassigned.
     #[serde(default)]
     pub project: Option<String>,
@@ -657,6 +660,15 @@ pub struct SessionQuery {
 }
 
 /// Counters and identifiers only — never prompt or response text.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelVariant {
+    pub model: String,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+/// Counters and identifiers only — never prompt or response text.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRow {
@@ -671,6 +683,9 @@ pub struct SessionRow {
     pub duration_ms: i64,
     /// Distinct model names used, sorted.
     pub models: Vec<String>,
+    /// Distinct model/effort pairs, sorted without changing the raw model ids.
+    #[serde(default)]
+    pub model_variants: Vec<ModelVariant>,
     #[serde(flatten)]
     pub totals: TokenTotals,
 }

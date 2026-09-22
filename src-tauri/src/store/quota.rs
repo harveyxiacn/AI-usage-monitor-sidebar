@@ -4,12 +4,13 @@ use super::{now_ms, Db};
 use crate::model::{QuotaHistoryQuery, QuotaSample, QuotaWindow, WindowKind};
 use anyhow::Result;
 use chrono::TimeZone;
+use rusqlite::OptionalExtension;
 
 /// Minimum spacing between two identical samples for the same window.
 const MIN_SAMPLE_GAP_MS: i64 = 5 * 60 * 1000;
 
-/// Store one sample for `window` — but only if the percentage changed or the
-/// previous sample for that provider/kind/scope is at least 5 minutes old.
+/// Store percentage and cycle/plan changes immediately, plus one unchanged
+/// heartbeat at least every 5 minutes for each provider/kind/scope.
 /// Returns `true` when a row was written.
 pub fn insert_quota_sample(
     db: &Db,
@@ -21,27 +22,29 @@ pub fn insert_quota_sample(
     let conn = db.lock();
     let scope = window.scope.clone();
     let kind = window.kind.as_str();
-    let mut stmt = conn.prepare(
-        "SELECT used_percent, ts FROM quota_samples
-         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
-         ORDER BY ts DESC LIMIT 1",
-    )?;
-    let last: Option<(f64, i64)> = stmt
-        .query_row(rusqlite::params![provider, kind, scope], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .ok();
-    if let Some((pct, ts)) = last {
-        let unchanged = (pct - window.used_percent).abs() < f64::EPSILON;
-        if unchanged && now - ts < MIN_SAMPLE_GAP_MS {
-            return Ok(false);
-        }
-    }
     let resets_at = window
         .resets_at
         .as_deref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.timestamp_millis());
+    let mut stmt = conn.prepare(
+        "SELECT used_percent, ts, resets_at, plan FROM quota_samples
+         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+         ORDER BY ts DESC, id DESC LIMIT 1",
+    )?;
+    let last: Option<(f64, i64, Option<i64>, Option<String>)> = stmt
+        .query_row(rusqlite::params![provider, kind, scope], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .optional()?;
+    if let Some((pct, ts, previous_reset, previous_plan)) = last {
+        let unchanged = (pct - window.used_percent).abs() < f64::EPSILON
+            && previous_reset == resets_at
+            && previous_plan.as_deref() == plan;
+        if unchanged && now - ts < MIN_SAMPLE_GAP_MS {
+            return Ok(false);
+        }
+    }
     drop(stmt);
     conn.execute(
         "INSERT INTO quota_samples(provider, kind, scope, used_percent, resets_at, plan, ts)
@@ -90,7 +93,7 @@ pub fn window_samples(
         "SELECT ts, used_percent, resets_at FROM quota_samples
          WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
            AND ts >= ?4
-         ORDER BY ts",
+         ORDER BY ts, id",
     )?;
     let rows = stmt.query_map(
         rusqlite::params![provider, kind.as_str(), scope, since],
@@ -116,7 +119,7 @@ pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSa
     let sql = "SELECT provider, kind, scope, used_percent, resets_at, plan, ts
                FROM quota_samples
                WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
-               ORDER BY ts";
+               ORDER BY ts, id";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(rusqlite::params![from, to, q.provider], |r| {
         let kind: String = r.get(1)?;
@@ -142,7 +145,7 @@ fn ms_to_rfc3339(ms: i64) -> Option<String> {
     chrono::Utc
         .timestamp_millis_opt(ms)
         .single()
-        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
 }
 
 #[cfg(test)]
@@ -171,12 +174,23 @@ mod tests {
 
         assert!(insert_quota_sample(&db, "claude", Some("Claude Max 5x"), &w, t0).unwrap());
         // same percent, 1 minute later → dropped
-        assert!(!insert_quota_sample(&db, "claude", None, &w, t0 + 60_000).unwrap());
+        assert!(
+            !insert_quota_sample(&db, "claude", Some("Claude Max 5x"), &w, t0 + 60_000).unwrap()
+        );
         // same percent, 6 minutes later → kept
-        assert!(insert_quota_sample(&db, "claude", None, &w, t0 + 6 * 60_000).unwrap());
+        assert!(
+            insert_quota_sample(&db, "claude", Some("Claude Max 5x"), &w, t0 + 6 * 60_000).unwrap()
+        );
         // changed percent right away → kept
         let changed = window(WindowKind::FiveHour, 11.0, None);
-        assert!(insert_quota_sample(&db, "claude", None, &changed, t0 + 6 * 60_000 + 1).unwrap());
+        assert!(insert_quota_sample(
+            &db,
+            "claude",
+            Some("Claude Max 5x"),
+            &changed,
+            t0 + 6 * 60_000 + 1
+        )
+        .unwrap());
         // a scoped window is tracked separately
         let scoped = window(WindowKind::FiveHour, 10.0, Some("Fable"));
         assert!(insert_quota_sample(&db, "claude", None, &scoped, t0 + 60_000).unwrap());
@@ -297,5 +311,155 @@ mod tests {
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].used_percent, 1.0);
         assert_eq!(samples[1].used_percent, 2.0);
+    }
+
+    fn september_history(db: &Db) -> Vec<QuotaSample> {
+        query_quota_history(
+            db,
+            &QuotaHistoryQuery {
+                from: "2026-09-01T00:00:00Z".into(),
+                to: "2026-09-30T00:00:00Z".into(),
+                provider: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn unchanged_heartbeat_keeps_exact_five_minute_boundary() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000;
+        let w = window(WindowKind::FiveHour, 10.0, None);
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0).unwrap());
+        assert!(!insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 299_999).unwrap());
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 300_000).unwrap());
+        let history = september_history(&db);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].ts, "2026-09-15T00:00:00Z");
+        assert_eq!(history[1].ts, "2026-09-15T00:05:00Z");
+    }
+
+    #[test]
+    fn reset_metadata_changes_are_recorded_even_at_equal_percentages() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000;
+        let mut w = window(WindowKind::FiveHour, 10.0, None);
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0).unwrap());
+        w.resets_at = Some("2026-09-19T04:00:00+08:00".into());
+        assert!(
+            !insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 1).unwrap(),
+            "equivalent instant"
+        );
+        w.resets_at = Some("2026-09-19T20:00:00.123Z".into());
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 2).unwrap());
+        w.resets_at = None;
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 3).unwrap());
+        w.resets_at = Some("invalid".into());
+        assert!(
+            !insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 4).unwrap(),
+            "invalid deadline is still unknown"
+        );
+        w.resets_at = Some("2026-09-20T20:00:00Z".into());
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0 + 5).unwrap());
+        let history = september_history(&db);
+        assert_eq!(
+            history.iter().map(|s| s.used_percent).collect::<Vec<_>>(),
+            [10.0; 4]
+        );
+        assert_eq!(
+            history
+                .iter()
+                .map(|s| s.resets_at.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("2026-09-18T20:00:00Z"),
+                Some("2026-09-19T20:00:00.123Z"),
+                None,
+                Some("2026-09-20T20:00:00Z")
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_metadata_changes_are_recorded_in_both_directions() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000;
+        let w = window(WindowKind::FiveHour, 10.0, None);
+        for (i, plan) in [None, Some("Pro"), Some("Plus"), None]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(insert_quota_sample(&db, "codex", plan, &w, t0 + i as i64).unwrap());
+        }
+        assert!(!insert_quota_sample(&db, "codex", None, &w, t0 + 4).unwrap());
+        let history = september_history(&db);
+        assert_eq!(
+            history
+                .iter()
+                .map(|s| s.plan.as_deref())
+                .collect::<Vec<_>>(),
+            [None, Some("Pro"), Some("Plus"), None]
+        );
+    }
+
+    #[test]
+    fn same_timestamp_observations_use_latest_id_and_read_in_insertion_order() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000;
+        let w = window(WindowKind::FiveHour, 10.0, None);
+        assert!(insert_quota_sample(&db, "codex", Some("Pro"), &w, t0).unwrap());
+        let changed = window(WindowKind::FiveHour, 20.0, None);
+        assert!(insert_quota_sample(&db, "codex", Some("Plus"), &changed, t0).unwrap());
+        assert!(
+            !insert_quota_sample(&db, "codex", Some("Plus"), &changed, t0).unwrap(),
+            "last row at a tied timestamp is authoritative"
+        );
+        assert!(insert_quota_sample(&db, "codex", Some("Plus"), &w, t0 + 1).unwrap());
+        let history = september_history(&db);
+        assert_eq!(
+            history.iter().map(|s| s.used_percent).collect::<Vec<_>>(),
+            [10.0, 20.0, 10.0]
+        );
+        assert_eq!(
+            history.iter().map(|s| s.ts.as_str()).collect::<Vec<_>>(),
+            [
+                "2026-09-15T00:00:00Z",
+                "2026-09-15T00:00:00Z",
+                "2026-09-15T00:00:00.001Z"
+            ]
+        );
+        let forecast = window_samples(&db, "codex", WindowKind::FiveHour, None, t0).unwrap();
+        assert_eq!(
+            forecast
+                .iter()
+                .map(|s| (s.ts_ms, s.used_percent))
+                .collect::<Vec<_>>(),
+            [(t0, 10.0), (t0, 20.0), (t0 + 1, 10.0)]
+        );
+    }
+
+    #[test]
+    fn empty_scope_is_distinct_from_null_and_named_scopes() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000;
+        for scope in [None, Some(""), Some("Fable")] {
+            let w = window(WindowKind::SevenDay, 10.0, scope);
+            assert!(insert_quota_sample(&db, "claude", None, &w, t0).unwrap());
+            assert!(!insert_quota_sample(&db, "claude", None, &w, t0 + 1).unwrap());
+            assert_eq!(
+                window_samples(&db, "claude", WindowKind::SevenDay, scope, t0)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let history = september_history(&db);
+        assert_eq!(
+            history
+                .iter()
+                .map(|s| s.scope.as_deref())
+                .collect::<Vec<_>>(),
+            [None, Some(""), Some("Fable")]
+        );
     }
 }

@@ -4,7 +4,7 @@ use super::Db;
 use crate::commands::pricing;
 use crate::model::{
     Bucket, CalendarDay, CalendarQuery, CalendarResult, CalendarSlot, HistoryQuery, HistoryResult,
-    HistoryRow, PricingTable, SessionQuery, SessionRow, SessionsResult, TokenTotals,
+    HistoryRow, ModelVariant, PricingTable, SessionQuery, SessionRow, SessionsResult, TokenTotals,
 };
 use anyhow::Result;
 use chrono::{Datelike, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike};
@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct UsageEvent {
     pub provider: String,
     pub model: String,
+    pub reasoning_effort: Option<String>,
     /// unix milliseconds
     pub ts: i64,
     pub input_tokens: i64,
@@ -36,6 +37,8 @@ pub struct UsageEvent {
 /// idempotent. Because Claude writes several streaming lines for one message,
 /// an already-stored row is *upgraded* when the new row carries more tokens
 /// (the final streaming line) — otherwise the partial first line would win.
+/// Explicit model/effort metadata can also enrich a replay without adding rows
+/// or replacing complete counters with those from a partial fragment.
 /// Returns the number of genuinely new rows.
 pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
     if events.is_empty() {
@@ -48,15 +51,30 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
         let mut insert = tx.prepare(
             "INSERT OR IGNORE INTO usage_events
                (provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
-                output_tokens, reasoning_tokens, total_tokens, session_id, request_id, cwd, source_file)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                output_tokens, reasoning_tokens, total_tokens, session_id, request_id, cwd, source_file,
+                reasoning_effort)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         )?;
         let mut upgrade = tx.prepare(
-            "UPDATE usage_events SET model=?2, ts=?3, input_tokens=?4, cache_write_tokens=?5,
+            "UPDATE usage_events SET model=CASE WHEN ?2='unknown' THEN model ELSE ?2 END,
+               ts=?3, input_tokens=?4, cache_write_tokens=?5,
                cache_read_tokens=?6, output_tokens=?7, reasoning_tokens=?8, total_tokens=?9,
-               session_id=?10, cwd=?12, source_file=?13
+               session_id=?10, cwd=?12, source_file=?13,
+               reasoning_effort=CASE WHEN model=?2 OR ?2='unknown' THEN COALESCE(?14, reasoning_effort) ELSE ?14 END
              WHERE provider=?1 AND request_id=?11 AND
                (total_tokens < ?9 OR (total_tokens = ?9 AND reasoning_tokens < ?8))",
+        )?;
+        // A schema-upgrade replay often has identical counters. Enrich those
+        // rows independently; a smaller streaming fragment may fill missing
+        // effort for the same model but must never lower complete counters.
+        let mut enrich = tx.prepare(
+            "UPDATE usage_events SET
+               model=CASE WHEN total_tokens <= ?4 OR model='unknown' THEN ?3 ELSE model END,
+               reasoning_effort=CASE
+                 WHEN model <> ?3 AND (total_tokens <= ?4 OR model='unknown') THEN ?5
+                 ELSE COALESCE(?5, reasoning_effort) END
+             WHERE provider=?1 AND request_id=?2 AND ?3 <> 'unknown'
+               AND (model=?3 OR total_tokens <= ?4 OR model='unknown')",
         )?;
         for e in events {
             let params = rusqlite::params![
@@ -73,12 +91,20 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
                 e.request_id,
                 e.cwd,
                 e.source_file,
+                e.reasoning_effort,
             ];
             let n = insert.execute(params)?;
             if n > 0 {
                 added += 1;
             } else {
                 upgrade.execute(params)?;
+                enrich.execute(rusqlite::params![
+                    e.provider,
+                    e.request_id,
+                    e.model,
+                    e.total_tokens,
+                    e.reasoning_effort
+                ])?;
             }
         }
     }
@@ -98,6 +124,7 @@ struct HistoryBucket {
     provider: String,
     project: Option<String>,
     model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 /// Aggregate `usage_events` into local-time buckets.
@@ -131,7 +158,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let sql = "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
-                          output_tokens, reasoning_tokens, total_tokens, cwd
+                          output_tokens, reasoning_tokens, total_tokens, cwd, reasoning_effort
                    FROM usage_events
                    WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
                      AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
@@ -177,6 +204,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
                     provider: provider.clone(),
                     project,
                     model: key_model,
+                    reasoning_effort: if q.group_by_model { row.get(10)? } else { None },
                 })
                 .or_default()
                 .add(&t, cost);
@@ -191,6 +219,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
             bucket_start: local_rfc3339(bucket.start),
             provider: bucket.provider,
             model: bucket.model,
+            reasoning_effort: bucket.reasoning_effort,
             project: bucket.project,
             totals: acc.finish(),
         })
@@ -336,6 +365,7 @@ struct SessionAcc {
     /// directory (exact path, never trimmed — contract §4).
     project: String,
     models: BTreeSet<String>,
+    model_variants: BTreeSet<ModelVariant>,
     acc: Acc,
 }
 
@@ -359,7 +389,7 @@ pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Resu
         let mut stmt = conn.prepare(
             "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
                     output_tokens, reasoning_tokens, total_tokens,
-                    COALESCE(session_id, ''), COALESCE(cwd, '')
+                    COALESCE(session_id, ''), COALESCE(cwd, ''), reasoning_effort
              FROM usage_events
              WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
                AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
@@ -395,7 +425,11 @@ pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Resu
             // rows arrive in `ts` order, so the last write wins for the cwd
             entry.last_ts = entry.last_ts.max(ts);
             entry.project = project;
-            entry.models.insert(model);
+            entry.models.insert(model.clone());
+            entry.model_variants.insert(ModelVariant {
+                model,
+                reasoning_effort: row.get(11)?,
+            });
             entry.acc.add(&t, cost);
             totals.add(&t, cost);
         }
@@ -412,6 +446,7 @@ pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Resu
             last_ts: local_rfc3339(s.last_ts),
             duration_ms: s.last_ts - s.first_ts,
             models: s.models.into_iter().collect(),
+            model_variants: s.model_variants.into_iter().collect(),
             totals: s.acc.finish(),
         })
         .collect::<Vec<_>>();
@@ -555,6 +590,7 @@ mod tests {
         UsageEvent {
             provider: provider.into(),
             model: model.into(),
+            reasoning_effort: None,
             ts,
             input_tokens: input,
             cache_write_tokens: 0,
@@ -789,6 +825,258 @@ mod tests {
         insert_usage_events(&db, &[alien]).unwrap();
         let unknown = query_history(&db, &range, &table).unwrap();
         assert!(unknown.totals.estimated_cost_usd.is_none());
+    }
+
+    #[test]
+    fn model_efforts_are_separate_groups_and_session_variants_without_affecting_prices() {
+        let db = Db::open_in_memory().unwrap();
+        let mut events = Vec::new();
+        for (index, model, effort) in [
+            (0, "gpt-6-astra", Some("medium")),
+            (1, "gpt-6-astra", Some("ultra")),
+            (2, "gpt-6-astra", Some("medium")),
+            (3, "gpt-6-astra", None),
+            (4, "gpt-5.6-sol", Some("xhigh")),
+        ] {
+            let mut e = event(
+                "codex",
+                model,
+                ms("2026-09-15T10:00:00"),
+                &index.to_string(),
+                1_000_000,
+                0,
+            );
+            e.reasoning_effort = effort.map(str::to_owned);
+            events.push(e);
+        }
+        insert_usage_events(&db, &events).unwrap();
+        let pricing = pricing::default_table();
+        let q = HistoryQuery {
+            group_by_model: true,
+            ..query("2026-09-15", "2026-09-16", Bucket::Day)
+        };
+        let grouped = query_history(&db, &q, &pricing).unwrap();
+        assert_eq!(grouped.rows.len(), 4);
+        let medium = grouped
+            .rows
+            .iter()
+            .find(|r| r.reasoning_effort.as_deref() == Some("medium"))
+            .unwrap();
+        assert_eq!(medium.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(medium.totals.total_tokens, 2_000_000);
+        assert_eq!(medium.totals.requests, 2);
+        assert_eq!(medium.totals.estimated_cost_usd, Some(20.0));
+        let ultra = grouped
+            .rows
+            .iter()
+            .find(|r| r.reasoning_effort.as_deref() == Some("ultra"))
+            .unwrap();
+        assert_eq!(ultra.totals.estimated_cost_usd, Some(10.0));
+        assert_eq!(grouped.totals.requests, 5);
+        assert_eq!(grouped.totals.total_tokens, 5_000_000);
+        let ungrouped = query_history(
+            &db,
+            &HistoryQuery {
+                group_by_model: false,
+                ..q
+            },
+            &pricing,
+        )
+        .unwrap();
+        assert_eq!(ungrouped.rows.len(), 1);
+        assert_eq!(ungrouped.rows[0].model, None);
+        assert_eq!(ungrouped.rows[0].reasoning_effort, None);
+        assert_eq!(ungrouped.totals, grouped.totals);
+        let sessions = query_sessions(
+            &db,
+            &SessionQuery {
+                from: "2026-09-15".into(),
+                to: "2026-09-16".into(),
+                provider: None,
+                project: None,
+                limit: None,
+            },
+            &pricing,
+        )
+        .unwrap();
+        assert_eq!(sessions.rows.len(), 1);
+        assert_eq!(sessions.rows[0].models, vec!["gpt-5.6-sol", "gpt-6-astra"]);
+        assert_eq!(
+            sessions.rows[0].model_variants,
+            vec![
+                ModelVariant {
+                    model: "gpt-5.6-sol".into(),
+                    reasoning_effort: Some("xhigh".into())
+                },
+                ModelVariant {
+                    model: "gpt-6-astra".into(),
+                    reasoning_effort: None
+                },
+                ModelVariant {
+                    model: "gpt-6-astra".into(),
+                    reasoning_effort: Some("medium".into())
+                },
+                ModelVariant {
+                    model: "gpt-6-astra".into(),
+                    reasoning_effort: Some("ultra".into())
+                },
+            ]
+        );
+        let json = serde_json::to_value(&sessions.rows[0]).unwrap();
+        assert_eq!(json["modelVariants"][0]["reasoningEffort"], "xhigh");
+        assert_eq!(
+            serde_json::to_value(medium).unwrap()["reasoningEffort"],
+            "medium"
+        );
+    }
+
+    #[test]
+    fn parsed_model_effort_replay_enriches_old_rows_without_double_counting() {
+        let db = Db::open_in_memory().unwrap();
+        let text = [
+            serde_json::json!({"type":"assistant", "requestId":"req-a", "effort":"high", "perTurnEffort":"xhigh",
+                "timestamp":"2026-09-15T10:00:00Z", "sessionId":"session", "message":{"id":"msg-a", "model":"claude-fable-5-1", "usage":{"input_tokens":10,"output_tokens":90}}}),
+            serde_json::json!({"type":"assistant", "requestId":"req-b", "effort":"high",
+                "timestamp":"2026-09-15T10:00:01Z", "sessionId":"session", "message":{"id":"msg-b", "model":"claude-opus-5", "usage":{"input_tokens":20,"output_tokens":80}}}),
+        ].into_iter().map(|line|line.to_string()).collect::<Vec<_>>().join("\n");
+        let parsed = crate::commands::ingest::claude::parse_chunk(&text, "replay.jsonl");
+        let legacy: Vec<_> = parsed
+            .iter()
+            .cloned()
+            .map(|mut e| {
+                e.reasoning_effort = None;
+                e
+            })
+            .collect();
+        assert_eq!(insert_usage_events(&db, &legacy).unwrap(), 2);
+        assert_eq!(insert_usage_events(&db, &parsed).unwrap(), 0);
+        assert_eq!(insert_usage_events(&db, &parsed).unwrap(), 0);
+        let result = query_history(
+            &db,
+            &HistoryQuery {
+                group_by_model: true,
+                ..query("2026-09-14", "2026-09-17", Bucket::Day)
+            },
+            &pricing::default_table(),
+        )
+        .unwrap();
+        assert_eq!(result.totals.requests, 2);
+        assert_eq!(result.totals.total_tokens, 200);
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|r| (
+                    r.model.as_deref(),
+                    r.reasoning_effort.as_deref(),
+                    r.totals.total_tokens
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("claude-fable-5-1"), Some("xhigh"), 100),
+                (Some("claude-opus-5"), Some("high"), 100)
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_model_on_a_larger_fragment_does_not_erase_recorded_metadata() {
+        let db = Db::open_in_memory().unwrap();
+        let mut e = event(
+            "codex",
+            "gpt-6-astra",
+            ms("2026-09-15T10:00:00"),
+            "r",
+            10,
+            5,
+        );
+        e.reasoning_effort = Some("ultra".into());
+        insert_usage_events(&db, &[e.clone()]).unwrap();
+        e.model = "unknown".into();
+        e.reasoning_effort = None;
+        e.output_tokens = 20;
+        e.total_tokens = 30;
+        insert_usage_events(&db, &[e]).unwrap();
+        let row: (String, Option<String>, i64) = db
+            .lock()
+            .query_row(
+                "SELECT model,reasoning_effort,total_tokens FROM usage_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("gpt-6-astra".into(), Some("ultra".into()), 30));
+    }
+
+    #[test]
+    fn effort_backfill_is_idempotent_and_never_replaces_complete_streaming_counters() {
+        let db = Db::open_in_memory().unwrap();
+        let base = event(
+            "claude",
+            "claude-fable-5-1",
+            ms("2026-09-15T10:00:00"),
+            "same",
+            20,
+            100,
+        );
+        assert_eq!(
+            insert_usage_events(&db, std::slice::from_ref(&base)).unwrap(),
+            1
+        );
+        let mut enriched = base.clone();
+        enriched.reasoning_effort = Some("xhigh".into());
+        assert_eq!(insert_usage_events(&db, &[enriched.clone()]).unwrap(), 0);
+        assert_eq!(
+            insert_usage_events(&db, &[base]).unwrap(),
+            0,
+            "missing effort must not erase known data"
+        );
+        enriched.total_tokens = 21;
+        enriched.output_tokens = 1;
+        assert_eq!(insert_usage_events(&db, &[enriched]).unwrap(), 0);
+        let stored: (String, i64, i64, Option<String>) = db
+            .lock()
+            .query_row(
+                "SELECT model,total_tokens,output_tokens,reasoning_effort FROM usage_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            ("claude-fable-5-1".into(), 120, 100, Some("xhigh".into()))
+        );
+        assert_eq!(count_events(&db).unwrap(), 1);
+
+        let mut larger = event(
+            "claude",
+            "claude-fable-5-1",
+            ms("2026-09-15T10:00:01"),
+            "same",
+            20,
+            200,
+        );
+        insert_usage_events(&db, &[larger.clone()]).unwrap();
+        assert_eq!(
+            db.lock()
+                .query_row("SELECT reasoning_effort FROM usage_events", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "xhigh"
+        );
+        // Replay corrects a formerly misattributed model at equal counters.
+        // Effort for the old model cannot leak into the corrected one.
+        larger.model = "claude-opus-5".into();
+        insert_usage_events(&db, &[larger]).unwrap();
+        let row: (String, Option<String>, i64) = db
+            .lock()
+            .query_row(
+                "SELECT model,reasoning_effort,total_tokens FROM usage_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("claude-opus-5".into(), None, 220));
     }
 
     #[test]

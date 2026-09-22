@@ -10,8 +10,9 @@
   import BudgetChart from '$lib/components/BudgetChart.svelte';
   import UsageChart from '$lib/components/UsageChart.svelte';
   import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
+  import QuotaHistoryPanel from './QuotaHistoryPanel.svelte';
   import { exportUsageCsv, getUsageCalendar, getUsageHistory, getUsageSessions, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
-  import { budgetProgress, historyCsv, historyRange, localDateInput, projectLabels, projectName, sessionsCsv, type HistoryPreset } from '$lib/history';
+  import { budgetProgress, historyCsv, historyRange, localDateInput, modelVariantLabel, projectLabels, projectName, sessionModelVariants, sessionsCsv, type HistoryPreset } from '$lib/history';
   import { formatBucket, formatCost, formatEstimatedCost, formatDuration, formatInt, formatTokens } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { providerDisplayName } from '$lib/providers';
@@ -42,7 +43,7 @@
   let queryTime = $state(Date.now());
   let bucket = $state<Bucket>('day');
   let provider = $state<ProviderId | ''>('');
-  let groupByModel = $state(false);
+  let groupByModel = $state(true);
   let groupByProject = $state(false);
   let project = $state<string | null>(null);
   let projects = $state<string[]>([]);
@@ -303,7 +304,8 @@
       let cmp: number;
       if (key === 'bucketStart') cmp = Date.parse(a.bucketStart) - Date.parse(b.bucketStart);
       else if (key === 'provider') cmp = a.provider.localeCompare(b.provider);
-      else if (key === 'model' || key === 'project') cmp = (a[key] ?? '').localeCompare(b[key] ?? '');
+      else if (key === 'model') cmp = (a.model ?? '').localeCompare(b.model ?? '') || (a.reasoningEffort ?? '').localeCompare(b.reasoningEffort ?? '');
+      else if (key === 'project') cmp = (a.project ?? '').localeCompare(b.project ?? '');
       else if (key === 'estimatedCostUsd') cmp = (a.estimatedCostUsd ?? a.knownCostUsd ?? 0) - (b.estimatedCostUsd ?? b.knownCostUsd ?? 0);
       else cmp = (a[key] ?? 0) - (b[key] ?? 0);
       return cmp * dir || Date.parse(a.bucketStart) - Date.parse(b.bucketStart);
@@ -348,6 +350,10 @@
   }
 
   const sessionLabel = (row: SessionRow) => row.sessionId || t('history.sessions.unassigned');
+  const modelLabel = (model: string | null, effort?: string | null) =>
+    modelVariantLabel(model, effort, t('history.modelUnknown'), t('history.effortUnknown'));
+  const sessionModels = (row: SessionRow) => sessionModelVariants(row)
+    .map((variant) => modelLabel(variant.model, variant.reasoningEffort)).join(', ');
 
   /** Clicking a heatmap day narrows the range below to that single local day. */
   function pickDay(date: string) {
@@ -534,6 +540,10 @@
     <p class="muted export-path" role="status">{t('history.exported', { path: exported })}</p>
   {/if}
 
+  <QuotaHistoryPanel {range} provider={provider || null} live={preset !== 'custom'} {themeKey} />
+
+  <p class="muted small">{t('history.modelDetailsNote')}</p>
+
   <div class="card panel activity">
     <header class="panel-head">
       <h3>{t('history.activity')}</h3>
@@ -715,7 +725,7 @@
                   <td class="num mono">{formatInt(s.requests)}</td>
                   <td class="num mono strong">{formatTokens(s.totalTokens)}</td>
                   <td class="num mono">{formatEstimatedCost(s)}</td>
-                  <td class="model" title={s.models.join(', ')}>{s.models.join(', ')}</td>
+                  <td class="model" title={sessionModels(s)}>{sessionModels(s)}</td>
                 </tr>
               {/each}
             </tbody>
@@ -746,11 +756,11 @@
             </tr>
           </thead>
           <tbody>
-            {#each sortedRows as r, i (JSON.stringify([r.bucketStart, r.provider, r.model, r.project, i]))}
+            {#each sortedRows as r, i (JSON.stringify([r.bucketStart, r.provider, r.model, r.reasoningEffort, r.project, i]))}
               <tr>
                 <td>{formatBucket(r.bucketStart, bucket)}</td>
                 <td>{providerName(r.provider)}</td>
-                {#if groupByModel}<td class="model" title={r.model ?? ''}>{r.model ?? '—'}</td>{/if}
+                {#if groupByModel}<td class="model" title={modelLabel(r.model, r.reasoningEffort)}>{modelLabel(r.model, r.reasoningEffort)}</td>{/if}
                 {#if showProject}<td class="project-name" title={r.project || t('history.project.unassigned')}>{projectLabel(r.project ?? '')}</td>{/if}
                 <td class="num mono">{formatTokens(r.inputTokens)}</td>
                 <td class="num mono">{formatTokens(r.cacheReadTokens)}</td>
@@ -1083,9 +1093,10 @@
   }
 
   .model {
-    max-width: 14rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-width: 12rem;
+    max-width: 22rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .err {

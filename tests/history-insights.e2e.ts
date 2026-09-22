@@ -13,7 +13,7 @@ const test = base.extend<{ runtimeErrors: void }>({
 async function openHistory(page: import('@playwright/test').Page, query = '') {
   await page.goto(`/dashboard${query}`);
   await page.getByRole('button', { name: 'History', exact: true }).click();
-  await expect(page.locator('tbody tr').first()).toBeVisible();
+  await expect(page.locator('.table-wrap tbody tr').first()).toBeVisible();
 }
 
 test('clicking a heatmap day narrows the range to that single day', async ({ page }) => {
@@ -37,8 +37,8 @@ test('clicking a heatmap day narrows the range to that single day', async ({ pag
   await expect(busiest).toHaveAttribute('aria-pressed', 'true');
   // a single day defaults to hour buckets, and every row lands inside it
   await expect(page.locator('#bucket')).toHaveValue('hour');
-  await expect(page.locator('tbody tr').first()).toBeVisible();
-  const labels = await page.locator('tbody tr td:nth-child(1)').allTextContents();
+  await expect(page.locator('.table-wrap tbody tr').first()).toBeVisible();
+  const labels = await page.locator('.table-wrap tbody tr td:nth-child(1)').allTextContents();
   expect(labels.length).toBeGreaterThan(0);
   expect(new Set(labels.map((text) => text.split(',')[0]))).toHaveProperty('size', 1);
   await page.screenshot({ path: test.info().outputPath('heatmap.png') });
@@ -62,8 +62,8 @@ test('the sessions view sorts server-capped rows and exports them as CSV', async
     .getByRole('button', { name: 'Sessions', exact: true }).click();
 
   await expect(page.getByRole('columnheader', { name: /^Session/ })).toBeVisible();
-  await expect(page.getByRole('columnheader', { name: 'Models', exact: true })).toBeVisible();
-  const rows = page.locator('tbody tr');
+  await expect(page.getByRole('columnheader', { name: 'Models / reasoning effort used', exact: true })).toBeVisible();
+  const rows = page.locator('.table-wrap tbody tr');
   expect(await rows.count()).toBeGreaterThan(0);
 
   // the default order is the server's: biggest session first

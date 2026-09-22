@@ -135,13 +135,13 @@ test('CSV preserves delimiters, unknown cost and neutralizes formula cells', () 
   };
   const csv = historyCsv([row]);
   expect(csv.split('\r\n')[0]).toBe(
-    'bucket_start,provider,model,project,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd,known_cost_usd,unpriced_requests'
+    'bucket_start,provider,model,reasoning_effort,project,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd,known_cost_usd,unpriced_requests'
   );
-  expect(csv).toContain('"模型,example","C:\\团队\\comma, quote"" project",100,20,30,40,10,190,1,,,\r\n');
+  expect(csv).toContain('"模型,example",,"C:\\团队\\comma, quote"" project",100,20,30,40,10,190,1,,,\r\n');
   // the export carries the complete path, never the shortened UI label
   expect(csv).toContain(project.replace(/"/g, '""'));
   // an unfiltered, ungrouped aggregate has no project: the column stays empty
-  expect(historyCsv([{ ...row, project: null }])).toContain(',claude,"模型,example",,100,');
+  expect(historyCsv([{ ...row, project: null }])).toContain(',claude,"模型,example",,,100,');
   expect(csv.split('\r\n')).toHaveLength(3);
 });
 

@@ -32,6 +32,10 @@ struct Line {
     session_id: Option<String>,
     cwd: Option<String>,
     uuid: Option<String>,
+    /// Explicit request metadata emitted by Claude Code, outside `message`.
+    effort: Option<serde_json::Value>,
+    #[serde(rename = "perTurnEffort")]
+    per_turn_effort: Option<serde_json::Value>,
     message: Option<Message>,
 }
 
@@ -101,9 +105,11 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
             .as_deref()
             .and_then(parse_ts_ms)
             .unwrap_or(0);
-        let event = UsageEvent {
+        let mut event = UsageEvent {
             provider: CLAUDE_ID.to_string(),
             model,
+            reasoning_effort: explicit_effort(parsed.per_turn_effort.as_ref())
+                .or_else(|| explicit_effort(parsed.effort.as_ref())),
             ts,
             input_tokens: usage.input_tokens.max(0),
             cache_write_tokens: usage.cache_creation_input_tokens.max(0),
@@ -124,7 +130,15 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
             cwd: parsed.cwd.clone(),
             source_file: Some(source.to_string()),
         };
-        if let Some(previous) = by_key.get(&key) {
+        if let Some(previous) = by_key.get_mut(&key) {
+            if previous.model == event.model {
+                // Streaming fragments can omit metadata. Keep explicit effort
+                // independently from whichever fragment has complete counters.
+                event.reasoning_effort = event
+                    .reasoning_effort
+                    .or_else(|| previous.reasoning_effort.clone());
+                previous.reasoning_effort = event.reasoning_effort.clone();
+            }
             if previous.total_tokens > event.total_tokens {
                 continue;
             }
@@ -138,6 +152,13 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
         .into_iter()
         .filter_map(|k| by_key.remove(&k))
         .collect()
+}
+
+pub(super) fn explicit_effort(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
 }
 
 /// Parse the bytes of `path` starting at `from_offset`.
@@ -223,6 +244,106 @@ mod tests {
         assert!(events3.is_empty());
         assert_eq!(offset3, offset2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn exact_models_and_explicit_per_turn_effort_are_preserved() {
+        let cases = [
+            (
+                "claude-opus-5",
+                serde_json::json!("high"),
+                serde_json::json!("xhigh"),
+                Some("xhigh"),
+            ),
+            (
+                "claude-fable-5-1",
+                serde_json::Value::Null,
+                serde_json::json!("high"),
+                Some("high"),
+            ),
+            (
+                "claude-fabel-5-1",
+                serde_json::json!("ultra"),
+                serde_json::Value::Null,
+                Some("ultra"),
+            ),
+            (
+                "claude-opus-5",
+                serde_json::json!("medium"),
+                serde_json::json!(""),
+                Some("medium"),
+            ),
+            (
+                "claude-opus-5",
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                None,
+            ),
+            (
+                "claude-opus-5",
+                serde_json::json!(42),
+                serde_json::json!(false),
+                None,
+            ),
+        ];
+        let text = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (model, effort, per_turn, _))| {
+                serde_json::json!({"type":"assistant", "requestId":format!("r{i}"),
+                "effort":effort,"perTurnEffort":per_turn,
+                "message":{"id":format!("m{i}"),"model":model,
+                    "usage":{"input_tokens":10,"output_tokens":20,
+                        "output_tokens_details":{"thinking_tokens":15}}}})
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let events = parse_chunk(&text, "fixture");
+        assert_eq!(events.len(), cases.len());
+        for (event, (model, _, _, expected)) in events.iter().zip(cases) {
+            assert_eq!(event.model, model, "model ids are not aliases");
+            assert_eq!(event.reasoning_effort.as_deref(), expected);
+            assert_eq!(
+                event.reasoning_tokens, 15,
+                "thinking counters never imply effort"
+            );
+            assert_eq!(event.total_tokens, 30);
+        }
+    }
+
+    #[test]
+    fn streaming_fragments_keep_effort_and_complete_usage_independently() {
+        let fragment = |output, effort: serde_json::Value| {
+            serde_json::json!({
+                "type":"assistant", "requestId":"r", "effort":effort,
+                "message":{"id":"m", "model":"claude-fable-5-1",
+                    "usage":{"input_tokens":5,"output_tokens":output}}
+            })
+            .to_string()
+        };
+        for text in [
+            [
+                fragment(1, serde_json::json!("xhigh")),
+                fragment(100, serde_json::Value::Null),
+            ]
+            .join("\n"),
+            [
+                fragment(100, serde_json::Value::Null),
+                fragment(1, serde_json::json!("xhigh")),
+            ]
+            .join("\n"),
+            [
+                fragment(100, serde_json::json!("xhigh")),
+                fragment(100, serde_json::Value::Null),
+            ]
+            .join("\n"),
+        ] {
+            let events = parse_chunk(&text, "fixture");
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].total_tokens, 105);
+            assert_eq!(events[0].reasoning_effort.as_deref(), Some("xhigh"));
+        }
     }
 
     #[test]

@@ -328,10 +328,22 @@ which is exactly what the settings field then says.
 
 `CloseRequested` is prevented on all three: the overlays cannot be closed at all
 and the dashboard hides, so the app keeps living in the tray. A second launch
-(single-instance plugin) focuses the dashboard instead of starting a second bar.
+(single-instance plugin) restores the sidebar and focuses the dashboard instead
+of starting a second bar. An already visible sidebar is hidden and shown once
+to recover a stalled native surface, with placement and stacking restored.
+Recovery is skipped while dragging. The display watchdog also remaps a visible
+sidebar after monitor changes or a long scheduling pause; it leaves a bar
+explicitly hidden from the tray hidden.
 
 ## 6. Known issues / field notes
 
+* **Sidebar numbers and hover can freeze while the dashboard stays current.**
+  Observed on Linux/XWayland: unmapping and remapping the same sidebar window,
+  without restarting or requesting new quotas, immediately restored its current
+  numbers. This identifies a native presentation/lifecycle stall; the underlying
+  WebKit/compositor cause is not established. Reopening the application now
+  performs that recovery. Cache reconciliation in the frontend separately
+  repairs missed quota events; it cannot repair a frozen native surface.
 * **A full-desktop screenshot is impossible under rootless XWayland.** The X root
   window is not viewable, so `import -window root` and `XGetImage` on the root
   both fail. Individual app windows can still be captured
