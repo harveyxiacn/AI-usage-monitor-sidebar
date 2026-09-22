@@ -53,8 +53,8 @@ test('overview refreshes and history filters and exports the visible rows', asyn
   await page.getByRole('button', { name: 'History', exact: true }).click();
   await page.locator('#provider').selectOption('codex');
   await page.locator('#group').selectOption('model');
-  await expect(page.locator('tbody tr').first()).toBeVisible();
-  for (const text of await page.locator('tbody tr td:nth-child(2)').allTextContents()) expect(text).toBe('Codex');
+  await expect(page.locator('.table-wrap tbody tr').first()).toBeVisible();
+  for (const text of await page.locator('.table-wrap tbody tr td:nth-child(2)').allTextContents()) expect(text).toBe('Codex');
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
   const download = await downloadPromise;
@@ -63,7 +63,7 @@ test('overview refreshes and history filters and exports the visible rows', asyn
   expect(csv).toContain('bucket_start,provider,model');
   expect(csv).toContain(',codex,');
   expect(csv).not.toContain(',claude,');
-  expect(csv.trim().split(/\r?\n/)).toHaveLength(await page.locator('tbody tr').count() + 1);
+  expect(csv.trim().split(/\r?\n/)).toHaveLength(await page.locator('.table-wrap tbody tr').count() + 1);
   await page.screenshot({ path: test.info().outputPath('history.png') });
   await page.getByRole('group', { name: 'Show', exact: true }).getByRole('button', { name: 'Est. cost', exact: true }).click();
   // `gpt-5.3-codex-spark` is not in the table; it is priced from its family
@@ -75,14 +75,14 @@ test('overview refreshes and history filters and exports the visible rows', asyn
 
 test('the project filter narrows the table and exports complete paths', async ({ page }) => {
   await page.getByRole('button', { name: 'History', exact: true }).click();
-  await expect(page.locator('tbody tr').first()).toBeVisible();
+  await expect(page.locator('.table-wrap tbody tr').first()).toBeVisible();
   // no project column until something is filtered or split by project
   await expect(page.getByRole('columnheader', { name: /Project/ })).toHaveCount(0);
 
   const path = '/home/demo/work/client/website';
   await page.locator('#project').selectOption(`project:${path}`);
   await expect(page.getByRole('columnheader', { name: /Project/ })).toBeVisible();
-  const cells = page.locator('tbody tr td:nth-child(3)');
+  const cells = page.locator('.table-wrap tbody td.project-name');
   expect(await cells.count()).toBeGreaterThan(0);
   // the shortened label disambiguates the two "website" projects…
   for (const text of await cells.allTextContents()) expect(text).toBe('website — /home/demo/work/client');
@@ -92,12 +92,12 @@ test('the project filter narrows the table and exports complete paths', async ({
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
   const csv = await readFile((await (await downloadPromise).path())!, 'utf8');
-  expect(csv).toContain('model,project,input_tokens');
+  expect(csv).toContain('model,reasoning_effort,project,input_tokens');
   for (const line of csv.trim().split(/\r?\n/).slice(1)) expect(line).toContain(`,${path},`);
 
   // splitting by project keeps the filter but shows every project once cleared
   await page.getByLabel('Split by project').check();
-  await expect(cells).toHaveCount(await page.locator('tbody tr').count());
+  await expect(cells).toHaveCount(await page.locator('.table-wrap tbody tr').count());
   await page.locator('#project').selectOption('all');
   await expect(page.locator('#project')).toHaveValue('all');
   await expect.poll(async () => new Set(await cells.allTextContents()).size).toBeGreaterThan(1);
@@ -131,7 +131,7 @@ test('theme and language changes persist across tab navigation without overflow'
 
 test('clipboard failures show a useful error instead of a copied confirmation', async ({ page }) => {
   await page.getByRole('button', { name: 'History', exact: true }).click();
-  await expect(page.locator('tbody tr').first()).toBeVisible();
+  await expect(page.locator('.table-wrap tbody tr').first()).toBeVisible();
   await page.evaluate(() => {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('denied')) }, configurable: true });
     document.execCommand = () => false;

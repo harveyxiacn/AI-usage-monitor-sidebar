@@ -40,6 +40,9 @@ pub fn run() {
                 return;
             }
             log::info!("second instance ({argv:?} in {cwd}), focusing the dashboard");
+            // Whoever starts the app again wants to see it: a bar hidden from
+            // the tray comes back too, not only the dashboard.
+            window::tray::show_sidebar(app);
             window::dashboard::focus(app);
         }))
         .plugin(tauri_plugin_opener::init())

@@ -166,7 +166,7 @@ test('the session CSV exports counters and identifiers only', () => {
   const csv = sessionsCsv([row]);
   const [header, first] = csv.split('\r\n');
   expect(header).toBe(
-    'session_id,provider,project,first_activity,last_activity,duration_ms,models,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd,known_cost_usd,unpriced_requests'
+    'session_id,provider,project,first_activity,last_activity,duration_ms,models,model_variants,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd,known_cost_usd,unpriced_requests'
   );
   expect(first).toContain('"thread-1,alpha",codex,');
   // the exact path survives, quoted; the cost stays empty rather than 0

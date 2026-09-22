@@ -17,6 +17,7 @@ use crate::commands::providers::CODEX_ID;
 use crate::commands::store::UsageEvent;
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Deserialize, Debug, Default)]
@@ -40,8 +41,19 @@ struct SessionMeta {
 #[derive(Deserialize, Debug, Default)]
 #[serde(default)]
 struct TurnContext {
+    turn_id: Option<String>,
     model: Option<String>,
     cwd: Option<String>,
+    effort: Option<serde_json::Value>,
+    reasoning_effort: Option<serde_json::Value>,
+    reasoning: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct EventContext {
+    model: Option<String>,
+    cwd: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -70,6 +82,7 @@ pub struct Usage {
 struct TokenCountPayload {
     #[serde(rename = "type")]
     kind: String,
+    turn_id: Option<String>,
     info: Option<TokenCountInfo>,
 }
 
@@ -160,6 +173,8 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
     let mut meta = SessionMeta::default();
     let mut model: Option<String> = None;
     let mut cwd: Option<String> = None;
+    let mut reasoning_effort = None;
+    let mut turns: HashMap<String, EventContext> = HashMap::new();
     let mut cumulative = Usage::default();
 
     let mut pos: u64 = 0;
@@ -203,6 +218,25 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                     if let Some(c) = t.cwd.filter(|s| !s.is_empty()) {
                         cwd = Some(c);
                     }
+                    // Missing effort starts an unknown-effort turn; it must
+                    // never inherit the preceding turn's setting.
+                    reasoning_effort = super::claude::explicit_effort(t.effort.as_ref())
+                        .or_else(|| super::claude::explicit_effort(t.reasoning_effort.as_ref()))
+                        .or_else(|| {
+                            super::claude::explicit_effort(
+                                t.reasoning.as_ref().and_then(|r| r.get("effort")),
+                            )
+                        });
+                    if let Some(turn_id) = t.turn_id.filter(|id| !id.is_empty()) {
+                        turns.insert(
+                            turn_id,
+                            EventContext {
+                                model: model.clone(),
+                                cwd: cwd.clone(),
+                                reasoning_effort: reasoning_effort.clone(),
+                            },
+                        );
+                    }
                 }
             }
             "token_usage_record" => {
@@ -219,6 +253,14 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                 if start < from_offset {
                     continue;
                 }
+                let context = record_context(
+                    rec.turn_id.as_deref(),
+                    &turns,
+                    &meta,
+                    &model,
+                    &cwd,
+                    &reasoning_effort,
+                );
                 events.push(make_event(
                     usage,
                     request_id,
@@ -226,8 +268,9 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                     rec.thread_id
                         .or(rec.session_id)
                         .or_else(|| session_id(&meta)),
-                    model.clone(),
-                    cwd.clone(),
+                    context.model,
+                    context.cwd,
+                    context.reasoning_effort,
                     source,
                 ));
             }
@@ -256,13 +299,22 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                 if delta.is_empty() || start < from_offset {
                     continue;
                 }
+                let context = record_context(
+                    payload.turn_id.as_deref(),
+                    &turns,
+                    &meta,
+                    &model,
+                    &cwd,
+                    &reasoning_effort,
+                );
                 events.push(make_event(
                     delta,
                     format!("{stem}:{line_no}"),
                     ts,
                     session_id(&meta),
-                    model.clone(),
-                    cwd.clone(),
+                    context.model,
+                    context.cwd,
+                    context.reasoning_effort,
                     source,
                 ));
             }
@@ -276,6 +328,30 @@ fn session_id(meta: &SessionMeta) -> Option<String> {
     meta.session_id.clone().or_else(|| meta.id.clone())
 }
 
+fn record_context(
+    turn_id: Option<&str>,
+    turns: &HashMap<String, EventContext>,
+    meta: &SessionMeta,
+    model: &Option<String>,
+    cwd: &Option<String>,
+    reasoning_effort: &Option<String>,
+) -> EventContext {
+    if let Some(id) = turn_id.filter(|id| !id.is_empty()) {
+        // Delayed responses can arrive after a newer turn_context. Never
+        // attribute a named but unseen turn to that newer turn's settings.
+        return turns.get(id).cloned().unwrap_or_else(|| EventContext {
+            model: meta.model.clone(),
+            cwd: meta.cwd.clone(),
+            reasoning_effort: None,
+        });
+    }
+    EventContext {
+        model: model.clone(),
+        cwd: cwd.clone(),
+        reasoning_effort: reasoning_effort.clone(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn make_event(
     usage: Usage,
@@ -284,12 +360,14 @@ fn make_event(
     session_id: Option<String>,
     model: Option<String>,
     cwd: Option<String>,
+    reasoning_effort: Option<String>,
     source: &str,
 ) -> UsageEvent {
     let (input, cache_write, cache_read, output, reasoning, total) = usage.to_event_fields();
     UsageEvent {
         provider: CODEX_ID.to_string(),
         model: model.unwrap_or_else(|| "unknown".to_string()),
+        reasoning_effort,
         ts,
         input_tokens: input,
         cache_write_tokens: cache_write,
@@ -355,6 +433,7 @@ mod tests {
 
         assert_eq!(e[0].request_id, "resp_A");
         assert_eq!(e[0].model, "gpt-6-astra");
+        assert_eq!(e[0].reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(e[0].input_tokens, 14149 - 11904);
         assert_eq!(e[0].cache_read_tokens, 11904);
         assert_eq!(e[0].cache_write_tokens, 0);
@@ -366,8 +445,108 @@ mod tests {
 
         assert_eq!(e[1].request_id, "resp_B");
         assert_eq!(e[1].model, "gpt-5.3-codex", "latest turn_context wins");
+        assert_eq!(
+            e[1].reasoning_effort, None,
+            "missing effort does not inherit medium"
+        );
         assert_eq!(e[1].input_tokens, 150);
         assert_eq!(e[1].cache_write_tokens, 10);
+    }
+
+    #[test]
+    fn named_turns_preserve_exact_model_and_effort_when_records_interleave() {
+        let context = |id: &str, model: &str, effort: serde_json::Value| {
+            serde_json::json!({
+            "type":"turn_context", "payload":{"turn_id":id,"model":model,"effort":effort,"cwd":format!("/{id}")}
+        }).to_string()
+        };
+        let record = |id: &str| {
+            serde_json::json!({"type":"token_usage_record",
+            "payload":{"turn_id":id,"response_id":format!("r-{id}"),"usage":{"input_tokens":10,"output_tokens":5}}}).to_string()
+        };
+        let prefix = [
+            context("a", "gpt-6-astra", serde_json::json!("medium")),
+            context("b", "gpt-6-astra", serde_json::json!("ultra")),
+            context("c", "gpt-5.6-sol", serde_json::json!("xhigh")),
+        ]
+        .join("\n")
+            + "\n";
+        let text =
+            prefix.clone() + &[record("b"), record("a"), record("c"), record("unseen")].join("\n");
+        let events = parse_text(&text, "s", "s", prefix.len() as u64);
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            (
+                events[0].model.as_str(),
+                events[0].reasoning_effort.as_deref()
+            ),
+            ("gpt-6-astra", Some("ultra"))
+        );
+        assert_eq!(
+            (
+                events[1].model.as_str(),
+                events[1].reasoning_effort.as_deref()
+            ),
+            ("gpt-6-astra", Some("medium"))
+        );
+        assert_eq!(events[1].cwd.as_deref(), Some("/a"));
+        assert_eq!(
+            (
+                events[2].model.as_str(),
+                events[2].reasoning_effort.as_deref()
+            ),
+            ("gpt-5.6-sol", Some("xhigh"))
+        );
+        assert_eq!(
+            events[3].model, "unknown",
+            "an unseen turn must not inherit a newer context"
+        );
+        assert_eq!(events[3].reasoning_effort, None);
+        assert_eq!(events.iter().map(|e| e.total_tokens).sum::<i64>(), 60);
+    }
+
+    #[test]
+    fn effort_fields_reset_each_turn_and_legacy_counts_keep_context() {
+        let contexts = [
+            serde_json::json!({"model":"gpt-6-astra","effort":"medium"}),
+            serde_json::json!({"effort":null}),
+            serde_json::json!({"reasoning_effort":"ultra"}),
+            serde_json::json!({"model":"gpt-5.6-sol","reasoning":{"effort":"xhigh"}}),
+            serde_json::json!({}),
+            serde_json::json!({"effort":23}),
+        ];
+        let text = contexts.into_iter().flat_map(|payload| [
+            serde_json::json!({"type":"turn_context","payload":payload}).to_string(),
+            serde_json::json!({"type":"event_msg","payload":{"type":"token_count",
+                "info":{"last_token_usage":{"input_tokens":20,"output_tokens":10,"reasoning_output_tokens":8}}}}).to_string(),
+        ]).collect::<Vec<_>>().join("\n");
+        let events = parse_text(&text, "s", "s", 0);
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.reasoning_effort.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("medium"),
+                None,
+                Some("ultra"),
+                Some("xhigh"),
+                None,
+                None
+            ]
+        );
+        assert_eq!(
+            events.iter().map(|e| e.model.as_str()).collect::<Vec<_>>(),
+            vec![
+                "gpt-6-astra",
+                "gpt-6-astra",
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-sol",
+                "gpt-5.6-sol"
+            ]
+        );
+        assert_eq!(events.iter().map(|e| e.total_tokens).sum::<i64>(), 180);
     }
 
     #[test]
@@ -383,6 +562,7 @@ mod tests {
         assert_eq!(e[0].input_tokens, 800);
         assert_eq!(e[0].cache_read_tokens, 200);
         assert_eq!(e[0].total_tokens, 1100);
+        assert_eq!(e[0].reasoning_effort, None);
 
         assert_eq!(e[1].request_id, "rollout-legacy:2");
         assert_eq!(e[1].input_tokens, (2500 - 1000) - (900 - 200));

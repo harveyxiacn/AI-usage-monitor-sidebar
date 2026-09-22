@@ -12,7 +12,7 @@ A tiny always-on-top **edge sidebar widget** (see `docs/reference/*.jpg`) that
 shows one progress ring per AI-coding-agent provider (Claude Code, OpenAI
 Codex, …). Hovering / clicking a ring opens a **popover** with the detailed
 rate-limit windows (5-hour, weekly, per-model, …) and their reset time. A
-separate **dashboard** window holds settings and the **token usage history**
+separate **dashboard** window holds settings and the **token and quota history**
 (parsed from the providers' local session logs) so users can compare plans and
 providers over time.
 
@@ -250,6 +250,13 @@ Key semantics:
   `groupByModel`. `HistoryRow.project` is the original path (or an empty
   string for unassigned events) when grouped or filtered by project; null
   means an unfiltered aggregate across projects.
+* `HistoryRow.reasoningEffort` is explicit CLI metadata or null.
+  `groupByModel` groups by raw model **and** effort. The History UI defaults to
+  this grouping and labels missing effort as unrecorded; pricing still uses
+  only the raw model name. Claude uses top-level `perTurnEffort`, then `effort`.
+  Codex reads `turn_context.payload.effort`, `reasoning_effort`, or
+  `reasoning.effort`; named turns keep their own context for delayed records.
+  Thinking-token counts never imply an effort setting.
 * `HistoryResult.projects` lists distinct project paths within the selected
   time/provider range, ignoring the current project filter. It includes an
   empty string when unassigned events exist. UI labels may shorten paths,
@@ -266,7 +273,8 @@ Key semantics:
   `SessionsResult.rows` is capped server-side (`limit`, default 200, clamped to
   1..1000) to the largest sessions by total tokens, while `totalSessions` and
   `totals` always describe the whole range. Session rows carry counters and
-  identifiers only — never prompt or response text.
+  identifiers only — never prompt or response text. `modelVariants` lists
+  distinct `{model, reasoningEffort}` pairs; `models` keeps the raw names.
 
 ## 5. Tauri commands
 
@@ -327,6 +335,13 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `sidebar-state` | `SidebarState` | platform |
 | `dashboard-navigate` | `{ tab: string }` | platform |
 | `update-status` | `UpdateStatus` | updater, after every state change |
+
+Each window's snapshot store also reconciles through `get_snapshot` every
+30 seconds and when its document becomes visible, gains focus or is restored.
+This reads the backend's in-memory cache; it never increases provider polling.
+Failed event subscriptions are retried. Reads are deduplicated, and delayed
+responses/errors cannot overwrite a newer event or manual refresh. The last
+store consumer removes the event listener, timer and lifecycle handlers.
 
 ## 6. Windows
 
@@ -502,7 +517,7 @@ CREATE TABLE usage_events (
   cache_write_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0, session_id TEXT, request_id TEXT NOT NULL,
-  cwd TEXT, source_file TEXT, UNIQUE(provider, request_id));
+  cwd TEXT, source_file TEXT, reasoning_effort TEXT, UNIQUE(provider, request_id));
 CREATE INDEX idx_usage_ts ON usage_events(ts);
 CREATE TABLE quota_samples (
   id INTEGER PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT,
@@ -513,13 +528,20 @@ CREATE TABLE ingest_files (
   mtime INTEGER NOT NULL, byte_offset INTEGER NOT NULL, last_ingested_at INTEGER NOT NULL);
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 ```
+Schema v2 preserves existing usage and quota rows and clears ingestion cursors
+once so available logs replay to fill effort metadata without duplicate usage.
+Equal-token replays enrich metadata without replacing larger streaming totals;
+missing fields never erase a known effort for the same model. Deleted logs
+cannot supply missing metadata.
+
 Ingestion is incremental (remember byte offset per file; if the file shrank or
 was rewritten without growth, re-parse from 0). File modification times are
 recorded at nanosecond precision; upgrading older bookkeeping causes one rescan.
 An unfinished JSONL line, including an incomplete UTF-8 character, is retried
 on the next append. A quota sample is stored only for a successful live API
-refresh when the percent changed or ≥ 5 min passed; cached/offline values
-never acquire a new sample timestamp. History ranges use `[from, to)` and
+refresh when the percentage, reset deadline, or plan changed, or ≥ 5 min
+passed; cached/offline values never acquire a new sample timestamp. Sample
+timestamps preserve milliseconds and equal-time observations use insertion order. History ranges use `[from, to)` and
 local calendar buckets.
 
 `get_usage_history`, `get_usage_calendar` and `get_usage_sessions` each run a
@@ -529,6 +551,15 @@ webview. Bucketing stays in Rust (not in SQL `localtime`) so all three views
 agree on the same DST-aware local calendar. No extra index is warranted: the
 `(?N IS NULL OR col = ?N)` filters cannot be used as index prefixes, and the
 cost of these queries is reading the rows in range, which no index removes.
+
+Quota history shares the time/provider filters and keeps provider/kind/scope
+windows separate. Its curve and change list show used/remaining percentages,
+reset/plan transitions, and observed positive within-cycle deltas. It cannot
+reconstruct unobserved consumption or add percentages across windows. A reset
+requires an advancing deadline plus a decreased percentage or the old deadline
+having passed; other decreases are labelled replenishment/correction. CSV
+exports the selected window’s observations. Token and session CSV also include
+raw reasoning effort and model variants.
 
 ## 9. Cost estimation
 

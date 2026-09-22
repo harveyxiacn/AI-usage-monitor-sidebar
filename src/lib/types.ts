@@ -289,6 +289,8 @@ export interface HistoryRow extends TokenTotals {
   bucketStart: string;
   provider: ProviderId;
   model: string | null;
+  /** Raw reasoning effort from session logs; absent on older backends. */
+  reasoningEffort?: string | null;
   /** Exact cwd or "" for unassigned; null for aggregation across projects. */
   project: string | null;
 }
@@ -344,6 +346,12 @@ export interface SessionQuery {
   limit?: number | null;
 }
 
+/** Exact model and effort metadata observed in session logs. */
+export interface ModelVariant {
+  model: string;
+  reasoningEffort: string | null;
+}
+
 /** Counters and identifiers only — never prompt or response text. */
 export interface SessionRow extends TokenTotals {
   /** Provider session id; "" groups the events that carry none. */
@@ -357,6 +365,8 @@ export interface SessionRow extends TokenTotals {
   durationMs: number;
   /** Distinct model names used, sorted */
   models: string[];
+  /** Every distinct model/effort combination observed inside this range. */
+  modelVariants?: ModelVariant[];
 }
 
 export interface SessionsResult {

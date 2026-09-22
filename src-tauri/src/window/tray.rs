@@ -233,6 +233,9 @@ pub fn toggle_sidebar(app: &AppHandle) {
         return;
     };
     if win.is_visible().unwrap_or(false) {
+        // Logged on purpose: a bar that "disappeared" is otherwise impossible
+        // to tell apart from a compositor problem after the fact.
+        log::info!("sidebar hidden on request (tray menu or shortcut)");
         crate::window::popover::hide(app, true);
         window::with_state(app, |inner| {
             inner.bar_hovered = false;
@@ -243,15 +246,31 @@ pub fn toggle_sidebar(app: &AppHandle) {
             log::warn!("hiding the sidebar failed: {e}");
         }
     } else {
-        sidebar::place(app);
-        if let Err(e) = win.show() {
-            log::warn!("showing the sidebar failed: {e}");
-            return;
-        }
-        window::after_show(&win, window::settings_of(app).always_on_top);
-        window::with_state(app, |inner| inner.revealed = true);
-        crate::window::hover::schedule_idle_timers(app);
+        show_sidebar(app);
     }
+}
+
+/// Bring a hidden bar back, or recover its presentation if already visible.
+/// Launching the app again (dock, app grid, a second command-line start) goes
+/// through here, so that is always a way to get the widget back.
+pub fn show_sidebar(app: &AppHandle) {
+    let Some(win) = app.get_webview_window(windows::SIDEBAR) else {
+        log::warn!("sidebar window is missing");
+        return;
+    };
+    if win.is_visible().unwrap_or(false) {
+        sidebar::remap(app);
+        return;
+    }
+    log::info!("sidebar shown again");
+    sidebar::place(app);
+    if let Err(e) = win.show() {
+        log::warn!("showing the sidebar failed: {e}");
+        return;
+    }
+    window::after_show(&win, window::settings_of(app).always_on_top);
+    window::with_state(app, |inner| inner.revealed = true);
+    crate::window::hover::schedule_idle_timers(app);
 }
 
 /// Persist `autoHide` through the backend, which owns `settings.json` and the

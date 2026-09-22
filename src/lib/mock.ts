@@ -256,6 +256,7 @@ interface MockEvent {
   ts: number;
   provider: ProviderId;
   model: string;
+  reasoningEffort: string | null;
   project: string | null;
   /** provider session id; "" reproduces events that carry none */
   session: string;
@@ -268,8 +269,8 @@ interface MockEvent {
 }
 
 const MODELS: Record<ProviderId, string[]> = {
-  claude: ['claude-opus-5-20260514', 'claude-sonnet-4-6-20260219', 'claude-haiku-4-5-20251001'],
-  codex: ['gpt-5.3-codex', 'gpt-5.3-codex-spark'],
+  claude: ['claude-opus-5-20260514', 'claude-fable-5', 'claude-haiku-4-5-20251001'],
+  codex: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.3-codex-spark'],
 };
 
 /** Same basenames intentionally exercise exact project identity in the UI. */
@@ -326,6 +327,9 @@ const events: MockEvent[] = (() => {
             ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
             provider,
             model: models[m],
+            reasoningEffort: provider === 'codex'
+              ? ['medium', 'ultra', 'xhigh', null][(dayBack + hour + m) % 4]
+              : ['medium', 'high', null][(dayBack + hour + m) % 3],
             project: PROJECTS[(dayBack + hour + m) % PROJECTS.length] || null,
             // one session per provider and half-day; every 17th is left
             // without an id so the "no session" group stays exercised
@@ -470,7 +474,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
 
     const bs = bucketStart(e.ts, q.bucket);
     const rowProject = q.groupByProject ? project : q.project ?? null;
-    const key = JSON.stringify([bs, e.provider, q.groupByModel ? e.model : null, rowProject]);
+    const key = JSON.stringify([bs, e.provider, q.groupByModel ? e.model : null, q.groupByModel ? e.reasoningEffort : null, rowProject]);
     let row = rows.get(key);
     if (!row) {
       row = {
@@ -478,6 +482,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
         bucketStart: iso(bs),
         provider: e.provider,
         model: q.groupByModel ? e.model : null,
+        reasoningEffort: q.groupByModel ? e.reasoningEffort : null,
         project: rowProject,
       };
       rows.set(key, row);
@@ -513,6 +518,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
       Date.parse(a.bucketStart) - Date.parse(b.bucketStart) ||
       a.provider.localeCompare(b.provider) ||
       (a.model ?? '').localeCompare(b.model ?? '') ||
+      (a.reasoningEffort ?? '').localeCompare(b.reasoningEffort ?? '') ||
       (a.project ?? '').localeCompare(b.project ?? '')
   );
   return {
@@ -603,6 +609,7 @@ function runSessions(q: SessionQuery): SessionsResult {
   const rows = new Map<string, SessionRow>();
   const rowCost = new Map<string, number | null>();
   const models = new Map<string, Set<string>>();
+  const variants = new Map<string, Map<string, { model: string; reasoningEffort: string | null }>>();
   const totals = emptyTotals();
   let totalCost: number | null = 0;
 
@@ -624,16 +631,19 @@ function runSessions(q: SessionQuery): SessionsResult {
         lastTs: iso(e.ts),
         durationMs: 0,
         models: [],
+        modelVariants: [],
       };
       rows.set(key, row);
       rowCost.set(key, 0);
       models.set(key, new Set());
+      variants.set(key, new Map());
     }
     // events arrive in `ts` order, so the last one owns the session's cwd
     row.project = project;
     row.lastTs = iso(e.ts);
     row.durationMs = e.ts - Date.parse(row.firstTs);
     models.get(key)!.add(e.model);
+    variants.get(key)!.set(JSON.stringify([e.model, e.reasoningEffort]), { model: e.model, reasoningEffort: e.reasoningEffort });
     addInto(row, e);
     const cost = eventCost(e);
     rowCost.set(key, addCost(rowCost.get(key), cost));
@@ -644,6 +654,7 @@ function runSessions(q: SessionQuery): SessionsResult {
   for (const [key, row] of rows) {
     row.estimatedCostUsd = rowCost.get(key) ?? null;
     row.models = [...models.get(key)!].sort((a, b) => a.localeCompare(b));
+    row.modelVariants = [...variants.get(key)!.values()].sort((a, b) => a.model.localeCompare(b.model) || (a.reasoningEffort ?? '').localeCompare(b.reasoningEffort ?? ''));
   }
   totals.estimatedCostUsd = totalCost;
   const list = [...rows.values()].sort(
