@@ -12,7 +12,7 @@
   import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
   import { exportUsageCsv, getUsageCalendar, getUsageHistory, getUsageSessions, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
   import { budgetProgress, historyCsv, historyRange, localDateInput, projectLabels, projectName, sessionsCsv, type HistoryPreset } from '$lib/history';
-  import { formatBucket, formatCost, formatDuration, formatInt, formatTokens } from '$lib/format';
+  import { formatBucket, formatCost, formatEstimatedCost, formatDuration, formatInt, formatTokens } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { providerDisplayName } from '$lib/providers';
   import { settings } from '$lib/stores/settings.svelte';
@@ -111,6 +111,9 @@
     else bucket = 'day';
   }
 
+  let historyFilterKey = '';
+  let sessionsFilterKey = '';
+
   async function load() {
     const id = ++requestId;
     const activeRange = range;
@@ -122,7 +125,11 @@
     }
     loading = true;
     error = null;
-    result = null;
+    // Time ticks and local ingestion refresh the same view in place. A real
+    // filter change must still clear stale rows before fetching its result.
+    const filterKey = JSON.stringify([preset, customFrom, customTo, activeRange.from, bucket, groupByModel, groupByProject, provider, project]);
+    if (filterKey !== historyFilterKey) result = null;
+    historyFilterKey = filterKey;
     copied = false;
     exported = null;
     try {
@@ -205,6 +212,9 @@
       sessionsLoading = false;
       return;
     }
+    const filterKey = JSON.stringify([preset, customFrom, customTo, activeRange.from, provider, project]);
+    if (filterKey !== sessionsFilterKey) sessions = null;
+    sessionsFilterKey = filterKey;
     sessionsLoading = true;
     sessionsError = null;
     try {
@@ -235,7 +245,7 @@
     void onIngestProgress((stats) => {
       ingest = stats;
       // a finished scan may have added events — refresh the view
-      if (!stats.running && !rescanning) {
+      if (!stats.running && !rescanning && stats.eventsAdded > 0) {
         queryTime = Date.now();
         dataVersion += 1;
       }
@@ -294,6 +304,7 @@
       if (key === 'bucketStart') cmp = Date.parse(a.bucketStart) - Date.parse(b.bucketStart);
       else if (key === 'provider') cmp = a.provider.localeCompare(b.provider);
       else if (key === 'model' || key === 'project') cmp = (a[key] ?? '').localeCompare(b[key] ?? '');
+      else if (key === 'estimatedCostUsd') cmp = (a.estimatedCostUsd ?? a.knownCostUsd ?? 0) - (b.estimatedCostUsd ?? b.knownCostUsd ?? 0);
       else cmp = (a[key] ?? 0) - (b[key] ?? 0);
       return cmp * dir || Date.parse(a.bucketStart) - Date.parse(b.bucketStart);
     });
@@ -321,6 +332,7 @@
       let cmp: number;
       if (TEXT_SESSION_KEYS.includes(key)) cmp = String(a[key as 'sessionId']).localeCompare(String(b[key as 'sessionId']));
       else if (TIME_SESSION_KEYS.includes(key)) cmp = Date.parse(a[key as 'firstTs']) - Date.parse(b[key as 'firstTs']);
+      else if (key === 'estimatedCostUsd') cmp = (a.estimatedCostUsd ?? a.knownCostUsd ?? 0) - (b.estimatedCostUsd ?? b.knownCostUsd ?? 0);
       else cmp = ((a[key as 'totalTokens'] ?? 0) as number) - ((b[key as 'totalTokens'] ?? 0) as number);
       return cmp * dir || b.totalTokens - a.totalTokens || a.sessionId.localeCompare(b.sessionId);
     });
@@ -409,7 +421,7 @@
   }
 
   const metricValue = (tt: TokenTotals) =>
-    metric === 'cost' ? formatCost(tt.estimatedCostUsd) : formatTokens(tt.totalTokens);
+    metric === 'cost' ? formatEstimatedCost(tt) : formatTokens(tt.totalTokens);
 
   /** Backend display name when the snapshot knows the provider, else a monogram-style label. */
   const providerName = (id: ProviderId) =>
@@ -592,11 +604,11 @@
         <span class="muted">
           {t('history.totalTokens')}: {formatTokens(totals.totalTokens)} ·
           {t('history.requests')}: {formatInt(totals.requests)} ·
-          {t('history.estCost')}: {formatCost(totals.estimatedCostUsd)}
+          {t('history.estCost')}: {formatEstimatedCost(totals)}
         </span>
       {/if}
     </header>
-    {#if loading}
+    {#if loading && !result}
       <p class="muted" role="status">{t('common.loading')}</p>
     {:else if result}
       <UsageChart {rows} {bucket} {groupByModel} {groupByProject} {projectNames} {metric} {themeKey} />
@@ -618,9 +630,14 @@
             <div><dt>{t('history.output')}</dt><dd>{formatTokens(p.totals.outputTokens)}</dd></div>
             <div><dt>{t('history.reasoning')}</dt><dd>{formatTokens(p.totals.reasoningTokens)}</dd></div>
             <div><dt>{t('history.requests')}</dt><dd>{formatInt(p.totals.requests)}</dd></div>
-            <div><dt>{t('history.estCost')}</dt><dd>{formatCost(p.totals.estimatedCostUsd)}</dd></div>
+            <div><dt>{t('history.estCost')}</dt><dd>{formatEstimatedCost(p.totals)}</dd></div>
           </dl>
           <p class="note">{t('history.costNote')}</p>
+          {#if p.totals.estimatedCostUsd == null && p.totals.knownCostUsd != null}
+            <p class="note">{t('history.partialCostNote', { count: formatInt(p.totals.unpricedRequests ?? 0) })}</p>
+          {:else if p.totals.estimatedCostUsd == null}
+            <p class="note">{t('history.costMissingNote')}</p>
+          {/if}
           {#if result?.costApproximate}
             <p class="note">{t('history.costApproxNote')}</p>
           {/if}
@@ -658,7 +675,7 @@
           <p class="err">{t('common.error', { message: sessionsError })}</p>
           <button class="btn" onclick={() => void loadSessions()}>{t('common.retry')}</button>
         </div>
-      {:else if sessionsLoading}
+      {:else if sessionsLoading && !sessions}
         <p class="muted">{t('common.loading')}</p>
       {:else if sessions && sortedSessions.length === 0}
         <p class="muted">{t('history.sessions.none')}</p>
@@ -697,7 +714,7 @@
                   <td class="num mono">{formatDuration(s.durationMs)}</td>
                   <td class="num mono">{formatInt(s.requests)}</td>
                   <td class="num mono strong">{formatTokens(s.totalTokens)}</td>
-                  <td class="num mono">{formatCost(s.estimatedCostUsd)}</td>
+                  <td class="num mono">{formatEstimatedCost(s)}</td>
                   <td class="model" title={s.models.join(', ')}>{s.models.join(', ')}</td>
                 </tr>
               {/each}
@@ -705,7 +722,7 @@
           </table>
         </div>
       {/if}
-    {:else if loading}
+    {:else if loading && !result}
       <p class="muted">{t('common.loading')}</p>
     {:else if result && sortedRows.length === 0}
       <p class="muted">{t('history.noRows')}</p>
@@ -741,7 +758,7 @@
                 <td class="num mono">{formatTokens(r.outputTokens)}</td>
                 <td class="num mono">{formatInt(r.requests)}</td>
                 <td class="num mono strong">{formatTokens(r.totalTokens)}</td>
-                <td class="num mono">{formatCost(r.estimatedCostUsd)}</td>
+                <td class="num mono">{formatEstimatedCost(r)}</td>
               </tr>
             {/each}
           </tbody>

@@ -545,7 +545,11 @@ while `llama-9` stays unpriced. Such a price is an approximation, never an
 exact match: `find_match` / `estimate_cost_kind` report it as
 `MatchKind::Family` and `HistoryResult.costApproximate` tells the UI to say
 so. A model with no family at all still yields `estimatedCostUsd = null` for
-every group it touches, rather than a misleading partial total.
+every group it touches. `knownCostUsd` separately retains the sum of priced
+records (null if none are priced), while `unpricedRequests` counts excluded
+requests. History cards and tables show that subtotal as a **partial estimate**;
+CSV exports keep the full estimate, known subtotal and excluded count in separate
+columns. Unknown records never receive an invented price.
 
 The effective table is layered: the user's saved `pricing.json` wins; below
 it sits the cached remote list, and below that the bundled defaults. The

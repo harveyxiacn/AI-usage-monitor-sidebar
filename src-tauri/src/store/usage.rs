@@ -151,6 +151,7 @@ pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Resul
                 total_tokens: row.get(8)?,
                 requests: 1,
                 estimated_cost_usd: None,
+                ..TokenTotals::default()
             };
             let cost = match pricing::estimate_cost_kind(pricing, &model, &t) {
                 Some((cost, kind)) => {
@@ -231,12 +232,19 @@ impl Acc {
                 Some(self.totals.estimated_cost_usd.unwrap_or(0.0) + c);
         } else {
             self.cost_missing = true;
+            self.totals.unpriced_requests += t.requests;
         }
     }
 
-    /// Unknown-price buckets report `null` rather than an understated number.
+    /// Preserve a separately labeled known subtotal; full costs remain null
+    /// whenever any contributing record is unpriced.
     fn finish(self) -> TokenTotals {
         let mut t = self.totals;
+        t.known_cost_usd = if self.cost_known {
+            t.estimated_cost_usd
+        } else {
+            None
+        };
         if !self.cost_known || self.cost_missing {
             t.estimated_cost_usd = None;
         }
@@ -286,6 +294,7 @@ pub fn query_calendar(
                 total_tokens: row.get(8)?,
                 requests: 1,
                 estimated_cost_usd: None,
+                ..TokenTotals::default()
             };
             let cost = pricing::estimate_cost(pricing, &model, &t);
             days.entry(bucket_start_ms(ts, Bucket::Day))
@@ -370,6 +379,7 @@ pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Resu
                 total_tokens: row.get(8)?,
                 requests: 1,
                 estimated_cost_usd: None,
+                ..TokenTotals::default()
             };
             let session_id: String = row.get(9)?;
             let project: String = row.get(10)?;
@@ -682,6 +692,11 @@ mod tests {
             "unknown model makes the combined estimate incomplete"
         );
         assert!(r.totals.estimated_cost_usd.is_none());
+        assert!((r.by_provider["codex"].known_cost_usd.unwrap() - 0.0035).abs() < 1e-10);
+        assert_eq!(r.by_provider["codex"].unpriced_requests, 1);
+        assert_eq!(r.by_provider["claude"].unpriced_requests, 0);
+        assert!((r.totals.known_cost_usd.unwrap() - 10.00356).abs() < 1e-10);
+        assert_eq!(r.totals.unpriced_requests, 1);
         // two opus-4-5 megatokens of input = 2 × $5
         let claude_cost = r.by_provider["claude"].estimated_cost_usd.unwrap();
         assert!((claude_cost - 10.00001).abs() < 0.001, "got {claude_cost}");
@@ -1439,5 +1454,65 @@ mod tests {
             serde_json::from_value(serde_json::json!({"from":"2026-09-15","to":"2026-09-16"}))
                 .unwrap();
         assert!(q.limit.is_none() && q.provider.is_none() && q.project.is_none());
+    }
+}
+
+#[cfg(test)]
+mod partial_cost_tests {
+    use super::*;
+
+    #[test]
+    fn known_subtotals_and_missing_counts_are_order_independent() {
+        for costs in [[Some(12.5), None, Some(2.0)], [None, Some(2.0), Some(12.5)]] {
+            let mut acc = Acc::default();
+            for cost in costs {
+                acc.add(
+                    &TokenTotals {
+                        requests: 2,
+                        total_tokens: 10,
+                        ..Default::default()
+                    },
+                    cost,
+                );
+            }
+            let totals = acc.finish();
+            assert_eq!(totals.estimated_cost_usd, None);
+            assert_eq!(totals.known_cost_usd, Some(14.5));
+            assert_eq!(totals.unpriced_requests, 2);
+            assert_eq!(totals.requests, 6);
+            assert_eq!(totals.total_tokens, 30);
+        }
+    }
+
+    #[test]
+    fn absent_prices_are_distinct_from_legitimately_free_records() {
+        let event = TokenTotals {
+            requests: 1,
+            ..Default::default()
+        };
+        let mut unknown = Acc::default();
+        unknown.add(&event, None);
+        let unknown = unknown.finish();
+        assert_eq!(unknown.known_cost_usd, None);
+        assert_eq!(unknown.estimated_cost_usd, None);
+        assert_eq!(unknown.unpriced_requests, 1);
+
+        let mut free = Acc::default();
+        free.add(&event, Some(0.0));
+        let complete = free.finish();
+        assert_eq!(complete.estimated_cost_usd, Some(0.0));
+        assert_eq!(complete.known_cost_usd, Some(0.0));
+        assert_eq!(complete.unpriced_requests, 0);
+
+        let mut mixed = Acc::default();
+        mixed.add(&event, None);
+        mixed.add(&event, Some(0.0));
+        let partial = mixed.finish();
+        assert_eq!(partial.estimated_cost_usd, None);
+        assert_eq!(partial.known_cost_usd, Some(0.0));
+        assert_eq!(partial.unpriced_requests, 1);
+        let empty = Acc::default().finish();
+        assert_eq!(empty.known_cost_usd, None);
+        assert_eq!(empty.unpriced_requests, 0);
     }
 }

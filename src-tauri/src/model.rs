@@ -562,6 +562,12 @@ pub struct TokenTotals {
     pub total_tokens: i64,
     pub requests: i64,
     pub estimated_cost_usd: Option<f64>,
+    /// Sum of priced records; None if no contributing record was priced.
+    #[serde(default)]
+    pub known_cost_usd: Option<f64>,
+    /// Requests excluded from the known subtotal because no price matched.
+    #[serde(default)]
+    pub unpriced_requests: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

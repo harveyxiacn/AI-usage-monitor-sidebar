@@ -278,6 +278,10 @@ export interface TokenTotals {
   totalTokens: number;
   requests: number;
   estimatedCostUsd: number | null;
+  /** Sum of priced records; null when no record has a known price. */
+  knownCostUsd?: number | null;
+  /** Records excluded from knownCostUsd because their price is unknown. */
+  unpricedRequests?: number;
 }
 
 export interface HistoryRow extends TokenTotals {

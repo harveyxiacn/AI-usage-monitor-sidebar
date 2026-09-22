@@ -103,7 +103,8 @@
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 320 },
+        // Local log updates must not replay the bar entrance animation.
+        animation: false,
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: {

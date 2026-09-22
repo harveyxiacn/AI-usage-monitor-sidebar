@@ -356,6 +356,8 @@ function emptyTotals(): TokenTotals {
     totalTokens: 0,
     requests: 0,
     estimatedCostUsd: null,
+    knownCostUsd: null,
+    unpricedRequests: 0,
   };
 }
 
@@ -433,6 +435,9 @@ function bucketStart(ts: number, bucket: Bucket): number {
 }
 
 function addInto(acc: TokenTotals, e: MockEvent) {
+  const cost = eventCost(e);
+  if (cost == null) acc.unpricedRequests = (acc.unpricedRequests ?? 0) + e.requests;
+  else acc.knownCostUsd = (acc.knownCostUsd ?? 0) + cost;
   acc.inputTokens += e.inputTokens;
   acc.cacheWriteTokens += e.cacheWriteTokens;
   acc.cacheReadTokens += e.cacheReadTokens;

@@ -135,9 +135,9 @@ test('CSV preserves delimiters, unknown cost and neutralizes formula cells', () 
   };
   const csv = historyCsv([row]);
   expect(csv.split('\r\n')[0]).toBe(
-    'bucket_start,provider,model,project,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd'
+    'bucket_start,provider,model,project,input_tokens,cache_write_tokens,cache_read_tokens,output_tokens,reasoning_tokens,total_tokens,requests,estimated_cost_usd,known_cost_usd,unpriced_requests'
   );
-  expect(csv).toContain('"模型,example","C:\\团队\\comma, quote"" project",100,20,30,40,10,190,1,\r\n');
+  expect(csv).toContain('"模型,example","C:\\团队\\comma, quote"" project",100,20,30,40,10,190,1,,,\r\n');
   // the export carries the complete path, never the shortened UI label
   expect(csv).toContain(project.replace(/"/g, '""'));
   // an unfiltered, ungrouped aggregate has no project: the column stays empty
@@ -170,4 +170,14 @@ test('the pointer heartbeat is throttled on its leading edge', async () => {
   await new Promise((r) => setTimeout(r, 60));
   beat();
   expect(calls).toBe(2);
+});
+
+test('CSV keeps a partial subtotal separate from an unknown complete estimate', () => {
+  const row = { ...historyRow('2026-09-20T00:00:00Z', 'codex', null, null, 100, null), knownCostUsd: 12.34, unpricedRequests: 3 };
+  const [header, record] = historyCsv([row]).trim().split('\r\n');
+  const columns = header.split(',');
+  const values = record.split(',');
+  expect(values[columns.indexOf('estimated_cost_usd')]).toBe('');
+  expect(values[columns.indexOf('known_cost_usd')]).toBe('12.3400');
+  expect(values[columns.indexOf('unpriced_requests')]).toBe('3');
 });
