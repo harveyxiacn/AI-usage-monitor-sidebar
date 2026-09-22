@@ -15,7 +15,9 @@
                viewBox edge exactly and each inner ring steps in by one stroke
                plus one gap
     C      = 2πr(i)                   → dasharray, that ring's circumference
-    offset = C * (1 - used/100)       → how much of the dash to hide
+    offset = C * (1 - shown/100)       → how much of the dash to hide
+  Shown is used percent, or 100 - used in remaining mode. Forecast ticks
+  follow the same scale; threshold colours always follow actual usage.
   Each arc is rotated -90° about the centre so 0 % starts at 12 o'clock.
   The element is sized in rem (size / 16) so Settings.scale scales it.
 
@@ -90,6 +92,11 @@
   const sw = $derived(clampSize('ringStroke', stroke ?? settings.value.sizes.ringStroke));
   const c = $derived(dim / 2);
 
+  function shownPercent(percent: number) {
+    const used = clampPercent(percent);
+    return percentMode === 'remaining' ? 100 - used : used;
+  }
+
   /**
    * Endpoints of the forecast tick on the arc of radius `r`: a short radial
    * segment crossing the stroke at the projected angle. 0 % is 12 o'clock like
@@ -97,7 +104,7 @@
    * outermost ring cannot spill out of the viewBox.
    */
   function tick(r: number, percent: number) {
-    const angle = ((clampPercent(percent) / 100) * 360 - 90) * (Math.PI / 180);
+    const angle = ((shownPercent(percent) / 100) * 360 - 90) * (Math.PI / 180);
     const [cosA, sinA] = [Math.cos(angle), Math.sin(angle)];
     return {
       x1: c + (r - sw / 2 - 1.5) * cosA,
@@ -112,14 +119,14 @@
     arcs.map((a, i) => {
       const r = (dim - sw) / 2 - i * (sw + gap);
       const circumference = 2 * Math.PI * r;
-      const used = a.percent == null ? 0 : clampPercent(a.percent);
+      const shown = a.percent == null ? 0 : shownPercent(a.percent);
       return {
         r,
         circumference,
         // a ring whose own usage crossed a threshold turns amber / red even
         // when the rest of the group is still on the provider hue
         color: severityColor(a.accent, severityOf(a.percent, thresholds)),
-        dashOffset: circumference * (1 - used / 100),
+        dashOffset: circumference * (1 - shown / 100),
         known: a.percent != null,
         projected: a.projectedPercent == null ? null : tick(r, a.projectedPercent),
       };

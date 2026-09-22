@@ -44,6 +44,7 @@
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
+  import { shortPercent } from '$lib/format';
   import { forecastTickPercent } from '$lib/forecast';
   import { t } from '$lib/i18n/i18n.svelte';
   import { handleColorOf, rings, type RingItem } from '$lib/stores/rings.svelte';
@@ -161,7 +162,7 @@
   /** Screen-reader label: every arc of the group, outer → inner. */
   function ringLabel(item: RingItem): string {
     if (item.arcs.length === 0) return item.quota.displayName;
-    const parts = item.arcs.map((a) => `${a.window.label} ${Math.round(a.window.usedPercent)}%`);
+    const parts = item.arcs.map((a) => `${a.window.label} ${shortPercent(a.window.usedPercent, s.percentMode)}`);
     return `${item.quota.displayName}: ${parts.join(', ')}`;
   }
 </script>

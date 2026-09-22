@@ -122,3 +122,53 @@ test('the settings tab toggles sidebar items and the preview follows the label s
   await flip('Codex — Track this provider');
   await expect(toggle('Codex — Show on the bar')).toBeDisabled();
 });
+
+for (const ringMode of ['concentric', 'primary', 'all'] as const) {
+  test(`${ringMode} rings and forecast ticks follow the remaining setting`, async ({ page }) => {
+    const geometry = () => page.locator('.slot .arc').evaluateAll((arcs) => arcs.map((arc) => ({
+      fraction: 1 - Number(arc.getAttribute('stroke-dashoffset')) / Number(arc.getAttribute('stroke-dasharray')),
+      color: arc.getAttribute('stroke'),
+    })));
+    const ticks = () => page.locator('.slot .tick').evaluateAll((lines) => lines.map((line) => ({
+      x: Number(line.getAttribute('x2')), y: Number(line.getAttribute('y2')),
+      size: Number(line.closest('svg')!.getAttribute('viewBox')!.split(' ')[2]),
+    })));
+    await openBar(page, { ringMode, percentMode: 'used' });
+    await expect(page.locator('.slot .arc').first()).toBeVisible();
+    const used = await geometry();
+    const usedTicks = await ticks();
+    expect(used.length).toBeGreaterThan(0);
+    expect(usedTicks.length).toBeGreaterThan(0);
+    expect(used[0].fraction).toBeCloseTo(ringMode === 'concentric' ? 0.31 : 0.73, 8);
+
+    await openBar(page, { ringMode, percentMode: 'remaining' });
+    await expect(page.locator('.slot .arc')).toHaveCount(used.length);
+    const remaining = await geometry();
+    for (let i = 0; i < used.length; i++) {
+      expect(remaining[i].fraction).toBeCloseTo(1 - used[i].fraction, 8);
+      expect(remaining[i].color).toBe(used[i].color);
+    }
+    await expect(page.locator('.slot .pct').first()).toHaveText('27%');
+    const remainingTicks = await ticks();
+    expect(remainingTicks).toHaveLength(usedTicks.length);
+    for (let i = 0; i < usedTicks.length; i++) {
+      expect(remainingTicks[i].x + usedTicks[i].x).toBeCloseTo(usedTicks[i].size, 8);
+      expect(remainingTicks[i].y).toBeCloseTo(usedTicks[i].y, 8);
+    }
+  });
+}
+
+test('changing percent mode updates the preview arcs immediately and reversibly', async ({ page }) => {
+  await page.goto('/dashboard');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const arcs = page.locator('.preview .arc');
+  const fractions = () => arcs.evaluateAll((nodes) => nodes.map((node) =>
+    1 - Number(node.getAttribute('stroke-dashoffset')) / Number(node.getAttribute('stroke-dasharray'))));
+  await expect(arcs).toHaveCount(3);
+  await page.getByLabel('Percent shows').selectOption('remaining');
+  await expect.poll(fractions).toEqual([0.69, 0.27, 0.76]);
+  await expect(page.locator('.preview .pct')).toHaveText('27%');
+  await page.getByLabel('Percent shows').selectOption('used');
+  await expect.poll(async () => (await fractions()).map((v) => Math.round(v * 100))).toEqual([31, 73, 24]);
+  await expect(page.locator('.preview .pct')).toHaveText('73%');
+});
