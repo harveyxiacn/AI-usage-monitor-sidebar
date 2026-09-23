@@ -4,15 +4,25 @@
 //! mirror the public API prices. Subscription users do not actually pay per
 //! token — the estimate is a *comparison indicator* only (ARCHITECTURE §9).
 
-use crate::model::{PricingEntry, PricingTable, TokenTotals};
+use crate::model::{events, PriceUpdateStatus, PricingEntry, PricingTable, TokenTotals};
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const PRICING_FILE: &str = "pricing.json";
+/// The official, versioned source used unless the user configured another
+/// HTTPS source in Settings. This table can be revised without an app release.
+pub const DEFAULT_PRICING_URL: &str =
+    "https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json";
+/// Revision of [`DEFAULTS`]. Keep this in sync with the shipped `pricing.json`.
+pub const BUILTIN_PRICING_UPDATED_AT: &str = "2026-09-23T00:00:00Z";
 
 /// `(model id, input, output, cache write, cache read)` — USD / 1M tokens.
-/// Sources checked 2026-09-20:
+/// Sources checked 2026-09-23:
 /// https://platform.claude.com/docs/en/about-claude/pricing
+/// https://claude.com/pricing
+/// https://www.anthropic.com/claude-opus-5-5
 /// https://developers.openai.com/api/docs/pricing
 /// Standard short-context rates; excludes fast-mode, long-context and cache
 /// TTL adjustments. Where no cache-write price is published, use input rate.
@@ -25,6 +35,7 @@ const DEFAULTS: &[(&str, f64, f64, f64, f64)] = &[
     ("claude-opus-4-7", 5.0, 25.0, 6.25, 0.5),
     ("claude-opus-4-8", 5.0, 25.0, 6.25, 0.5),
     ("claude-opus-5", 5.0, 25.0, 6.25, 0.5),
+    ("claude-opus-5-5", 4.0, 20.0, 5.0, 0.2),
     ("claude-sonnet-4", 3.0, 15.0, 3.75, 0.3),
     ("claude-sonnet-4-5", 3.0, 15.0, 3.75, 0.3),
     ("claude-sonnet-4-6", 3.0, 15.0, 3.75, 0.3),
@@ -52,6 +63,9 @@ const DEFAULTS: &[(&str, f64, f64, f64, f64)] = &[
     ("gpt-5.6-sol", 4.0, 20.0, 5.0, 0.4),
     ("gpt-5.6-terra", 2.0, 12.0, 2.5, 0.2),
     ("gpt-5.6-luna", 0.2, 1.2, 0.25, 0.02),
+    ("gpt-6-sol", 2.0, 10.0, 2.5, 0.2),
+    ("gpt-6-luna", 0.1, 0.5, 0.125, 0.01),
+    // Keep Astra last so unknown GPT-6 variants retain the prior family price.
     ("gpt-6-astra", 10.0, 50.0, 12.5, 1.0),
     ("gpt-5-mini", 0.25, 2.0, 0.25, 0.025),
     ("gpt-5-nano", 0.05, 0.4, 0.05, 0.005),
@@ -73,12 +87,37 @@ pub fn default_table() -> PricingTable {
                 cache_read_per_m: *cr,
             })
             .collect(),
-        updated_at: None,
+        updated_at: Some(BUILTIN_PRICING_UPDATED_AT.to_string()),
     }
 }
 
 pub fn pricing_path(config_dir: &Path) -> PathBuf {
     config_dir.join(PRICING_FILE)
+}
+
+/// Resolve the configured source once at the boundary. Empty settings are not
+/// "off": they mean the project's published pricing table.
+pub fn effective_pricing_url(configured: &str) -> String {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        DEFAULT_PRICING_URL.to_string()
+    } else {
+        configured.to_string()
+    }
+}
+
+/// A readable complete table is a deliberate user override. A broken file is
+/// ignored exactly as [`load_with_base`] ignores it, so it cannot prevent a
+/// user from recovering through the source table.
+pub fn has_custom_pricing(config_dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(pricing_path(config_dir)) else {
+        return false;
+    };
+    // Match `load_with_base`: once the schema parses, it is a complete local
+    // selection, even if individual malformed entries are subsequently
+    // filtered out. Treating it otherwise could let an update appear to apply
+    // while this file still wins after restart.
+    serde_json::from_str::<PricingTable>(&text).is_ok()
 }
 
 /// The saved table is the user's complete selection, including deletions.
@@ -87,8 +126,8 @@ pub fn load(config_dir: &Path) -> PricingTable {
     load_with_base(config_dir, default_table())
 }
 
-/// Like `load`, but with an explicit fallback table — the bundled defaults,
-/// or the cached remote table when the user configured `pricingUrl`.
+/// Like `load`, but with an explicit fallback table — bundled defaults or the
+/// currently applied cache for the selected pricing source.
 pub fn load_with_base(config_dir: &Path, base: PricingTable) -> PricingTable {
     let path = pricing_path(config_dir);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -151,10 +190,10 @@ fn valid_entry(entry: &PricingEntry) -> bool {
         .all(|rate| rate.is_finite() && *rate >= 0.0)
 }
 
-// ---------- opt-in remote price list ----------
+// ---------- remote price list ----------
 //
-// Off by default and never contacted unless the user puts an https URL in
-// `Settings.pricingUrl`: the README promises no third-party service.
+// Empty `Settings.pricingUrl` uses the project's published HTTPS source; a
+// non-empty value selects a user-provided HTTPS source instead.
 
 pub const REMOTE_CACHE_FILE: &str = "pricing-remote.json";
 /// A price list is a few kilobytes; anything larger is not one.
@@ -239,26 +278,36 @@ pub fn validate_remote(table: &PricingTable) -> Result<PricingTable> {
     Ok(out)
 }
 
-/// Whether the remote table should be downloaded now (pure).
-///
-/// Nothing is ever fetched without a URL. Otherwise: a manual "refresh
-/// prices now" always fetches, a changed URL invalidates the cache, and the
-/// background loop fetches at most once a day.
+fn parsed_updated_at(table: &PricingTable) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    table
+        .updated_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+}
+
+fn table_is_older(remote: &PricingTable, current: &PricingTable) -> bool {
+    matches!(
+        (parsed_updated_at(remote), parsed_updated_at(current)),
+        (Some(remote_at), Some(current_at)) if remote_at < current_at
+    )
+}
+
+/// Whether a legacy cache refresh should be downloaded now (pure). The new
+/// price-update flow keeps checked candidates in memory and only writes this
+/// cache after an explicit apply.
 pub fn should_fetch_remote(
     url: &str,
     cache: Option<&RemoteCache>,
     now_ms: i64,
     manual: bool,
 ) -> bool {
-    if url.trim().is_empty() {
-        return false;
-    }
+    let url = effective_pricing_url(url);
     if manual {
         return true;
     }
     match cache {
         None => true,
-        Some(c) if c.url != url.trim() => true,
+        Some(c) if c.url != url => true,
         Some(c) => now_ms.saturating_sub(c.fetched_at_ms) >= REMOTE_MIN_INTERVAL_MS,
     }
 }
@@ -267,45 +316,38 @@ pub fn should_fetch_remote(
 pub fn cached_remote(data_dir: &Path, url: &str) -> Option<RemoteCache> {
     let text = std::fs::read_to_string(remote_cache_path(data_dir)).ok()?;
     let cache: RemoteCache = serde_json::from_str(&text).ok()?;
-    (cache.url == url.trim()).then_some(cache)
+    (cache.url == effective_pricing_url(url)).then_some(cache)
 }
 
 /// The table the app starts from: the cached remote list when the user
 /// enabled one, otherwise the bundled defaults. Any problem falls back.
 pub fn base_table(data_dir: &Path, url: &str) -> PricingTable {
-    match cached_remote(data_dir, url) {
-        Some(cache) => match validate_remote(&cache.table) {
-            Ok(table) => table,
-            Err(e) => {
-                log::warn!(
-                    "cached remote pricing table is unusable ({e:#}), using the built-in one"
-                );
-                default_table()
+    let url = effective_pricing_url(url);
+    match cached_remote(data_dir, &url) {
+        Some(cache) => {
+            match validate_remote(&cache.table) {
+                Ok(table) if !table_is_older(&table, &default_table()) => table,
+                Ok(_) => {
+                    log::warn!("cached remote pricing table predates the bundled table, using built-in prices");
+                    default_table()
+                }
+                Err(e) => {
+                    log::warn!(
+                        "cached remote pricing table is unusable ({e:#}), using the built-in one"
+                    );
+                    default_table()
+                }
             }
-        },
+        }
         None => default_table(),
     }
 }
 
-/// Download, validate and cache the table at `url`. Returns the new table,
-/// or `None` when nothing needed to be fetched. Never touches the network
-/// unless `should_fetch_remote` says so.
-pub async fn refresh_remote(
-    http: &reqwest::Client,
-    data_dir: &Path,
-    url: &str,
-    manual: bool,
-) -> Result<Option<PricingTable>> {
-    let existing = cached_remote(data_dir, url);
-    if !should_fetch_remote(
-        url,
-        existing.as_ref(),
-        crate::commands::store::now_ms(),
-        manual,
-    ) {
-        return Ok(None);
-    }
-    let parsed = validate_url(url)?;
+/// Fetch and validate an untrusted price table. This deliberately does not
+/// touch disk: checking for an update must not make it active after restart.
+pub async fn fetch_remote(http: &reqwest::Client, url: &str) -> Result<PricingTable> {
+    let url = effective_pricing_url(url);
+    let parsed = validate_url(&url)?;
     let response = http
         .get(parsed)
         .header("Accept", "application/json")
@@ -330,53 +372,578 @@ pub async fn refresh_remote(
     );
     let parsed: PricingTable =
         serde_json::from_slice(&body).context("the pricing table is not valid JSON")?;
-    let table = validate_remote(&parsed)?;
+    validate_remote(&parsed)
+}
 
+/// Persist a previously validated table as the applied source table.
+pub fn cache_remote(data_dir: &Path, url: &str, table: &PricingTable) -> Result<()> {
+    let url = effective_pricing_url(url);
+    let table = validate_remote(table)?;
     let cache = RemoteCache {
-        url: url.trim().to_string(),
+        url: url.clone(),
         fetched_at_ms: crate::commands::store::now_ms(),
-        table: table.clone(),
+        table,
     };
     crate::commands::settings::write_atomic(
         &remote_cache_path(data_dir),
         &serde_json::to_vec_pretty(&cache).context("serialize the pricing cache")?,
     )?;
     log::info!(
-        "pricing table updated from {url} ({} models)",
-        table.entries.len()
+        "pricing table applied from {url} ({} models)",
+        cache.table.entries.len()
     );
+    Ok(())
+}
+
+/// Legacy cache-refresh helper. New code should call [`fetch_remote`] while
+/// checking and [`cache_remote`] only after the user asks to apply.
+pub async fn refresh_remote(
+    http: &reqwest::Client,
+    data_dir: &Path,
+    url: &str,
+    manual: bool,
+) -> Result<Option<PricingTable>> {
+    let url = effective_pricing_url(url);
+    let existing = cached_remote(data_dir, &url);
+    if !should_fetch_remote(
+        &url,
+        existing.as_ref(),
+        crate::commands::store::now_ms(),
+        manual,
+    ) {
+        return Ok(None);
+    }
+    let table = fetch_remote(http, &url).await?;
+    cache_remote(data_dir, &url, &table)?;
     Ok(Some(table))
 }
 
-/// Keep the effective table in step with an opt-in remote list: one check a
-/// minute after start, then hourly. `refresh_remote` itself rate-limits the
-/// download to once a day and does nothing at all without a `pricingUrl`.
-pub fn start_remote_refresh(app: tauri::AppHandle) {
-    use tauri::Manager;
+// ---------- independent price-update delivery ----------
+
+/// First background price check stays out of the way during launch.
+pub const PRICE_FIRST_CHECK_DELAY_SEC: u64 = 60;
+/// A successful or unsuccessful automatic check is repeated once a day.
+pub const PRICE_CHECK_INTERVAL_SEC: u64 = 24 * 60 * 60;
+
+#[derive(Clone, Debug)]
+struct PendingPricing {
+    url: String,
+    table: PricingTable,
+}
+
+/// Candidate tables are intentionally process-local. A check must never write
+/// `pricing-remote.json`, because that file is the applied table loaded at the
+/// next start.
+pub struct PriceUpdateState {
+    status: Mutex<PriceUpdateStatus>,
+    pending: Mutex<Option<PendingPricing>>,
+    source: Mutex<String>,
+    operation: tokio::sync::Mutex<()>,
+}
+
+impl Default for PriceUpdateState {
+    fn default() -> Self {
+        Self {
+            status: Mutex::new(PriceUpdateStatus::default()),
+            pending: Mutex::new(None),
+            source: Mutex::new(DEFAULT_PRICING_URL.to_string()),
+            operation: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+/// Set up the update state and its independent daily check loop.
+pub fn setup(app: &AppHandle) {
+    let source = source_of(app);
+    let initial = PriceUpdateStatus {
+        custom_pricing: has_custom_pricing(&app.state::<crate::state::AppState>().config_dir),
+        ..PriceUpdateStatus::default()
+    };
+    app.manage(PriceUpdateState::default());
+    if let Some(state) = app.try_state::<PriceUpdateState>() {
+        *state.source.lock() = source;
+    }
+    store_status(app, initial);
+
+    let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(PRICE_FIRST_CHECK_DELAY_SEC)).await;
         loop {
-            let (http, url, data_dir, config_dir) = {
-                let state = app.state::<crate::state::AppState>();
-                let settings = state.settings.read();
-                (
-                    state.http.clone(),
-                    settings.pricing_url.clone(),
-                    state.data_dir.clone(),
-                    state.config_dir.clone(),
-                )
-            };
-            match refresh_remote(&http, &data_dir, &url, false).await {
-                Ok(Some(_)) => {
-                    let merged = load_with_base(&config_dir, base_table(&data_dir, &url));
-                    *app.state::<crate::state::AppState>().pricing.write() = merged;
-                }
-                Ok(None) => {}
-                Err(e) => log::warn!("pricing refresh failed, keeping the current table: {e:#}"),
+            if handle
+                .state::<crate::state::AppState>()
+                .settings
+                .read()
+                .auto_pricing_check
+            {
+                check(&handle).await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(3_600)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(PRICE_CHECK_INTERVAL_SEC)).await;
         }
     });
+}
+
+pub fn status(app: &AppHandle) -> PriceUpdateStatus {
+    app.try_state::<PriceUpdateState>()
+        .map(|state| state.status.lock().clone())
+        .unwrap_or_default()
+}
+
+fn store_status(app: &AppHandle, status: PriceUpdateStatus) {
+    store_status_for_settings(app, status, None);
+}
+
+fn store_status_for_settings(
+    app: &AppHandle,
+    status: PriceUpdateStatus,
+    settings: Option<&crate::model::Settings>,
+) {
+    if let Some(state) = app.try_state::<PriceUpdateState>() {
+        *state.status.lock() = status.clone();
+    }
+    match settings {
+        Some(settings) => {
+            crate::window::tray::sync_price_update_for_settings(app, &status, settings)
+        }
+        None => crate::window::tray::sync_price_update(app, &status),
+    }
+    if let Err(e) = app.emit(events::PRICE_UPDATE_STATUS, &status) {
+        log::warn!("could not emit {}: {e}", events::PRICE_UPDATE_STATUS);
+    }
+}
+
+fn update_price_status(
+    app: &AppHandle,
+    f: impl FnOnce(&mut PriceUpdateStatus),
+) -> PriceUpdateStatus {
+    let mut next = status(app);
+    f(&mut next);
+    store_status(app, next.clone());
+    next
+}
+
+fn update_price_status_for_settings(
+    app: &AppHandle,
+    settings: &crate::model::Settings,
+    f: impl FnOnce(&mut PriceUpdateStatus),
+) -> PriceUpdateStatus {
+    let mut next = status(app);
+    f(&mut next);
+    store_status_for_settings(app, next.clone(), Some(settings));
+    next
+}
+
+/// Keep the public status correct after a user saves a complete local table.
+pub fn sync_custom_pricing(app: &AppHandle) {
+    let custom = has_custom_pricing(&app.state::<crate::state::AppState>().config_dir);
+    if custom {
+        if let Some(state) = app.try_state::<PriceUpdateState>() {
+            *state.pending.lock() = None;
+        }
+    }
+    update_price_status(app, |s| {
+        s.custom_pricing = custom;
+        if custom {
+            s.available = false;
+        }
+    });
+}
+
+/// Persist a complete local table under the same lock used by checking and
+/// source switching. This prevents a second Settings window from losing an
+/// edit while `use_source_pricing` has the original file temporarily backed up.
+pub async fn save_custom(app: &AppHandle, table: PricingTable) -> Result<PricingTable, String> {
+    let update = app
+        .try_state::<PriceUpdateState>()
+        .ok_or_else(|| "price update service is not ready".to_string())?;
+    let _operation = update.operation.lock().await;
+    let state = app.state::<crate::state::AppState>();
+    let merged = save(&state.config_dir, &table).map_err(|e| format!("{e:#}"))?;
+    *state.pricing.write() = merged.clone();
+    *update.pending.lock() = None;
+    update_price_status(app, |s| {
+        s.available = false;
+        s.custom_pricing = true;
+        s.error = None;
+    });
+    Ok(merged)
+}
+
+/// A settings-source change must immediately stop showing an offer from the
+/// old URL. With no local table, also restore the new source's applied cache
+/// (or bundled defaults) in memory rather than carrying old-source prices.
+pub fn settings_changed(app: &AppHandle, settings: &crate::model::Settings) {
+    let Some(update) = app.try_state::<PriceUpdateState>() else {
+        return;
+    };
+    let source = effective_pricing_url(&settings.pricing_url);
+    if *update.source.lock() == source {
+        return;
+    }
+    *update.source.lock() = source.clone();
+    *update.pending.lock() = None;
+    // `use_source` may have temporarily renamed a custom table while it
+    // applies a downloaded source. Do not inspect that transient filesystem
+    // state or replace in-memory prices while the operation owns it. The
+    // operation reconciles after it either commits or restores the file.
+    // When it is idle, doing the reconciliation synchronously keeps a normal
+    // settings change immediate.
+    if let Ok(_operation) = update.operation.try_lock() {
+        reconcile_selected_source(app, &source, settings);
+        return;
+    }
+    update_price_status_for_settings(app, settings, |s| {
+        s.available = false;
+        s.revision = None;
+        s.checked_at = None;
+        s.error = None;
+    });
+
+    // The settings write lock is still held by its caller here, so this must
+    // run later: reconciling reads the current Settings for the tray update.
+    // It waits for the same operation lock as `use_source` and `apply`.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(update) = handle.try_state::<PriceUpdateState>() else {
+            return;
+        };
+        let _operation = update.operation.lock().await;
+        let settings = handle
+            .state::<crate::state::AppState>()
+            .settings
+            .read()
+            .clone();
+        reconcile_selected_source(&handle, &source, &settings);
+    });
+}
+
+/// Read the complete pricing selection that should be active for `source`.
+/// A readable local table wins; otherwise the source's applied cache (or the
+/// built-in prices) is the base. Keeping this in one place is what lets a
+/// failed source switch restore the file and the in-memory table together.
+fn selected_pricing(config_dir: &Path, data_dir: &Path, source: &str) -> (PricingTable, bool) {
+    let custom = has_custom_pricing(config_dir);
+    let table = load_with_base(config_dir, base_table(data_dir, source));
+    (table, custom)
+}
+
+/// Reconcile the active file/cache choice into memory. Callers that change a
+/// source hold `PriceUpdateState::operation`; this function keeps `source`
+/// locked until the matching table and status have been stored, so a second
+/// settings change cannot leave an older source's table in memory.
+fn reconcile_selected_source(app: &AppHandle, source: &str, settings: &crate::model::Settings) {
+    let Some(update) = app.try_state::<PriceUpdateState>() else {
+        return;
+    };
+    let selected_source = update.source.lock();
+    if selected_source.as_str() != source {
+        return;
+    }
+    let state = app.state::<crate::state::AppState>();
+    let (table, custom) = selected_pricing(&state.config_dir, &state.data_dir, source);
+    *state.pricing.write() = table;
+    update_price_status_for_settings(app, settings, |s| {
+        s.available = false;
+        s.revision = None;
+        s.checked_at = None;
+        s.error = None;
+        s.custom_pricing = custom;
+    });
+}
+
+/// Reconcile after an operation restores a local table or notices that the
+/// selected source changed. These callers are outside Settings' write lock.
+fn reconcile_active_source(app: &AppHandle) {
+    let settings = app
+        .state::<crate::state::AppState>()
+        .settings
+        .read()
+        .clone();
+    let source = effective_pricing_url(&settings.pricing_url);
+    reconcile_selected_source(app, &source, &settings);
+}
+
+/// Entry order affects family-price fallback precedence, so a revision is
+/// available only when the ordered entries differ. Valid timestamps stop an
+/// older remote list from replacing a newer active one.
+fn table_is_update(remote: &PricingTable, current: &PricingTable) -> bool {
+    if remote.entries == current.entries {
+        return false;
+    }
+    !table_is_older(remote, current)
+}
+
+fn source_of(app: &AppHandle) -> String {
+    effective_pricing_url(
+        &app.state::<crate::state::AppState>()
+            .settings
+            .read()
+            .pricing_url,
+    )
+}
+
+/// Download and compare one source revision. The candidate lives only in
+/// [`PriceUpdateState`] until the user explicitly applies it.
+pub async fn check(app: &AppHandle) -> PriceUpdateStatus {
+    let Some(update) = app.try_state::<PriceUpdateState>() else {
+        return PriceUpdateStatus::default();
+    };
+    {
+        let mut status = update.status.lock();
+        if status.checking || status.applying {
+            return status.clone();
+        }
+        status.checking = true;
+        status.error = None;
+        let next = status.clone();
+        drop(status);
+        store_status(app, next);
+    }
+    let _operation = update.operation.lock().await;
+    let source = source_of(app);
+    let http = app.state::<crate::state::AppState>().http.clone();
+    let fetched = fetch_remote(&http, &source).await;
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Settings can change while the HTTP request is in flight. The stale
+    // response may not become the pending candidate or change availability.
+    if source != source_of(app) {
+        log::debug!("discarding pricing check from stale source {source}");
+        return update_price_status(app, |s| {
+            s.checking = false;
+            s.available = false;
+            s.revision = None;
+            s.error = None;
+        });
+    }
+
+    match fetched {
+        Ok(table) => {
+            // A complete user table is a separate override. Compare source
+            // revisions against the currently applied source base, never the
+            // override's local `updatedAt`.
+            let state = app.state::<crate::state::AppState>();
+            let current = base_table(&state.data_dir, &source);
+            let available = table_is_update(&table, &current);
+            *update.pending.lock() = available.then_some(PendingPricing {
+                url: source,
+                table: table.clone(),
+            });
+            update_price_status(app, |s| {
+                s.checking = false;
+                s.applying = false;
+                s.available = available;
+                s.revision = table.updated_at.clone();
+                s.checked_at = Some(now);
+                s.error = None;
+                s.custom_pricing =
+                    has_custom_pricing(&app.state::<crate::state::AppState>().config_dir);
+            })
+        }
+        Err(e) => {
+            let message = format!("{e:#}");
+            log::warn!("pricing update check failed: {message}");
+            update_price_status(app, |s| {
+                s.checking = false;
+                s.checked_at = Some(now);
+                s.error = Some(message);
+                s.custom_pricing =
+                    has_custom_pricing(&app.state::<crate::state::AppState>().config_dir);
+            })
+        }
+    }
+}
+
+fn complete_apply(app: &AppHandle, table: PricingTable) -> PricingTable {
+    let state = app.state::<crate::state::AppState>();
+    let effective = load_with_base(&state.config_dir, table);
+    *state.pricing.write() = effective.clone();
+    effective
+}
+
+/// Apply the last checked candidate. This command refuses a saved complete
+/// user table, so no local edits are ever silently overwritten.
+pub async fn apply(app: &AppHandle) -> Result<PricingTable, String> {
+    let update = app
+        .try_state::<PriceUpdateState>()
+        .ok_or_else(|| "price update service is not ready".to_string())?;
+    {
+        let mut status = update.status.lock();
+        if status.checking || status.applying {
+            return Err("a price update operation is already running".into());
+        }
+        if has_custom_pricing(&app.state::<crate::state::AppState>().config_dir) {
+            status.custom_pricing = true;
+            let next = status.clone();
+            drop(status);
+            store_status(app, next);
+            return Err("a custom pricing table is active; use_source_pricing first".into());
+        }
+        status.applying = true;
+        status.error = None;
+        let next = status.clone();
+        drop(status);
+        store_status(app, next);
+    }
+    let _operation = update.operation.lock().await;
+    let pending = update.pending.lock().clone();
+    let result = (|| -> Result<PricingTable, String> {
+        let pending =
+            pending.ok_or_else(|| "no checked pricing update is available".to_string())?;
+        if pending.url != source_of(app) {
+            return Err("the pricing source changed; check the new source before applying".into());
+        }
+        if has_custom_pricing(&app.state::<crate::state::AppState>().config_dir) {
+            return Err("a custom pricing table is active; use_source_pricing first".into());
+        }
+        let state = app.state::<crate::state::AppState>();
+        cache_remote(&state.data_dir, &pending.url, &pending.table)
+            .map_err(|e| format!("{e:#}"))?;
+        if pending.url != source_of(app) || has_custom_pricing(&state.config_dir) {
+            return Err(
+                "the pricing source changed while applying; the active table was kept".into(),
+            );
+        }
+        // Settings changes serialize on `source`. Hold it through the memory
+        // commit so a new source cannot be set between this final check and
+        // `complete_apply`.
+        let selected_source = update.source.lock();
+        if selected_source.as_str() != pending.url {
+            return Err(
+                "the pricing source changed while applying; the active table was kept".into(),
+            );
+        }
+        Ok(complete_apply(app, pending.table))
+    })();
+    if result.is_ok() {
+        *update.pending.lock() = None;
+    }
+    let error = result.as_ref().err().cloned();
+    update_price_status(app, |s| {
+        s.applying = false;
+        s.available = false;
+        s.error = error;
+        s.custom_pricing = has_custom_pricing(&app.state::<crate::state::AppState>().config_dir);
+    });
+    result
+}
+
+fn backup_custom_pricing(config_dir: &Path) -> Result<Option<PathBuf>> {
+    if !has_custom_pricing(config_dir) {
+        return Ok(None);
+    }
+    let source = pricing_path(config_dir);
+    let timestamp = crate::commands::store::now_ms();
+    let mut attempt = 0_u32;
+    loop {
+        let backup = config_dir.join(format!("pricing.custom.{timestamp}.{attempt}.json.bak"));
+        if backup.exists() {
+            attempt = attempt.saturating_add(1);
+            continue;
+        }
+        std::fs::rename(&source, &backup)
+            .with_context(|| format!("back up {}", source.display()))?;
+        return Ok(Some(backup));
+    }
+}
+
+fn restore_custom_pricing(backup: Option<&Path>, config_dir: &Path) {
+    if let Some(backup) = backup {
+        if let Err(e) = std::fs::rename(backup, pricing_path(config_dir)) {
+            log::error!(
+                "could not restore custom pricing table {}: {e}",
+                backup.display()
+            );
+        }
+    }
+}
+
+/// Explicitly discard the active local table in favour of the configured
+/// source. The original file is retained beside it as a timestamped backup.
+pub async fn use_source(app: &AppHandle) -> Result<PricingTable, String> {
+    let update = app
+        .try_state::<PriceUpdateState>()
+        .ok_or_else(|| "price update service is not ready".to_string())?;
+    {
+        let mut status = update.status.lock();
+        if status.checking || status.applying {
+            return Err("a price update operation is already running".into());
+        }
+        status.applying = true;
+        status.error = None;
+        let next = status.clone();
+        drop(status);
+        store_status(app, next);
+    }
+    let _operation = update.operation.lock().await;
+    let source = source_of(app);
+    let http = app.state::<crate::state::AppState>().http.clone();
+    let result = async {
+        let table = fetch_remote(&http, &source)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if source != source_of(app) {
+            return Err("the pricing source changed; try again".into());
+        }
+        let state = app.state::<crate::state::AppState>();
+        if table_is_older(&table, &base_table(&state.data_dir, &source)) {
+            return Err("the source pricing revision predates the active price table".into());
+        }
+        let backup = backup_custom_pricing(&state.config_dir).map_err(|e| format!("{e:#}"))?;
+        if let Err(e) = cache_remote(&state.data_dir, &source, &table) {
+            restore_custom_pricing(backup.as_deref(), &state.config_dir);
+            reconcile_active_source(app);
+            return Err(format!("{e:#}"));
+        }
+        if source != source_of(app) {
+            restore_custom_pricing(backup.as_deref(), &state.config_dir);
+            reconcile_active_source(app);
+            return Err(
+                "the pricing source changed while applying; the custom table was restored".into(),
+            );
+        }
+        // Keep the final source check and in-memory commit together. A
+        // concurrent settings change then waits here and performs its own
+        // reconciliation once this operation releases its lock.
+        let selected_source = update.source.lock();
+        if selected_source.as_str() != source {
+            drop(selected_source);
+            restore_custom_pricing(backup.as_deref(), &state.config_dir);
+            reconcile_active_source(app);
+            return Err(
+                "the pricing source changed while applying; the custom table was restored".into(),
+            );
+        }
+        Ok(complete_apply(app, table))
+    }
+    .await;
+    if result.is_ok() {
+        *update.pending.lock() = None;
+    }
+    let error = result.as_ref().err().cloned();
+    update_price_status(app, |s| {
+        s.applying = false;
+        s.available = false;
+        s.error = error;
+        s.custom_pricing = has_custom_pricing(&app.state::<crate::state::AppState>().config_dir);
+    });
+    result
+}
+
+/// Compatibility path for older frontends: their explicit "refresh prices"
+/// action still checks and applies in one user-initiated operation.
+pub async fn refresh_legacy(app: &AppHandle) -> Result<PricingTable, String> {
+    let checked = check(app).await;
+    if let Some(error) = checked.error {
+        return Err(error);
+    }
+    if checked.custom_pricing {
+        return Err("a custom pricing table is active; use_source_pricing first".into());
+    }
+    if checked.available {
+        apply(app).await
+    } else {
+        Ok(app.state::<crate::state::AppState>().pricing.read().clone())
+    }
 }
 
 /// Lowercase the model and drop a trailing date suffix (`-20250514`).
@@ -650,6 +1217,11 @@ mod tests {
             default_table().entries,
             "pricing.json drifted from pricing.rs DEFAULTS"
         );
+        assert_eq!(
+            validated.updated_at,
+            default_table().updated_at,
+            "pricing.json drifted from the built-in pricing revision"
+        );
     }
 
     #[test]
@@ -705,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn the_remote_table_is_opt_in_and_fetched_at_most_daily() {
+    fn the_official_remote_table_and_custom_sources_are_rate_limited_daily() {
         let now = 1_800_000_000_000i64;
         let url = "https://example.com/pricing.json";
         let fresh = RemoteCache {
@@ -713,9 +1285,10 @@ mod tests {
             fetched_at_ms: now - 3_600_000,
             table: remote_table("gpt-5", 1.0),
         };
-        // No URL = no request, ever, not even a manual one.
-        assert!(!should_fetch_remote("", None, now, false));
-        assert!(!should_fetch_remote("   ", None, now, true));
+        // Empty settings resolve to the official source and therefore have
+        // the same daily schedule as a configured source.
+        assert!(should_fetch_remote("", None, now, false));
+        assert!(should_fetch_remote("   ", None, now, true));
         // First run, and then once a day.
         assert!(should_fetch_remote(url, None, now, false));
         assert!(!should_fetch_remote(url, Some(&fresh), now, false));
@@ -786,6 +1359,32 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_custom_table_reconciles_the_selected_prices() {
+        // This mirrors a source switch that discovers its URL changed after
+        // moving the custom file aside. The next in-memory reconciliation must
+        // choose the restored file, rather than the new source's cache.
+        let dir = tempdir();
+        let config_dir = dir.join("config");
+        let data_dir = dir.join("data");
+        let source = "https://example.com/new-pricing.json";
+        save(&config_dir, &remote_table("my-local-model", 9.0)).unwrap();
+        cache_remote(&data_dir, source, &remote_table("source-model", 1.0)).unwrap();
+
+        let backup = backup_custom_pricing(&config_dir).unwrap();
+        let (during_switch, custom_during_switch) =
+            selected_pricing(&config_dir, &data_dir, source);
+        assert!(!custom_during_switch);
+        assert_eq!(during_switch.entries[0].model_pattern, "source-model");
+
+        restore_custom_pricing(backup.as_deref(), &config_dir);
+        let (restored, custom_restored) = selected_pricing(&config_dir, &data_dir, source);
+        assert!(custom_restored);
+        assert_eq!(restored.entries[0].model_pattern, "my-local-model");
+        assert_eq!(restored.entries[0].input_per_m, 9.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn documented_codex_variants_have_their_own_exact_prices() {
         let table = default_table();
         for (model, input, output, cached) in [
@@ -808,6 +1407,41 @@ mod tests {
                 estimate_cost(&table, model, &totals(1_000_000, 1_000_000, 0, 1_000_000)).unwrap();
             assert!((estimated - input - output - cached).abs() < 1e-9);
             assert!(find_entry(&table, &format!("{model}-unverified")).is_none());
+        }
+    }
+
+    #[test]
+    fn new_models_use_their_own_standard_prices() {
+        let table = default_table();
+        for (model, input, output, cache_write, cache_read) in [
+            ("claude-opus-5-5", 4.0, 20.0, 5.0, 0.2),
+            ("gpt-6-sol", 2.0, 10.0, 2.5, 0.2),
+            ("gpt-6-luna", 0.1, 0.5, 0.125, 0.01),
+        ] {
+            let observed = if model.starts_with("claude-") {
+                format!("{model}-20260922")
+            } else {
+                model.to_string()
+            };
+            let (entry, kind) = find_match(&table, &observed).unwrap();
+            assert_eq!(kind, MatchKind::Exact, "{observed} used a family price");
+            assert_eq!(entry.model_pattern, model);
+            assert_eq!(
+                (
+                    entry.input_per_m,
+                    entry.output_per_m,
+                    entry.cache_write_per_m,
+                    entry.cache_read_per_m
+                ),
+                (input, output, cache_write, cache_read)
+            );
+            let estimated = estimate_cost(
+                &table,
+                &observed,
+                &totals(1_000_000, 1_000_000, 1_000_000, 1_000_000),
+            )
+            .unwrap();
+            assert!((estimated - input - output - cache_write - cache_read).abs() < 1e-9);
         }
     }
 
@@ -906,5 +1540,52 @@ mod tests {
         assert!(save(&dir, &invalid).is_err());
         assert_eq!(std::fs::read(pricing_path(&dir)).unwrap(), before);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_parsed_table_is_custom_even_when_one_entry_is_invalid() {
+        let dir = tempdir();
+        std::fs::write(
+            pricing_path(&dir),
+            r#"{"entries":[{"modelPattern":"","inputPerM":1,"outputPerM":1,"cacheWritePerM":1,"cacheReadPerM":1}],"updatedAt":null}"#,
+        )
+        .unwrap();
+        assert!(has_custom_pricing(&dir));
+        // `load_with_base` treats the file as a complete selection too: the
+        // invalid entry is filtered, leaving an intentionally empty table.
+        assert!(load_with_base(&dir, default_table()).entries.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn older_timestamped_remote_table_is_not_an_update() {
+        let mut current = remote_table("gpt-6-astra", 10.0);
+        current.updated_at = Some("2026-09-23T12:00:00Z".into());
+        let mut older = remote_table("gpt-6-astra", 2.0);
+        older.updated_at = Some("2026-09-22T12:00:00Z".into());
+        assert!(!table_is_update(&older, &current));
+        older.updated_at = Some("2026-09-24T12:00:00Z".into());
+        assert!(table_is_update(&older, &current));
+    }
+
+    #[test]
+    fn entry_order_is_a_pricing_revision() {
+        let sol = remote_table("gpt-6-sol", 2.0)
+            .entries
+            .into_iter()
+            .next()
+            .unwrap();
+        let astra = remote_table("gpt-6-astra", 10.0)
+            .entries
+            .into_iter()
+            .next()
+            .unwrap();
+        let current = PricingTable {
+            entries: vec![sol, astra],
+            updated_at: None,
+        };
+        let mut reordered = current.clone();
+        reordered.entries.reverse();
+        assert!(table_is_update(&reordered, &current));
     }
 }

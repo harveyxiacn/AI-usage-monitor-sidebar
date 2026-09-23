@@ -13,6 +13,7 @@ import type {
   IngestStats,
   MonitorInfo,
   PopoverRequest,
+  PriceUpdateStatus,
   PricingTable,
   ProviderId,
   ProviderInfo,
@@ -60,8 +61,15 @@ export const getUsageSessions = (query: SessionQuery) => invoke<SessionsResult>(
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });
-/** Only reaches the network when Settings.pricingUrl is set. */
+/** Refreshes the configured source, or the official project source when pricingUrl is empty. */
 export const refreshPricing = () => invoke<PricingTable>('refresh_pricing');
+export const getPriceUpdateStatus = () => invoke<PriceUpdateStatus>('get_price_update_status');
+/** Checks the official source when pricingUrl is empty, or the configured custom source. */
+export const checkForPriceUpdates = () => invoke<PriceUpdateStatus>('check_for_price_updates');
+/** Applies the checked source table. The backend rejects this while a manual table is active. */
+export const applyPriceUpdate = () => invoke<PricingTable>('apply_price_update');
+/** Explicitly discards a manual table and returns to the configured source. */
+export const useSourcePricing = () => invoke<PricingTable>('use_source_pricing');
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');
@@ -113,3 +121,4 @@ export const onPopoverTarget = (h: (r: PopoverRequest) => void) => listen<Popove
 export const onSidebarState = (h: (s: SidebarState) => void) => listen<SidebarState>('sidebar-state', h);
 export const onDashboardNavigate = (h: (p: { tab: DashboardTab }) => void) => listen<{ tab: DashboardTab }>('dashboard-navigate', h);
 export const onUpdateStatus = (h: (s: UpdateStatus) => void) => listen<UpdateStatus>('update-status', h);
+export const onPriceUpdateStatus = (h: (s: PriceUpdateStatus) => void) => listen<PriceUpdateStatus>('price-update-status', h);

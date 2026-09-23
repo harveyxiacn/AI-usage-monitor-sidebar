@@ -73,13 +73,14 @@ pub fn run() {
             std::fs::create_dir_all(&config_dir).ok();
             std::fs::create_dir_all(&data_dir).ok();
             app.manage(state::AppState::new(config_dir, data_dir));
+            // Pricing revisions have their own state and schedule. They never
+            // install an app update or apply a price table on their own.
+            commands::pricing::setup(app.handle());
             window::setup(app.handle())?;
             updater::setup(app.handle());
             scheduler::start(app.handle().clone());
             // External edits of settings.json apply without a restart.
             commands::settings::watch(app.handle().clone());
-            // No-op unless the user opted into a remote pricing table.
-            commands::pricing::start_remote_refresh(app.handle().clone());
 
             #[cfg(debug_assertions)]
             if std::env::var("AI_USAGE_SIDEBAR_DEVTOOLS").as_deref() == Ok("1") {
@@ -104,6 +105,10 @@ pub fn run() {
             commands::get_pricing,
             commands::set_pricing,
             commands::refresh_pricing,
+            commands::get_price_update_status,
+            commands::check_for_price_updates,
+            commands::apply_price_update,
+            commands::use_source_pricing,
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,

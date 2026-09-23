@@ -51,6 +51,17 @@ test('each element toggle removes exactly its own part of the bar', async ({ pag
   await expect(page.locator('.dots')).toHaveCount(0);
 });
 
+test('the centre percentage replaces the provider logo and respects the percent toggle', async ({ page }) => {
+  await openBar(page, { percentPosition: 'center' });
+  await expect(page.locator('.slot .pct')).toHaveCount(0);
+  await expect(page.locator('.slot .center-pct')).toHaveCount(2);
+  await expect(logos(page)).toHaveCount(0);
+
+  await openBar(page, { percentPosition: 'center', sidebarItems: { percentLabel: false } });
+  await expect(page.locator('.slot .center-pct')).toHaveCount(0);
+  await expect(logos(page)).toHaveCount(2);
+});
+
 test('window kinds and providers can be hidden from the bar independently', async ({ page }) => {
   // the per-model ring is the innermost arc of the Claude group
   await openBar(page, { sidebarItems: { scoped: false } });
@@ -107,11 +118,19 @@ test('the settings tab toggles sidebar items and the preview follows the label s
 
   const preview = page.locator('.preview');
   await expect(preview.locator('.pct')).toHaveCount(1);
-  await flip('Percent under each ring');
-  await expect(toggle('Percent under each ring')).not.toBeChecked();
+  await flip('Show percentage');
+  await expect(toggle('Show percentage')).not.toBeChecked();
   await expect(preview.locator('.pct')).toHaveCount(0);
 
   await expect(preview.locator('.center svg')).toHaveCount(1);
+  await flip('Show percentage');
+  await page.getByLabel('Percent placement').selectOption('center');
+  await expect(preview.locator('.pct')).toHaveCount(0);
+  await expect(preview.locator('.center-pct')).toHaveText('73%');
+  await expect(preview.locator('.center svg')).toHaveCount(0);
+  await page.getByLabel('Percent placement').selectOption('below');
+  await expect(preview.locator('.pct')).toHaveText('73%');
+
   await flip('Provider logo');
   await expect(preview.locator('.center svg')).toHaveCount(0);
 

@@ -197,7 +197,7 @@
       {#if loading}
         {#each [0, 1] as i (i)}
           <div class="slot">
-            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} />
+            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} percentPosition={s.percentPosition} />
           </div>
         {/each}
       {:else if items.length === 0}
@@ -235,6 +235,7 @@
               thresholds={s.thresholds}
               showPercentLabel={s.sidebarItems.percentLabel}
               percentMode={s.percentMode}
+              percentPosition={s.percentPosition}
               status={item.quota.status}
               interactive
             >

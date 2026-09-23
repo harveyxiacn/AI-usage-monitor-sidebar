@@ -17,9 +17,9 @@
     getShortcutStatus,
     isTauri,
     quitApp,
-    refreshPricing,
     reingestLogs,
     setPricing,
+    useSourcePricing,
   } from '$lib/api';
   import { formatAgo } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
@@ -28,6 +28,7 @@
   import { defaultSidebarItems, settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { update } from '$lib/stores/update.svelte';
+  import { pricingUpdate } from '$lib/stores/pricing-update.svelte';
   import type {
     AppInfo,
     CyberAccent,
@@ -35,6 +36,7 @@
     Language,
     MonitorInfo,
     PercentMode,
+    PercentPosition,
     PricingEntry,
     PricingTable,
     ProviderId,
@@ -60,7 +62,6 @@
   let pricingSaving = $state(false);
   let pricingError = $state<string | null>(null);
   let pricingDirty = $state(false);
-  let pricingFetching = $state(false);
   let actionError = $state<string | null>(null);
   let rescanResult = $state<string | null>(null);
   let rescanning = $state(false);
@@ -81,6 +82,7 @@
 
   onMount(() => {
     const disposeUpdate = update.init();
+    const disposePricingUpdate = pricingUpdate.init();
     void getProviders().then((p) => (providerInfos = p)).catch((e) => (actionError = String(e)));
     void getMonitors().then((m) => (monitors = m)).catch((e) => (actionError = String(e)));
     void getAppInfo().then((i) => (appInfo = i)).catch((e) => (actionError = String(e)));
@@ -89,6 +91,7 @@
     return () => {
       clearTimeout(savedTimer);
       disposeUpdate();
+      disposePricingUpdate();
     };
   });
 
@@ -111,6 +114,7 @@
   }
 
   const u = $derived(update.value);
+  const pu = $derived(pricingUpdate.value);
 
   const updateSummary = $derived.by(() => {
     if (!u) return t('update.unknown');
@@ -181,18 +185,38 @@
     finally { pricingSaving = false; }
   }
 
-  /** Opt-in: only ever reaches the network when `pricingUrl` is set. */
-  async function fetchPrices() {
-    if (pricingFetching) return;
-    pricingFetching = true;
+  async function checkPricingUpdates() {
+    await pricingUpdate.check();
+  }
+
+  /** A source application must never overwrite edits that have not been saved. */
+  async function applyPricingUpdate() {
+    if (pricingDirty) return;
+    const table = await pricingUpdate.apply();
+    if (!table || pricingDirty) return;
+    pricing = table;
+    pricingSaved = true;
+    clearTimeout(savedTimer);
+    savedTimer = setTimeout(() => (pricingSaved = false), 1500);
+  }
+
+  /** Deliberately separate from Apply: this discards the active manual table. */
+  async function switchToSourcePricing() {
+    if (pricingDirty) return;
+    if (!window.confirm(t('settings.pricing.useSourceConfirm'))) return;
     pricingError = null;
     try {
-      pricing = await refreshPricing();
-      pricingSaved = true;
-      clearTimeout(savedTimer);
-      savedTimer = setTimeout(() => (pricingSaved = false), 1500);
+      const table = await useSourcePricing();
+      if (!pricingDirty) pricing = table;
+      await pricingUpdate.check();
     } catch (e) { pricingError = String(e); }
-    finally { pricingFetching = false; }
+  }
+
+  async function patchPricingUrl(value: string) {
+    await settings.patch({ pricingUrl: value.trim() });
+    // A different source cannot reuse the previous source's offer. The check
+    // replaces the status immediately after the setting has been persisted.
+    await pricingUpdate.check();
   }
 
   function addPricingRow() {
@@ -270,6 +294,7 @@
   const SURFACE_STYLES: SurfaceStyle[] = ['glass', 'solid', 'cyber'];
   const CYBER_ACCENTS: CyberAccent[] = ['neon', 'matrix', 'amber', 'ice', 'synthwave'];
   const PERCENT_MODES: PercentMode[] = ['used', 'remaining'];
+  const PERCENT_POSITIONS: PercentPosition[] = ['below', 'center'];
 </script>
 
 <section class="settings">
@@ -325,6 +350,18 @@
     <Field label={t('settings.percentMode')}>
       <select aria-label={t('settings.percentMode')} class="field" value={s.percentMode} onchange={(e) => void settings.patch({ percentMode: e.currentTarget.value as PercentMode })}>
         {#each PERCENT_MODES as v (v)}<option value={v}>{tDyn(`settings.percentMode.${v}`)}</option>{/each}
+      </select>
+    </Field>
+
+    <Field label={t('settings.percentPosition')} hint={t('settings.percentPosition.hint')}>
+      <select
+        aria-label={t('settings.percentPosition')}
+        class="field"
+        value={s.percentPosition}
+        disabled={!s.sidebarItems.percentLabel}
+        onchange={(e) => void settings.patch({ percentPosition: e.currentTarget.value as PercentPosition })}
+      >
+        {#each PERCENT_POSITIONS as v (v)}<option value={v}>{tDyn(`settings.percentPosition.${v}`)}</option>{/each}
       </select>
     </Field>
 
@@ -620,6 +657,14 @@
       />
     </Field>
 
+    <Field label={t('settings.autoPricingCheck')} hint={t('settings.autoPricingCheck.hint')}>
+      <Toggle
+        checked={s.autoPricingCheck}
+        label={t('settings.autoPricingCheck')}
+        onchange={(v) => void settings.patch({ autoPricingCheck: v })}
+      />
+    </Field>
+
     <Field label={t('settings.pricingUrl')} hint={t('settings.pricingUrl.hint')} wide>
       <input
         class="field url"
@@ -627,7 +672,7 @@
         inputmode="url"
         placeholder="https://…/pricing.json"
         value={s.pricingUrl}
-        onchange={(e) => void settings.patch({ pricingUrl: (e.currentTarget as HTMLInputElement).value.trim() })}
+        onchange={(e) => void patchPricingUrl((e.currentTarget as HTMLInputElement).value)}
         aria-label={t('settings.pricingUrl')}
       />
     </Field>
@@ -720,18 +765,53 @@
 
       <div class="pricing-actions">
         {#if pricingDirty}<span class="muted small">{t('settings.pricing.unsaved')}</span>{/if}
-        <button
-          class="btn"
-          onclick={() => void fetchPrices()}
-          disabled={pricingSaving || pricingFetching || !s.pricingUrl.trim()}
-          title={s.pricingUrl.trim() ? undefined : t('settings.pricingUrl.hint')}
-        >
-          {pricingFetching ? t('common.refreshing') : t('settings.pricing.refresh')}
+        <button class="btn" onclick={() => void checkPricingUpdates()} disabled={pricingSaving || pu?.checking}>
+          {pu?.checking ? t('pricingUpdate.checking') : t('pricingUpdate.check')}
         </button>
+        {#if pu?.customPricing}
+          <span class="muted small">{t('settings.pricing.customSource')}</span>
+          <button
+            class="btn"
+            onclick={() => void switchToSourcePricing()}
+            disabled={pricingSaving || pricingDirty}
+            title={pricingDirty ? t('settings.pricing.saveFirst') : undefined}
+          >{t('settings.pricing.useSource')}</button>
+        {:else}
+          {#if pu?.available}
+            <button
+              class="btn btn-primary"
+              onclick={() => void applyPricingUpdate()}
+              disabled={pricingSaving || pricingDirty || pu.applying}
+              title={pricingDirty ? t('settings.pricing.saveFirst') : undefined}
+            >{pu.applying ? t('pricingUpdate.applying') : t('pricingUpdate.apply')}</button>
+          {/if}
+        {/if}
         <button class="btn" onclick={addPricingRow} disabled={!pricing || pricingSaving}>{t('settings.pricing.add')}</button>
-        <button class="btn btn-primary" onclick={() => void savePricing()} disabled={!pricing || pricingSaving}>
+        <button
+          class="btn btn-primary"
+          onclick={() => void savePricing()}
+          disabled={!pricing || pricingSaving}
+          title={t('settings.pricing.saveCustomHint')}
+        >
           {pricingSaving ? t('common.saving') : pricingSaved ? t('common.saved') : t('settings.pricing.save')}
         </button>
+      </div>
+      <div class="pricing-update-status" role="status">
+        {#if pu?.error || pricingUpdate.error}
+          <span class="err">{t('common.error', { message: pu?.error ?? pricingUpdate.error ?? '' })}</span>
+        {:else if pu?.checking}
+          <span class="muted small">{t('pricingUpdate.checking')}</span>
+        {:else if pu?.customPricing && pu.available}
+          <span class="offer">{t('pricingUpdate.customAvailable', { revision: pu.revision ?? '—' })}</span>
+        {:else if pu?.customPricing}
+          <span class="muted small">{t('settings.pricing.customSource')}</span>
+        {:else if pu?.available}
+          <span class="offer">{t('pricingUpdate.available', { revision: pu.revision ?? '—' })}</span>
+        {:else if pu?.checkedAt}
+          <span class="muted small">{t('pricingUpdate.upToDate', { ago: formatAgo(pu.checkedAt) })}</span>
+        {:else}
+          <span class="muted small">{t('pricingUpdate.unknown')}</span>
+        {/if}
       </div>
     </div>
   </article>
@@ -757,7 +837,7 @@
     <!-- Updates are never installed without this click; a build owned by a
          package manager only gets the release link. -->
     <Field
-      label={t('settings.about.update')}
+      label={t('settings.about.programUpdates')}
       hint={u?.checkedAt ? t('update.checkedAt', { ago: formatAgo(u.checkedAt) }) : undefined}
     >
       <span class="upd-state" class:offer={!!u?.available}>{updateSummary}</span>
@@ -999,6 +1079,16 @@
     justify-content: flex-end;
     align-items: center;
     flex-wrap: wrap;
+  }
+
+  .pricing-update-status {
+    min-height: 1.1rem;
+    font-size: 0.75rem;
+  }
+
+  .pricing-update-status .offer {
+    color: var(--focus);
+    font-weight: 500;
   }
 
   .path {

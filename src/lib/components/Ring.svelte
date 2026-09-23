@@ -33,7 +33,7 @@
   import type { Snippet } from 'svelte';
   import { severityColor, severityOf, clampPercent, shortPercent } from '$lib/format';
   import { clampSize, settings } from '$lib/stores/settings.svelte';
-  import type { PercentMode, ProviderStatus, Thresholds } from '$lib/types';
+  import type { PercentMode, PercentPosition, ProviderStatus, Thresholds } from '$lib/types';
 
   export interface RingArcView {
     /** used percent 0..100, or null when unknown */
@@ -62,6 +62,7 @@
     gap?: number;
     showPercentLabel?: boolean;
     percentMode?: PercentMode;
+    percentPosition?: PercentPosition;
     status?: ProviderStatus;
     loading?: boolean;
     interactive?: boolean;
@@ -79,6 +80,7 @@
     gap = 2.5,
     showPercentLabel = false,
     percentMode = 'used',
+    percentPosition = 'below',
     status = 'ok',
     loading = false,
     interactive = false,
@@ -89,8 +91,22 @@
   // geometry follows Settings.sizes unless the caller pinned it (the settings
   // preview does, so it can show a size before it is applied)
   const dim = $derived(clampSize('ringSize', size ?? settings.value.sizes.ringSize));
-  const sw = $derived(clampSize('ringStroke', stroke ?? settings.value.sizes.ringStroke));
+  const configuredSw = $derived(clampSize('ringStroke', stroke ?? settings.value.sizes.ringStroke));
   const c = $derived(dim / 2);
+  const centerPercent = $derived(showPercentLabel && percentPosition === 'center');
+  /**
+   * Three regular arcs can leave no room at the minimum 40px ring size. In
+   * centre-percent mode reserve a readable inner disc and tighten only the
+   * painted arc geometry. The outer size never changes, so bar layout stays
+   * stable when the user switches positions.
+   */
+  const effectiveGap = $derived(centerPercent && arcs.length > 1 ? Math.min(gap, 1) : gap);
+  const sw = $derived.by(() => {
+    if (!centerPercent || arcs.length === 0) return configuredSw;
+    const targetInnerRadius = Math.max(10, dim * 0.25);
+    const maxStroke = (dim / 2 - targetInnerRadius - (arcs.length - 1) * effectiveGap - 1) / arcs.length;
+    return Math.min(configuredSw, Math.max(2.3, maxStroke));
+  });
 
   function shownPercent(percent: number) {
     const used = clampPercent(percent);
@@ -117,7 +133,7 @@
   /** Geometry + resolved colour for every arc, outer → inner. */
   const drawn = $derived.by(() =>
     arcs.map((a, i) => {
-      const r = (dim - sw) / 2 - i * (sw + gap);
+      const r = (dim - sw) / 2 - i * (sw + effectiveGap);
       const circumference = 2 * Math.PI * r;
       const shown = a.percent == null ? 0 : shownPercent(a.percent);
       return {
@@ -146,6 +162,9 @@
   const badge = $derived(
     status === 'not_logged_in' ? 'warn' : status === 'token_expired' || status === 'error' ? 'dot' : null
   );
+  const label = $derived(loading ? '' : shortPercent(labelPercent, percentMode));
+  /** 100% is the widest label. Keep it inside even for a 40px, three-arc ring. */
+  const centerFontSize = $derived(Math.max(0.5, Math.min(0.8, (Math.max(innerR, 0) * 2) / 40)));
 
   const px = (v: number) => `${v / 16}rem`;
 </script>
@@ -186,8 +205,12 @@
         {/each}
       {/if}
     </svg>
-    <span class="center">
-      {@render logo?.(logoSize)}
+    <span class="center" class:percent-center={centerPercent} style:--center-font-size={`${centerFontSize}rem`}>
+      {#if centerPercent}
+        <span class="center-pct" class:dimmed>{label}</span>
+      {:else}
+        {@render logo?.(logoSize)}
+      {/if}
     </span>
     {#if badge === 'warn'}
       <span class="badge badge-warn" aria-hidden="true">!</span>
@@ -195,8 +218,8 @@
       <span class="badge badge-dot" aria-hidden="true"></span>
     {/if}
   </div>
-  {#if showPercentLabel}
-    <span class="pct" class:dimmed>{loading ? '' : shortPercent(labelPercent, percentMode)}</span>
+  {#if showPercentLabel && !centerPercent}
+    <span class="pct" class:dimmed>{label}</span>
   {/if}
 </div>
 
@@ -281,6 +304,26 @@
     pointer-events: none;
   }
 
+  .center-pct {
+    display: block;
+    max-width: calc(var(--ring-size) * 0.54);
+    overflow: hidden;
+    color: var(--text);
+    font-size: var(--center-font-size);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.04em;
+    text-align: center;
+    text-overflow: clip;
+    text-shadow: var(--label-shadow);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .center-pct.dimmed {
+    color: var(--muted);
+  }
+
   .badge {
     position: absolute;
     /* sit on the ring's 1-o'clock edge, half outside the circle */
@@ -309,6 +352,7 @@
   }
 
   .pct {
+    display: block;
     font-size: var(--label-size, 0.8125rem);
     font-weight: 600;
     letter-spacing: 0.01em;
@@ -316,6 +360,7 @@
     text-shadow: var(--label-shadow);
     font-variant-numeric: tabular-nums;
     min-height: 1.1em;
+    line-height: 1.1;
   }
 
   .pct.dimmed {

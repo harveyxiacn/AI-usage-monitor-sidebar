@@ -14,7 +14,7 @@ test('a manual check surfaces the offer in the About card and in the banner', as
   // nothing may appear before the user asks
   await expect(page.getByText(/Update 9\.9\.9 available/)).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Check for updates', exact: true }).click();
+  await page.getByRole('button', { name: 'Check program updates', exact: true }).click();
 
   await expect(page.getByText('Update 9.9.9 available', { exact: true })).toBeVisible();
   // the preview is not a bundle we may replace, so no install button

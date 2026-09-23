@@ -106,7 +106,8 @@ Nothing else needs to change: `release.yml` already passes both to
 
 ### 2.4 What happens when the secret does **not** exist
 
-This is the current state, and it is fully supported.
+This case is fully supported. The repository currently has the signing secret;
+the maintainer should confirm it is still available before tagging a release.
 
 `tauri build` refuses to run when `createUpdaterArtifacts` is on, a `pubkey`
 is configured and `TAURI_SIGNING_PRIVATE_KEY` is missing:
@@ -162,6 +163,34 @@ Implementation: `src-tauri/src/updater.rs`, `src/lib/stores/update.svelte.ts`.
   `UpdateStatus.canInstall` is `false` and the UI offers the release page
   instead of an install button. The detection is the `APPIMAGE` environment
   variable, which only an AppImage runtime sets.
+
+---
+
+## 3.1 Price table updates
+
+The repository's `pricing.json` is the default published price source at its
+GitHub raw URL. Keep it in sync with the bundled defaults when changing model
+prices, and validate both copies before publishing. A user can select a
+different `https://` source with `pricingUrl`; an empty value means the
+project's raw file, not "disabled".
+
+`autoPricingCheck` is independent of `autoUpdateCheck`. When enabled (the
+default), the app checks the selected price source about 60 seconds after
+startup and then every 24 hours. The background check is read-only: it only
+records that a newer source table is available and reminds the user. It does
+not replace the applied table, overwrite a saved custom table or reinstall the
+application.
+
+The user applies a source update through **Check pricing updates**, followed by
+**Apply price update**. A saved table edited in Settings remains authoritative
+until that action is confirmed; **Use source pricing** explicitly switches back
+to source prices, confirms the change and backs up the saved table first.
+The source download is size-limited and schema-validated, and a failed check
+or failed apply keeps the current table. The backend contracts are
+`get_price_update_status`, `check_for_price_updates`, `apply_price_update` and
+`use_source_pricing`, with the `price-update-status` event. `refresh_pricing`
+remains as a compatibility command that performs the legacy explicit
+check-and-apply flow.
 
 ---
 

@@ -19,6 +19,7 @@ import type {
   MonitorInfo,
   PricingEntry,
   PricingTable,
+  PriceUpdateStatus,
   ProviderId,
   ProviderInfo,
   QuotaHistoryQuery,
@@ -117,6 +118,7 @@ export const mockSettings: Settings = {
   ringMode: 'concentric',
   showScopedRing: true,
   percentMode: 'used',
+  percentPosition: 'below',
   showPercentLabel: true,
   sidebarItems: { fiveHour: true, weekly: true, scoped: true, other: true, logo: true, percentLabel: true, moreButton: true },
   refreshIntervalSec: 60,
@@ -133,6 +135,7 @@ export const mockSettings: Settings = {
   monthlyBudgetUsd: 0,
   autostart: false,
   autoUpdateCheck: true,
+  autoPricingCheck: true,
   shortcutToggleSidebar: '',
   shortcutOpenDashboard: '',
   opacity: 1,
@@ -191,6 +194,7 @@ const PRICING: PricingEntry[] = [
   { modelPattern: 'claude-opus-4-7', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
   { modelPattern: 'claude-opus-4-8', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
   { modelPattern: 'claude-opus-5', inputPerM: 5.0, outputPerM: 25.0, cacheWritePerM: 6.25, cacheReadPerM: 0.5 },
+  { modelPattern: 'claude-opus-5-5', inputPerM: 4.0, outputPerM: 20.0, cacheWritePerM: 5.0, cacheReadPerM: 0.2 },
   { modelPattern: 'claude-sonnet-4', inputPerM: 3.0, outputPerM: 15.0, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
   { modelPattern: 'claude-sonnet-4-5', inputPerM: 3.0, outputPerM: 15.0, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
   { modelPattern: 'claude-sonnet-4-6', inputPerM: 3.0, outputPerM: 15.0, cacheWritePerM: 3.75, cacheReadPerM: 0.3 },
@@ -214,6 +218,8 @@ const PRICING: PricingEntry[] = [
   { modelPattern: 'gpt-5.6-sol', inputPerM: 4.0, outputPerM: 20.0, cacheWritePerM: 5.0, cacheReadPerM: 0.4 },
   { modelPattern: 'gpt-5.6-terra', inputPerM: 2.0, outputPerM: 12.0, cacheWritePerM: 2.5, cacheReadPerM: 0.2 },
   { modelPattern: 'gpt-5.6-luna', inputPerM: 0.2, outputPerM: 1.2, cacheWritePerM: 0.25, cacheReadPerM: 0.02 },
+  { modelPattern: 'gpt-6-sol', inputPerM: 2.0, outputPerM: 10.0, cacheWritePerM: 2.5, cacheReadPerM: 0.2 },
+  { modelPattern: 'gpt-6-luna', inputPerM: 0.1, outputPerM: 0.5, cacheWritePerM: 0.125, cacheReadPerM: 0.01 },
   { modelPattern: 'gpt-6-astra', inputPerM: 10.0, outputPerM: 50.0, cacheWritePerM: 12.5, cacheReadPerM: 1.0 },
   { modelPattern: 'gpt-5-mini', inputPerM: 0.25, outputPerM: 2.0, cacheWritePerM: 0.25, cacheReadPerM: 0.025 },
   { modelPattern: 'gpt-5-nano', inputPerM: 0.05, outputPerM: 0.4, cacheWritePerM: 0.05, cacheReadPerM: 0.005 },
@@ -248,6 +254,19 @@ let updateStatus: UpdateStatus = {
   installing: false,
   error: null,
   checkedAt: null,
+};
+
+/** Preview pricing feed: an offer is available after a manual check. */
+const MOCK_PRICE_REVISION = '2026-09-23';
+let appliedPricingRevision: string | null = null;
+let priceUpdateStatus: PriceUpdateStatus = {
+  available: false,
+  revision: null,
+  checking: false,
+  applying: false,
+  checkedAt: null,
+  error: null,
+  customPricing: false,
 };
 
 // ------------------------------------------------------------ fake events ---
@@ -824,12 +843,66 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         else entries[index] = normalized;
       }
       pricing = { entries, updatedAt: iso(Date.now()) };
+      priceUpdateStatus = { ...priceUpdateStatus, customPricing: true, available: false };
+      mockEmit('price-update-status', structuredClone(priceUpdateStatus));
       return structuredClone(pricing) as T;
     }
     case 'refresh_pricing': {
-      // The preview has no network; mirror the "no URL configured" error.
-      if (!settings.pricingUrl.trim()) throw new Error('no pricing URL configured');
+      // Compatibility with the old one-click UI: it checks the configured
+      // source (the official source when the URL is empty) and applies it.
+      if (priceUpdateStatus.customPricing) {
+        throw new Error('a custom pricing table is active; use_source_pricing first');
+      }
       pricing = { ...pricing, updatedAt: iso(Date.now()) };
+      priceUpdateStatus = {
+        ...priceUpdateStatus,
+        available: false,
+        revision: null,
+        checking: false,
+        applying: false,
+        error: null,
+        checkedAt: iso(Date.now()),
+      };
+      appliedPricingRevision = MOCK_PRICE_REVISION;
+      mockEmit('price-update-status', structuredClone(priceUpdateStatus));
+      return structuredClone(pricing) as T;
+    }
+    case 'get_price_update_status':
+      return structuredClone(priceUpdateStatus) as T;
+    case 'check_for_price_updates': {
+      priceUpdateStatus = {
+        ...priceUpdateStatus,
+        // A manual table still learns that its source has changed. Applying it
+        // requires the separate, explicit "use source pricing" action.
+        available: appliedPricingRevision !== MOCK_PRICE_REVISION,
+        revision: MOCK_PRICE_REVISION,
+        checking: false,
+        error: null,
+        checkedAt: iso(Date.now()),
+      };
+      mockEmit('price-update-status', structuredClone(priceUpdateStatus));
+      return structuredClone(priceUpdateStatus) as T;
+    }
+    case 'apply_price_update': {
+      if (priceUpdateStatus.customPricing) throw new Error('manual pricing is active; use the source pricing action first');
+      if (!priceUpdateStatus.available) throw new Error('no pricing update available');
+      pricing = { ...pricing, updatedAt: iso(Date.now()) };
+      appliedPricingRevision = MOCK_PRICE_REVISION;
+      priceUpdateStatus = {
+        ...priceUpdateStatus,
+        available: false,
+        applying: false,
+        revision: null,
+        error: null,
+      };
+      mockEmit('price-update-status', structuredClone(priceUpdateStatus));
+      return structuredClone(pricing) as T;
+    }
+    case 'use_source_pricing': {
+      pricing = { entries: structuredClone(PRICING), updatedAt: iso(Date.now()) };
+      appliedPricingRevision = MOCK_PRICE_REVISION;
+      priceUpdateStatus = { ...priceUpdateStatus, customPricing: false, available: false, revision: null, error: null };
+      mockEmit('price-update-status', structuredClone(priceUpdateStatus));
       return structuredClone(pricing) as T;
     }
     case 'reingest_logs': {

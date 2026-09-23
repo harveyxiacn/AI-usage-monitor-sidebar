@@ -21,6 +21,8 @@ pub struct MenuItems {
     settings: MenuItem<tauri::Wry>,
     /// "Check for updates" until one is found, then "Update x.y.z available…".
     update: MenuItem<tauri::Wry>,
+    /// Kept distinct from the app updater: this checks the price-list source.
+    pricing_update: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
 }
 
@@ -31,6 +33,7 @@ mod ids {
     pub const DASHBOARD: &str = "open_dashboard";
     pub const SETTINGS: &str = "open_settings";
     pub const UPDATE: &str = "update";
+    pub const PRICING_UPDATE: &str = "pricing_update";
     pub const QUIT: &str = "quit";
 }
 
@@ -44,6 +47,8 @@ struct Labels {
     update_check: &'static str,
     /// `{version}` is replaced with the offered version.
     update_available: &'static str,
+    pricing_check: &'static str,
+    pricing_available: &'static str,
     quit: &'static str,
 }
 
@@ -69,8 +74,10 @@ fn labels(settings: &Settings) -> Labels {
             refresh: "立即刷新",
             dashboard: "打开仪表盘",
             settings: "设置…",
-            update_check: "检查更新",
-            update_available: "有新版本 {version}…",
+            update_check: "检查程序更新",
+            update_available: "有程序新版本 {version}…",
+            pricing_check: "检查价格更新",
+            pricing_available: "有价格表更新…",
             quit: "退出",
         }
     } else {
@@ -80,8 +87,10 @@ fn labels(settings: &Settings) -> Labels {
             refresh: "Refresh now",
             dashboard: "Open dashboard",
             settings: "Settings…",
-            update_check: "Check for updates",
-            update_available: "Update {version} available…",
+            update_check: "Check program updates",
+            update_available: "Program update {version} available…",
+            pricing_check: "Check pricing updates",
+            pricing_available: "Pricing update available…",
             quit: "Quit",
         }
     }
@@ -93,6 +102,14 @@ fn update_label(l: &Labels, status: &crate::model::UpdateStatus) -> String {
     match status.available.as_deref() {
         Some(version) => l.update_available.replace("{version}", version),
         None => l.update_check.to_string(),
+    }
+}
+
+fn pricing_update_label(l: &Labels, status: &crate::model::PriceUpdateStatus) -> String {
+    if status.available {
+        l.pricing_available.to_string()
+    } else {
+        l.pricing_check.to_string()
     }
 }
 
@@ -121,6 +138,13 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
         true,
         None::<&str>,
     )?;
+    let pricing_update = MenuItem::with_id(
+        app,
+        ids::PRICING_UPDATE,
+        pricing_update_label(&l, &crate::commands::pricing::status(app)),
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, ids::QUIT, l.quit, true, None::<&str>)?;
 
@@ -133,6 +157,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             &open_dashboard,
             &open_settings,
             &update,
+            &pricing_update,
             &separator,
             &quit,
         ],
@@ -183,6 +208,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             dashboard: open_dashboard,
             settings: open_settings,
             update,
+            pricing_update,
             quit,
         });
     }
@@ -214,6 +240,18 @@ fn on_menu(app: &AppHandle, id: &str) {
                 let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     crate::updater::check(&handle).await;
+                });
+            }
+        }
+        // A pending table takes the user to Settings where its revision and
+        // explicit Apply button are visible. Otherwise this is a manual check.
+        ids::PRICING_UPDATE => {
+            if crate::commands::pricing::status(app).available {
+                dashboard::open(app, Some("settings".into()));
+            } else {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::commands::pricing::check(&handle).await;
                 });
             }
         }
@@ -315,6 +353,12 @@ pub fn sync(app: &AppHandle, settings: &Settings) {
         {
             log::debug!("tray update label failed: {e}");
         }
+        if let Err(e) = items.pricing_update.set_text(pricing_update_label(
+            &l,
+            &crate::commands::pricing::status(app),
+        )) {
+            log::debug!("tray pricing-update label failed: {e}");
+        }
     }
 }
 
@@ -329,5 +373,29 @@ pub fn sync_update(app: &AppHandle, status: &crate::model::UpdateStatus) {
     let text = update_label(&labels(&window::settings_of(app)), status);
     if let Err(e) = items.update.set_text(text) {
         log::debug!("tray update label failed: {e}");
+    }
+}
+
+/// Re-label the independent pricing item after its status changes.
+pub fn sync_price_update(app: &AppHandle, status: &crate::model::PriceUpdateStatus) {
+    sync_price_update_for_settings(app, status, &window::settings_of(app));
+}
+
+/// Variant used while `settings.json` is being persisted. Callers holding the
+/// settings write lock pass the already merged value so the tray does not try
+/// to acquire that lock again.
+pub fn sync_price_update_for_settings(
+    app: &AppHandle,
+    status: &crate::model::PriceUpdateStatus,
+    settings: &Settings,
+) {
+    let Some(state) = app.try_state::<window::PlatformState>() else {
+        return;
+    };
+    let items = state.tray_items.lock().clone();
+    let Some(items) = items else { return };
+    let text = pricing_update_label(&labels(settings), status);
+    if let Err(e) = items.pricing_update.set_text(text) {
+        log::debug!("tray pricing-update label failed: {e}");
     }
 }

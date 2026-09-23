@@ -16,6 +16,7 @@
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
   import { update } from '$lib/stores/update.svelte';
+  import { pricingUpdate } from '$lib/stores/pricing-update.svelte';
   import type { DashboardTab } from '$lib/types';
 
   // stamped before the first applyTheme() effect so the theme store knows
@@ -29,9 +30,12 @@
   let themeKey = $state('dark');
   /** the update banner is a nudge, not a modal: one click makes it go away */
   let updateDismissed = $state(false);
+  /** A new revision resets this acknowledgement; an update is never hidden forever. */
+  let pricingUpdateDismissedRevision = $state<string | null>(null);
+  const pricingRevision = $derived(pricingUpdate.value?.revision ?? 'unknown');
 
   onMount(() => {
-    const disposers: Array<() => void> = [settings.init(), snapshot.init(), update.init()];
+    const disposers: Array<() => void> = [settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
 
     // applyTheme() writes data-theme on <html>; watching the attribute also
     // catches the prefers-color-scheme listener firing under theme 'auto'.
@@ -80,8 +84,16 @@
   {#if update.available && !updateDismissed}
     <aside class="update-bar">
       <span>{t('update.banner', { version: update.available })}</span>
-      <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.update')}</button>
+      <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.programUpdates')}</button>
       <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
+    </aside>
+  {/if}
+
+  {#if pricingUpdate.available && pricingUpdateDismissedRevision !== pricingRevision}
+    <aside class="update-bar pricing-update-bar">
+      <span>{t('pricingUpdate.banner', { revision: pricingRevision })}</span>
+      <button class="link" onclick={() => (tab = 'settings')}>{t('pricingUpdate.openSettings')}</button>
+      <button class="link" onclick={() => (pricingUpdateDismissedRevision = pricingRevision)}>{t('pricingUpdate.dismiss')}</button>
     </aside>
   {/if}
 

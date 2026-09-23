@@ -295,7 +295,11 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
-| `refresh_pricing` | – | `PricingTable` (downloads `settings.pricingUrl` now; errors when it is empty — no network call is ever made without it) |
+| `get_price_update_status` | – | `PriceUpdateStatus` (cached status; never touches the network) |
+| `check_for_price_updates` | – | `PriceUpdateStatus` (checks the selected source and emits `price-update-status`; does not apply prices) |
+| `apply_price_update` | – | `PricingTable` (applies the checked source table; rejects while a saved custom table is active) |
+| `use_source_pricing` | – | `PricingTable` (explicitly switches from a saved custom table to the selected source, backing up the saved table first) |
+| `refresh_pricing` | – | `PricingTable` (legacy compatibility command that explicitly checks and applies the selected source with the same custom-table protection) |
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
@@ -335,6 +339,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `sidebar-state` | `SidebarState` | platform |
 | `dashboard-navigate` | `{ tab: string }` | platform |
 | `update-status` | `UpdateStatus` | updater, after every state change |
+| `price-update-status` | `PriceUpdateStatus` | pricing backend, after a source check, apply or status change |
 
 Each window's snapshot store also reconciles through `get_snapshot` every
 30 seconds and when its document becomes visible, gains focus or is restored.
@@ -368,7 +373,7 @@ as they are so existing `settings.json` files stay valid; the settings tab
 relabels the controls ("Horizontal align / offset") on a horizontal edge.
 
 See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
-shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member on, `percentMode="used"`,
+shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member on, `percentMode="used"`, `percentPosition="below"`,
 `refreshIntervalSec=60`, `adaptiveRefresh=true`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90, `notifications=false` with
 `forecastNotifications=true` (the predictive warning is on by default but only
@@ -383,6 +388,12 @@ only for a `medium`/`high` confidence forecast).
 draws. They are presentation only: a provider hidden from the bar is still
 polled and still appears in the dashboard, the history and the popover, unlike
 `ProviderSettings.enabled`, which switches the provider off entirely.
+
+`percentPosition="below"` shows the percentage beneath each ring with its own
+line height so it cannot overlap the arcs. `"center"` puts the percentage in
+the centre instead of the provider logo. Both positions follow
+`sidebarItems.percentLabel`; turning it off restores the centre logo when
+`sidebarItems.logo` is enabled. Existing settings default to `"below"`.
 
 Rules, implemented in `src/lib/sidebar-items.ts` and unit-tested in
 `tests/sidebar-items.unit.ts`:
@@ -411,7 +422,8 @@ settings files, older builds and downgrades working; nothing in the UI reads
 the flat fields any more.
 
 `cyberAccent="neon"`, `hideAccountEmail=false` and `monthlyBudgetUsd=0` (no budget
-line on the History tab) complete the defaults, together with `autoUpdateCheck=true` and empty
+line on the History tab) complete the defaults, together with
+`autoPricingCheck=true`, `autoUpdateCheck=true` and empty
 `shortcutToggleSidebar` / `shortcutOpenDashboard` (= no global shortcut registered).
 
 `monthlyBudgetUsd` (0 – 1 000 000, 0 = off) is an **estimated** monthly cost
@@ -472,6 +484,24 @@ never downloads anything, and installing is always an explicit click.
 environment variable), where the UI links to the release page instead. The
 signing key, `latest.json` and what a release looks like without either are
 documented in `docs/RELEASING.md`.
+
+### Price updates
+
+Price checks and application updates are separate flows. `autoPricingCheck`
+controls a read-only check about 60 seconds after start-up and then every 24
+hours. A check only determines whether a newer source table is available and
+shows a reminder; it does not write the applied table, replace a saved table or
+restart the app. The user invokes **Check pricing updates** first, then
+**Apply price update** to fetch and apply the checked source table.
+
+The source is selected by `settings.pricingUrl`: an empty value means the
+project-maintained GitHub raw `pricing.json`, and a non-empty value must be a
+custom `https://` URL. A saved user table remains authoritative, including
+custom rows, deletions and an intentionally empty table. Switching from that
+saved table to source prices is an explicit **Use source pricing** operation,
+which confirms the change and backs up the saved table first.
+`autoPricingCheck=false` disables background checks only; the manual price
+update actions remain available.
 
 ### Colours and sizes
 
@@ -583,23 +613,28 @@ CSV exports keep the full estimate, known subtotal and excluded count in separat
 columns. Unknown records never receive an invented price.
 
 The effective table is layered: the user's saved `pricing.json` wins; below
-it sits the cached remote list, and below that the bundled defaults. The
-remote layer is **opt-in** — nothing is downloaded unless the user sets
-`settings.pricingUrl` to an `https` URL. It is then fetched at most once a
-day (or on `refresh_pricing`), limited to 256 KiB and 2000 entries,
-validated for plausible names and rates, and cached as
-`<data_dir>/pricing-remote.json`; any failure keeps the previous table.
-`pricing.json` at the repository root is the same schema, so the project can
-host its own list over raw.githubusercontent. Subscription users do not pay per token;
+it sits the selected source table, and below that the bundled defaults. The
+source is the project-maintained raw GitHub `pricing.json` when
+`settings.pricingUrl` is empty, or the user's custom HTTPS URL otherwise.
+Background checks never change this layering; only the explicit price update
+action can apply a newer source table. Downloads are limited to 256 KiB and
+2000 entries, validated for plausible names and rates, and cached as
+`<data_dir>/pricing-remote.json`; any failure keeps the previous table. The
+saved table is backed up before a user explicitly switches back to source
+prices. `pricing.json` at the repository root is the same schema, so the
+project can publish its list over raw.githubusercontent. Subscription users do not pay per token;
 the estimate is a *comparison indicator* and is labelled as such in the UI.
 The saved user table is authoritative (including removed rows or an empty
 table); defaults apply only when no valid saved table exists.
 
-Defaults were checked on 2026-09-20 against
+Defaults were checked on 2026-09-23 against
 [OpenAI pricing](https://developers.openai.com/api/docs/pricing),
+[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
 [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5),
-[GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex), and
-[Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+[GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex),
+[Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), and
+[Claude Opus 5.5](https://www.anthropic.com/claude-opus-5-5).
 These are standard short-context estimates, not invoices: fast/batch tiers,
 long-context multipliers, region fees and cache TTL differences are not
 tracked in the normalized counters. Cache writes use the published rate

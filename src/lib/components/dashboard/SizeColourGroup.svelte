@@ -184,6 +184,7 @@
             stroke={s.sizes.ringStroke}
             showPercentLabel={s.sidebarItems.percentLabel}
             percentMode={s.percentMode}
+            percentPosition={s.percentPosition}
           >
             {#snippet logo(logoSize)}
               {#if s.sidebarItems.logo}<ProviderLogo provider="claude" size={logoSize} />{/if}

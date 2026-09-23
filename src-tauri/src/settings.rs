@@ -316,6 +316,9 @@ pub fn set_auto_hide(app: &AppHandle, auto_hide: bool) {
 }
 
 fn emit_updated(app: &AppHandle, settings: &Settings) {
+    // A changed pricing source invalidates any in-memory offer and, where no
+    // complete local table exists, reloads the matching applied cache.
+    crate::commands::pricing::settings_changed(app, settings);
     if let Err(e) = app.emit(events::SETTINGS_UPDATED, settings) {
         log::warn!("could not emit {}: {e}", events::SETTINGS_UPDATED);
     }
@@ -450,7 +453,7 @@ pub fn watch(app: AppHandle) {
 mod tests {
     use super::*;
     use crate::commands::test_support::tempdir;
-    use crate::model::{Edge, RingMode, SidebarItems, Theme};
+    use crate::model::{Edge, PercentPosition, RingMode, SidebarItems, Theme};
     use serde_json::json;
 
     #[test]
@@ -620,6 +623,31 @@ mod tests {
             merged.providers.len(),
             crate::commands::providers::DEFAULT_PROVIDER_ORDER.len(),
             "every registered provider keeps an entry"
+        );
+    }
+
+    #[test]
+    fn percent_position_defaults_for_old_files_and_round_trips_center() {
+        let base = Settings::default();
+        assert_eq!(base.percent_position, PercentPosition::Below);
+
+        // A settings.json written before this field existed remains valid.
+        let old = merge(&base, &json!({"percentMode": "remaining"}));
+        assert_eq!(old.percent_position, PercentPosition::Below);
+
+        let invalid = merge(&base, &json!({"percentPosition": "invalid"}));
+        assert_eq!(invalid.percent_position, PercentPosition::Below);
+
+        let centered = merge(&base, &json!({"percentPosition": "center"}));
+        assert_eq!(centered.percent_position, PercentPosition::Center);
+
+        let wire = serde_json::to_value(&centered).unwrap();
+        assert_eq!(wire["percentPosition"], "center");
+        assert_eq!(
+            serde_json::from_value::<Settings>(wire)
+                .unwrap()
+                .percent_position,
+            PercentPosition::Center
         );
     }
 

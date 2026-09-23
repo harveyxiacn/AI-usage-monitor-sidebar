@@ -167,7 +167,10 @@ impl AppState {
         // (only when they configured one) and then the bundled defaults.
         let pricing = pricing::load_with_base(
             &config_dir,
-            pricing::base_table(&data_dir, &settings.pricing_url),
+            pricing::base_table(
+                &data_dir,
+                &pricing::effective_pricing_url(&settings.pricing_url),
+            ),
         );
         let provider_ctx = ProviderCtx::with_data_dir(&data_dir);
 

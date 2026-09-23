@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-20T00:00:00Z",
+  "updatedAt": "2026-09-23T00:00:00Z",
   "entries": [
     {
       "modelPattern": "claude-opus-4",
@@ -49,6 +49,13 @@
       "outputPerM": 25.0,
       "cacheWritePerM": 6.25,
       "cacheReadPerM": 0.5
+    },
+    {
+      "modelPattern": "claude-opus-5-5",
+      "inputPerM": 4.0,
+      "outputPerM": 20.0,
+      "cacheWritePerM": 5.0,
+      "cacheReadPerM": 0.2
     },
     {
       "modelPattern": "claude-sonnet-4",
@@ -210,6 +217,20 @@
       "outputPerM": 1.2,
       "cacheWritePerM": 0.25,
       "cacheReadPerM": 0.02
+    },
+    {
+      "modelPattern": "gpt-6-sol",
+      "inputPerM": 2.0,
+      "outputPerM": 10.0,
+      "cacheWritePerM": 2.5,
+      "cacheReadPerM": 0.2
+    },
+    {
+      "modelPattern": "gpt-6-luna",
+      "inputPerM": 0.1,
+      "outputPerM": 0.5,
+      "cacheWritePerM": 0.125,
+      "cacheReadPerM": 0.01
     },
     {
       "modelPattern": "gpt-6-astra",

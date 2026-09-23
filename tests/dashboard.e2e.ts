@@ -31,18 +31,22 @@ test('a rate-limited provider reads as stale, not as an error', async ({ page })
   await expect(claude.locator('.win').first()).toBeVisible();
 });
 
-test('refreshing prices from a URL is opt-in', async ({ page }) => {
+test('pricing updates use the official source by default and are separate from program updates', async ({ page }) => {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const refresh = page.getByRole('button', { name: 'Refresh prices now', exact: true });
-  // No URL configured → nothing to fetch, so the button cannot be pressed.
-  await expect(refresh).toBeDisabled();
-
-  const url = page.getByLabel('Pricing table URL');
-  await url.fill('https://raw.githubusercontent.com/example/repo/main/pricing.json');
-  await url.blur();
-  await expect(refresh).toBeEnabled();
-  await refresh.click();
-  await expect(page.getByText(/Updated /)).toBeVisible();
+  await page.getByRole('button', { name: 'Check program updates', exact: true }).click();
+  await expect(page.locator('.update-bar').filter({ hasText: 'Version 9.9.9 is available.' })).toBeVisible();
+  const check = page.getByRole('button', { name: 'Check pricing updates', exact: true });
+  // An empty URL means the built-in official source, so price checks remain available.
+  await expect(check).toBeEnabled();
+  await check.click();
+  await expect(page.getByText('Pricing update 2026-09-23 is available.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Apply price update', exact: true })).toBeVisible();
+  const pricingBanner = page.locator('.pricing-update-bar');
+  await expect(pricingBanner).toContainText('New pricing 2026-09-23 is available.');
+  // Dismissing the price offer does not acknowledge the program-update offer.
+  await pricingBanner.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(pricingBanner).toHaveCount(0);
+  await expect(page.locator('.update-bar').filter({ hasText: 'Version 9.9.9 is available.' })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 

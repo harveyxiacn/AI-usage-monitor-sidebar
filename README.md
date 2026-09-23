@@ -44,6 +44,7 @@ quota is left, and when does it reset?*
 | Edge docking | Any of the four screen edges, positioned along it (start / centre / end) with a pixel offset, on any monitor. Top and bottom turn the bar into a horizontal strip |
 | Drag to move | Drag the bar anywhere: it snaps to the nearest screen edge of the monitor you drop it on and remembers its position along that edge |
 | Auto-hide | The bar collapses to a thin handle when you move the pointer away and expands on hover |
+| Percent placement | Show the quota percentage below each ring, or place it in the centre instead of the provider logo (`percentPosition`) |
 | Pinning | Click a ring to pin the popover open while you read it; click again to close it. A pinned popover closes by itself 8 s after the pointer left |
 | Always on top | Re-asserted after every map on X11, visible on all workspaces |
 | Glass surface | `surfaceStyle: "glass"` uses a real blurred backdrop where the OS has one (macOS vibrancy, Windows acrylic); `"solid"` turns it off |
@@ -125,15 +126,18 @@ session logs those CLIs leave on disk.
 > **Privacy.** Your tokens never leave your machine except in the request to
 > Anthropic's, OpenAI's and GitHub's own endpoints — the same ones `claude`,
 > `codex` and the Copilot editor extensions already talk to, and only for a
-> provider you have switched on. There is no telemetry, no analytics and no third-party
-> service. Session JSONL records are parsed locally; only usage counters,
+> provider you have switched on. There is no telemetry or analytics, and no provider
+> data is sent to an unrelated third-party service. Session JSONL records are parsed locally; only usage counters,
 > model/session identifiers and project paths are retained. Prompt and response
 > text is not stored in the usage database or sent by this app.
 >
-> The one exception is opt-in and off by default: if *you* put an https URL in
-> **Settings → Data → Pricing table URL**, the app downloads that price list
-> once a day (see "Keeping prices up to date"). While the field is empty no
-> third-party request is ever made.
+> Price checks are controlled separately from provider polling. With the
+> default empty **Pricing table URL**, the app checks the project's
+> [GitHub raw pricing.json](https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json)
+> source. A non-empty value selects a custom `https://` source. When
+> **Automatic price checks** is enabled, a check runs about 60 seconds after
+> startup and then once a day; it only reports that a newer source table is
+> available. It never changes the applied table by itself.
 
 ## Install
 
@@ -246,7 +250,7 @@ Details, including the geometry maths and the hover state machine, are in
 
 The cost column is an *estimate* for comparing providers and plans —
 subscriptions do not bill per token. Prices come from a built-in table
-(checked 2026-09-20). Model names drift fast, so:
+(checked 2026-09-23). Model names drift fast, so:
 
 * A model the table does not know is priced from its **closest known family**
   (`gpt-5.3-codex-spark` → `gpt-5.3-codex`, `claude-opus-4-99` →
@@ -254,21 +258,31 @@ subscriptions do not bill per token. Prices come from a built-in table
   A model from an unrelated family stays unpriced and shows "—".
 * You can edit any row, add your own prefixes and delete rows in
   **Settings → Data**. Your table wins over everything else.
-* **Optional, off by default:** put an `https://` URL in **Pricing table URL**
-  and the app refreshes the built-in list from it at most once a day (plus a
-  "Refresh prices now" button). The download is capped in size, validated
-  strictly and cached in the app data directory; anything unexpected is
-  rejected and the bundled table keeps being used.
+* The project-maintained GitHub raw `pricing.json` is the default source when
+  **Pricing table URL** is empty. Set a non-empty `https://` URL to use a
+  custom source instead. An empty URL no longer disables price checks.
+* **Automatic price checks** (`autoPricingCheck`, on by default) run about 60
+  seconds after startup and once every 24 hours. They only check for a newer
+  source table and show a reminder; they do not apply prices or restart the
+  app. The program update switch (`autoUpdateCheck`) is independent and only
+  checks for new application releases.
+* Click **Check pricing updates** to fetch the selected source and inspect its
+  revision. If an update is available, click **Apply price update** to apply
+  it. Checking never changes the applied table. A saved table edited in
+  **Settings → Data** always has priority; click **Use source pricing** to
+  explicitly switch away from it, confirm the change and back up the saved
+  table first. Downloads are capped in size, strictly validated and cached; an
+  invalid source is rejected and the current table remains in use.
 
 The file must use the same schema as [`pricing.json`](pricing.json) in this
 repository, which you can host yourself:
 
 ```json
 {
-  "updatedAt": "2026-09-20T00:00:00Z",
+  "updatedAt": "2026-09-23T00:00:00Z",
   "entries": [
-    { "modelPattern": "gpt-5.3-codex", "inputPerM": 1.75, "outputPerM": 14.0,
-      "cacheWritePerM": 1.75, "cacheReadPerM": 0.175 }
+    { "modelPattern": "gpt-6-sol", "inputPerM": 2.0, "outputPerM": 10.0,
+      "cacheWritePerM": 2.5, "cacheReadPerM": 0.2 }
   ]
 }
 ```
@@ -278,6 +292,12 @@ Rates are USD per 1M tokens. To follow this project's own list:
 ```
 https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json
 ```
+
+The built-in defaults were checked against the [OpenAI pricing](https://developers.openai.com/api/docs/pricing),
+[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
+[Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), and
+[Claude Opus 5.5](https://www.anthropic.com/claude-opus-5-5) pages.
 
 ## Where your configuration lives
 
@@ -368,6 +388,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 边缘吸附 | 四条屏幕边缘任选，沿边缘对齐（起始/居中/末端）并可设像素偏移，可指定显示器；贴靠顶部或底部时侧栏会变成横条 |
 | 拖拽移动 | 直接拖动侧栏：松手后吸附到所在显示器最近的一条边缘，并记住沿该边缘的位置 |
 | 自动隐藏 | 鼠标离开后收起为细条，悬停时自动展开 |
+| 百分比位置 | 可将额度百分比显示在圆环下方，或放进圆心以替代服务商图标（`percentPosition`） |
 | 固定弹层 | 点击环可固定弹层，方便慢慢看；再次点击立即关闭。固定的弹层在鼠标离开 8 秒后也会自动关闭 |
 | 始终置顶 | X11 下每次映射后重新置顶，并在所有工作区可见 |
 | 玻璃质感 | `surfaceStyle: "glass"` 在系统支持时使用原生毛玻璃背景（macOS vibrancy、Windows acrylic）；`"solid"` 关闭 |
@@ -440,12 +461,13 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 > **隐私说明**：除了发往 Anthropic、OpenAI 与 GitHub 自家接口（也就是 `claude`、
 > `codex` 和 Copilot 编辑器插件本来就会访问的那几个，且仅限你已启用的服务商）之外，
 > 你的 token 不会离开本机。没有遥测、没有统计上报、
-> 没有任何第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
+> 不会把服务商数据发送给无关的第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
 > 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
 >
-> 唯一的例外需要你自己开启，默认关闭：只有当你在**设置 → 数据 → 价格表地址**里
-> 填入一个 https 地址时，应用才会每天最多拉取一次该价格表（见“让价格保持最新”）。
-> 该字段为空时，不会向任何第三方发起请求。
+> 价格检查与服务商轮询相互独立。**价格表地址**为空时，应用检查项目维护的
+> [GitHub raw pricing.json](https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json)；
+> 填入非空的 `https://` 地址时，则改用自定义来源。开启**自动检查价格**后，应用会在启动约
+> 60 秒后、以及此后每天检查一次；检查只会提示来源表有更新，不会自行改变当前已应用的价格表。
 
 ## 安装
 
@@ -544,24 +566,30 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 ## 让价格保持最新
 
 费用一栏只是用于横向比较服务与套餐的**估算值**——订阅制并不按 token 计费。价格来自
-内置价目表（2026-09-20 核对）。模型名字更新很快，所以：
+内置价目表（2026-09-23 核对）。模型名字更新很快，所以：
 
 * 表里没有的模型会按**最接近的同系列模型**计价（`gpt-5.3-codex-spark` →
   `gpt-5.3-codex`，`claude-opus-4-99` → `claude-opus-4`）。这类数字是近似值，
   仪表盘会明确标注；完全不沾边的模型仍然显示“—”。
 * 在**设置 → 数据**里可以改价、添加自己的前缀、删除行；你保存的表优先级最高。
-* **可选，默认关闭**：在**价格表地址**里填入 `https://` 地址后，应用每天最多从该地址
-  更新一次内置价目表（也可以点“立即更新价格”）。下载有体积上限、经过严格校验，
-  并缓存在应用数据目录；只要有任何异常就整份丢弃，继续用内置表。
+* **价格表地址**为空时，默认来源是项目维护的 GitHub raw `pricing.json`；填入非空的
+  `https://` 地址后，改用自定义来源。留空不再代表关闭价格检查。
+* **自动检查价格**（`autoPricingCheck`，默认开启）在启动约 60 秒后、以及每 24 小时检查一次，
+  只提示来源表有更新，不会自动应用价格，也不会重启应用。程序更新开关
+  `autoUpdateCheck` 与它独立，只负责检查新版本。
+* 点击**检查价格更新**会拉取当前来源并检查版本；发现更新后，再点击**应用价格更新**才会应用。
+  检查本身不会改变已应用的价格表。在**设置 → 数据**中编辑后保存的表始终优先；点击**使用来源价格表**
+  才能显式切换，确认后应用会先备份已保存的表。下载有体积上限、经过严格校验并缓存；来源无效时会拒绝应用，
+  继续使用当前价格表。
 
 文件格式与本仓库的 [`pricing.json`](pricing.json) 一致，你也可以自己托管一份：
 
 ```json
 {
-  "updatedAt": "2026-09-20T00:00:00Z",
+  "updatedAt": "2026-09-23T00:00:00Z",
   "entries": [
-    { "modelPattern": "gpt-5.3-codex", "inputPerM": 1.75, "outputPerM": 14.0,
-      "cacheWritePerM": 1.75, "cacheReadPerM": 0.175 }
+    { "modelPattern": "gpt-6-sol", "inputPerM": 2.0, "outputPerM": 10.0,
+      "cacheWritePerM": 2.5, "cacheReadPerM": 0.2 }
   ]
 }
 ```
@@ -571,6 +599,12 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 ```
 https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json
 ```
+
+内置默认价格依据[OpenAI 总价格页](https://developers.openai.com/api/docs/pricing)、
+[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol)、
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)、
+[Claude 总价格页](https://platform.claude.com/docs/en/about-claude/pricing)以及
+[Claude Opus 5.5](https://www.anthropic.com/claude-opus-5-5)官方页面核对。
 
 ## 配置文件位置
 

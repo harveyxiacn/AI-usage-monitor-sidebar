@@ -119,6 +119,8 @@ export type VerticalAlign = 'top' | 'center' | 'bottom';
 /** concentric: one ring group per provider (outer weekly, inner 5-hour, optional 3rd scoped ring); primary: single ring; all: one ring per window */
 export type RingMode = 'concentric' | 'primary' | 'all';
 export type PercentMode = 'used' | 'remaining';
+/** Whether a ring's percentage sits below it or replaces its centre logo. */
+export type PercentPosition = 'below' | 'center';
 export type Theme = 'dark' | 'light' | 'auto';
 export type Language = 'auto' | 'en' | 'zh-CN';
 /** glass: translucent "liquid glass" surface with specular highlights; solid: opaque dark/light pill */
@@ -218,6 +220,8 @@ export interface Settings {
   /** @deprecated mirror of `sidebarItems.scoped`, kept so old settings files load */
   showScopedRing: boolean;
   percentMode: PercentMode;
+  /** `below` preserves the original label; `center` replaces the provider logo. */
+  percentPosition: PercentPosition;
   /** @deprecated mirror of `sidebarItems.percentLabel` */
   showPercentLabel: boolean;
   /** what the floating bar may draw; hidden items are still tracked */
@@ -227,13 +231,15 @@ export interface Settings {
   adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
   ingestEnabled: boolean;
-  /** Opt-in https URL of a pricing table; empty = no third-party request is ever made */
+  /** Optional https source for a user-managed pricing table; empty uses the official project source. */
   pricingUrl: string;
   /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
   monthlyBudgetUsd: number;
   autostart: boolean;
   /** ask GitHub once a day for a newer release; never installs on its own */
   autoUpdateCheck: boolean;
+  /** Check the pricing source once a day, independently of program updates. */
+  autoPricingCheck: boolean;
   /** global shortcut showing/hiding the bar, e.g. "Ctrl+Alt+U"; empty = off */
   shortcutToggleSidebar: string;
   /** global shortcut opening the dashboard; empty = off */
@@ -428,6 +434,21 @@ export interface PricingEntry {
 export interface PricingTable {
   entries: PricingEntry[];
   updatedAt: string | null;
+}
+
+/** Status of the independently delivered pricing table. Mirror of `model.rs`. */
+export interface PriceUpdateStatus {
+  /** A newer pricing-table revision is ready to apply. */
+  available: boolean;
+  /** Source revision offered by the backend, when known. */
+  revision: string | null;
+  checking: boolean;
+  applying: boolean;
+  /** RFC 3339 UTC of the last completed check. */
+  checkedAt: string | null;
+  error: string | null;
+  /** The active table was manually edited and must not be overwritten implicitly. */
+  customPricing: boolean;
 }
 
 export interface AppInfo {

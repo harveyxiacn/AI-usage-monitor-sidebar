@@ -154,19 +154,21 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `popoverTimeoutSec` | `10` (0 = never) | the detail popover closes after this many seconds without pointer activity; a pinned one gets 6× |
 | `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, or one per window |
 | `percentMode` | `"used"`, `"remaining"` | |
+| `percentPosition` | `"below"`, `"center"` | show the percentage below each ring, or in its centre in place of the provider logo; used only when `sidebarItems.percentLabel` is on |
 | `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |
 | `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
 | `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |
 | `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
 | `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` is **experimental** (never verified against a live account) and only turns itself on when its credentials are found |
-| `pricingUrl` | `""` | optional https URL of a price list, refreshed at most daily. Empty = no third-party request is ever made |
+| `pricingUrl` | `""` | price source URL. Empty = the project's GitHub raw `pricing.json`; non-empty must be an `https://` custom source |
+| `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
-| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer release once a day; never installs on its own |
+| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |
 | `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS) |
 | `shortcutOpenDashboard` | `""` (off), e.g. `"Ctrl+Alt+D"` | global shortcut opening the dashboard |
 | `alwaysOnTop` | `true` | |

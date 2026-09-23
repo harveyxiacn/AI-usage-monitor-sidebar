@@ -104,35 +104,36 @@ pub async fn get_pricing(state: State<'_, AppState>) -> Result<PricingTable, Str
 }
 
 #[tauri::command]
-pub async fn set_pricing(
-    state: State<'_, AppState>,
-    table: PricingTable,
-) -> Result<PricingTable, String> {
-    let mut current = state.pricing.write();
-    let merged = pricing::save(&state.config_dir, &table).map_err(|e| format!("{e:#}"))?;
-    *current = merged.clone();
-    Ok(merged)
+pub async fn set_pricing(app: AppHandle, table: PricingTable) -> Result<PricingTable, String> {
+    pricing::save_custom(&app, table).await
 }
 
-/// "Refresh prices now" — only ever reaches the network when the user set
-/// `pricingUrl`; a failure keeps the table that is already in use.
+/// Compatibility command for older dashboards. It remains an explicit
+/// user-initiated check-and-apply, with the same custom-table protection as
+/// the new two-button flow.
 #[tauri::command]
-pub async fn refresh_pricing(state: State<'_, AppState>) -> Result<PricingTable, String> {
-    let (http, url, data_dir, config_dir) = {
-        let settings = state.settings.read();
-        (
-            state.http.clone(),
-            settings.pricing_url.clone(),
-            state.data_dir.clone(),
-            state.config_dir.clone(),
-        )
-    };
-    pricing::refresh_remote(&http, &data_dir, &url, true)
-        .await
-        .map_err(|e| format!("{e:#}"))?;
-    let merged = pricing::load_with_base(&config_dir, pricing::base_table(&data_dir, &url));
-    *state.pricing.write() = merged.clone();
-    Ok(merged)
+pub async fn refresh_pricing(app: AppHandle) -> Result<PricingTable, String> {
+    pricing::refresh_legacy(&app).await
+}
+
+#[tauri::command]
+pub async fn get_price_update_status(app: AppHandle) -> Result<PriceUpdateStatus, String> {
+    Ok(pricing::status(&app))
+}
+
+#[tauri::command]
+pub async fn check_for_price_updates(app: AppHandle) -> Result<PriceUpdateStatus, String> {
+    Ok(pricing::check(&app).await)
+}
+
+#[tauri::command]
+pub async fn apply_price_update(app: AppHandle) -> Result<PricingTable, String> {
+    pricing::apply(&app).await
+}
+
+#[tauri::command]
+pub async fn use_source_pricing(app: AppHandle) -> Result<PricingTable, String> {
+    pricing::use_source(&app).await
 }
 
 #[tauri::command]

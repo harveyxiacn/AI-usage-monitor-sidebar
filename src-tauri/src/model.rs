@@ -251,6 +251,16 @@ pub enum PercentMode {
     Remaining,
 }
 
+/// Where the percentage label is rendered for each ring in the sidebar.
+/// `Below` preserves the original layout; `Center` uses the ring's center.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PercentPosition {
+    #[default]
+    Below,
+    Center,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
@@ -425,6 +435,9 @@ pub struct Settings {
     /// hand-written settings files keep working).
     pub show_scoped_ring: bool,
     pub percent_mode: PercentMode,
+    /// Render the percentage below the ring (legacy layout) or in its center.
+    #[serde(default)]
+    pub percent_position: PercentPosition,
     /// Deprecated, mirrors `sidebar_items.percent_label`.
     pub show_percent_label: bool,
     pub sidebar_items: SidebarItems,
@@ -434,8 +447,9 @@ pub struct Settings {
     pub adaptive_refresh: bool,
     pub providers: BTreeMap<String, ProviderSettings>,
     pub ingest_enabled: bool,
-    /// Opt-in https URL of a pricing table to refresh from (empty = off; the
-    /// app makes no third-party request while it is empty).
+    /// Optional https URL of a pricing table. Empty uses the project's
+    /// published table, so people receive pricing revisions independently of
+    /// app releases.
     pub pricing_url: String,
     /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
     pub monthly_budget_usd: f64,
@@ -443,6 +457,9 @@ pub struct Settings {
     /// Ask GitHub once a day whether a newer release exists. Never installs
     /// anything on its own — the user always confirms (docs/RELEASING.md).
     pub auto_update_check: bool,
+    /// Check the pricing-table source once a day. Checking only downloads and
+    /// compares; applying remains an explicit action.
+    pub auto_pricing_check: bool,
     /// Global shortcut that shows/hides the bar, e.g. `"Ctrl+Alt+U"`.
     /// Empty (the default) registers nothing, so no key is hijacked.
     pub shortcut_toggle_sidebar: String,
@@ -495,6 +512,7 @@ impl Default for Settings {
             ring_mode: RingMode::Concentric,
             show_scoped_ring: true,
             percent_mode: PercentMode::Used,
+            percent_position: PercentPosition::default(),
             show_percent_label: true,
             sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
@@ -505,6 +523,7 @@ impl Default for Settings {
             monthly_budget_usd: 0.0,
             autostart: false,
             auto_update_check: true,
+            auto_pricing_check: true,
             shortcut_toggle_sidebar: String::new(),
             shortcut_open_dashboard: String::new(),
             opacity: 1.0,
@@ -766,6 +785,21 @@ pub struct PricingTable {
     pub updated_at: Option<String>,
 }
 
+/// State of the independently delivered pricing table. Unlike an application
+/// update, a price-list revision never applies itself.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceUpdateStatus {
+    pub available: bool,
+    pub revision: Option<String>,
+    pub checking: bool,
+    pub applying: bool,
+    pub checked_at: Option<String>,
+    pub error: Option<String>,
+    /// A complete `pricing.json` was explicitly saved by the user.
+    pub custom_pricing: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
@@ -856,6 +890,7 @@ pub mod events {
     pub const SIDEBAR_STATE: &str = "sidebar-state";
     pub const DASHBOARD_NAVIGATE: &str = "dashboard-navigate";
     pub const UPDATE_STATUS: &str = "update-status";
+    pub const PRICE_UPDATE_STATUS: &str = "price-update-status";
 }
 
 /// Window labels.
