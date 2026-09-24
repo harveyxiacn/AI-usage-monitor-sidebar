@@ -58,7 +58,7 @@
 
   const s = $derived(settings.value);
   const items = $derived(rings.items);
-  const loading = $derived(snapshot.value === null);
+  const loading = $derived(snapshot.value === null || !settings.loaded);
 
   /** platform-owned expand/collapse state; only meaningful when autoHide is on */
   let expanded = $state(true);

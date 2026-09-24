@@ -123,6 +123,10 @@ class SettingsStore {
   #refs = 0;
   #unlisten: Unlisten | null = null;
   #generation = 0;
+  #revision = 0;
+  #reading: number | null = null;
+  #retryTimer: ReturnType<typeof setTimeout> | null = null;
+  #stopSync: (() => void) | null = null;
   #writer = new SettingsWriter(structuredClone(defaultSettings), updateSettings,
     (value, saving) => { this.value = value; this.saving = saving; },
     (error) => { this.error = String(error); },
@@ -138,35 +142,74 @@ class SettingsStore {
       this.#refs -= 1;
       if (this.#refs === 0) {
         this.#generation++;
+        this.#stopSync?.();
+        this.#stopSync = null;
+        clearTimeout(this.#retryTimer ?? undefined);
+        this.#retryTimer = null;
         this.#unlisten?.();
         this.#unlisten = null;
       }
     };
   }
 
-  async #start() {
+  #start() {
     const generation = ++this.#generation;
-    let received = false;
-    try {
-      const un = await onSettingsUpdated((value) => {
-        if (generation !== this.#generation) return;
-        received = true;
-        this.#writer.receive(value);
-      });
-      if (generation !== this.#generation) { un(); return; }
-      this.#unlisten = un;
-    } catch (e) {
-      if (generation === this.#generation) this.error = String(e);
-    }
+    // The sidebar can start before its event subscription is ready. Read the
+    // backend in parallel, then reconcile again after a transient IPC failure
+    // or when a long-lived window becomes visible.
+    const sync = () => void this.#read(generation);
+    const resume = () => { if (!document.hidden) sync(); };
+    const timer = setInterval(sync, 30_000);
+    window.addEventListener('focus', resume);
+    window.addEventListener('pageshow', resume);
+    document.addEventListener('visibilitychange', resume);
+    this.#stopSync = () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', resume);
+      window.removeEventListener('pageshow', resume);
+      document.removeEventListener('visibilitychange', resume);
+    };
+    void onSettingsUpdated((value) => {
+      if (generation !== this.#generation) return;
+      this.#revision++;
+      this.#writer.receive(value);
+      this.loaded = true;
+      this.error = null;
+      clearTimeout(this.#retryTimer ?? undefined);
+      this.#retryTimer = null;
+    }).then((un) => {
+      if (generation !== this.#generation) un();
+      else this.#unlisten = un;
+    }).catch((e) => {
+      if (generation === this.#generation && !this.loaded) this.error = String(e);
+    });
+    sync();
+  }
+
+  async #read(generation: number) {
+    if (generation !== this.#generation || this.#reading === generation) return;
+    this.#reading = generation;
+    const revision = this.#revision;
     try {
       const value = await getSettings();
       if (generation !== this.#generation) return;
-      if (!received) this.#writer.receive(value);
+      if (revision === this.#revision) this.#writer.receive(value);
+      this.loaded = true;
       this.error = null;
+      clearTimeout(this.#retryTimer ?? undefined);
+      this.#retryTimer = null;
     } catch (e) {
-      if (generation === this.#generation) this.error = String(e);
+      if (generation === this.#generation && !this.loaded) {
+        this.error = String(e);
+        if (this.#retryTimer === null) {
+          this.#retryTimer = setTimeout(() => {
+            this.#retryTimer = null;
+            void this.#read(generation);
+          }, 1_000);
+        }
+      }
     } finally {
-      if (generation === this.#generation) this.loaded = true;
+      if (this.#reading === generation) this.#reading = null;
     }
   }
 
