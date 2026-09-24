@@ -1,10 +1,10 @@
 <!--
-  Stacked bar chart of token usage / estimated cost. [FRONTEND]
+  Grouped or stacked bar chart of token usage / estimated cost. [FRONTEND]
   chart.js v4, tree-shaken registration (bar controller + the two scales + the
   tooltip/legend plugins only).
 
   The chart lives outside Svelte's reactivity, so the whole instance is rebuilt
-  from scratch whenever the data, the metric or the theme changes — the data
+  from scratch whenever the data, layout, metric or theme changes — the data
   sets are small (≤ ~400 bars) and this keeps the colour resolution honest:
   chart.js needs concrete colour strings, and our palette lives in CSS custom
   properties that change with the theme.
@@ -38,18 +38,24 @@
     /** path → label, so the legend matches the table; falls back to our own */
     projectNames?: ReadonlyMap<string, string>;
     metric: 'tokens' | 'cost';
+    layout: 'grouped' | 'stacked';
     /** changes whenever the palette changes, forcing a rebuild */
     themeKey: string;
     height?: number;
   }
 
-  let { rows, bucket, groupByModel, groupByProject = false, projectNames, metric, themeKey, height = 260 }: Props = $props();
+  let { rows, bucket, groupByModel, groupByProject = false, projectNames, metric, layout, themeKey, height = 260 }: Props = $props();
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let chart: Chart<'bar', (number | null)[], string> | null = null;
 
   const missingPrices = $derived(metric === 'cost' && rows.some((row) => row.estimatedCostUsd == null));
   const fmt = (v: number) => (metric === 'cost' ? formatCost(v) : formatTokens(v));
+  const plotWidth = $derived.by(() => {
+    if (layout === 'stacked') return 0;
+    const { buckets, series } = historySeries(rows, groupByModel, groupByProject, metric);
+    return buckets.length * Math.max(64, series.length * 20 + 28) + 64;
+  });
 
   interface Built {
     labels: string[];
@@ -108,13 +114,13 @@
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: {
-            stacked: true,
+            stacked: layout === 'stacked',
             grid: { display: false },
             border: { color: grid },
             ticks: { color: text, maxRotation: 0, autoSkipPadding: 16, font: { size: 11 } },
           },
           y: {
-            stacked: true,
+            stacked: layout === 'stacked',
             beginAtZero: true,
             grid: { color: grid },
             border: { display: false },
@@ -152,7 +158,7 @@
   // one $effect that reads every input: any change rebuilds the chart
   $effect(() => {
     // touched explicitly so the effect re-runs on each of them
-    void [rows, bucket, groupByModel, groupByProject, projectNames, metric, themeKey, canvas];
+    void [rows, bucket, groupByModel, groupByProject, projectNames, metric, layout, themeKey, canvas];
     render();
   });
 
@@ -163,12 +169,16 @@
 </script>
 
 {#if missingPrices}<p class="muted cost-note" role="status">{t('chart.missingPrices')}</p>{/if}
-<div class="chart" style:height={`${height / 16}rem`}>
-  {#if rows.length === 0}
-    <p class="empty">{t('chart.noData')}</p>
-  {:else}
-    <canvas bind:this={canvas} aria-label={t('chart.accessible')}></canvas>
-  {/if}
+<!-- Keyboard focus lets users scroll the chart when its grouped bars overflow. -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div class="chart" role="region" aria-label={t('history.chartTitle')} style:height={`${height / 16}rem`} tabindex={layout === 'grouped' && rows.length > 0 ? 0 : undefined}>
+  <div class="plot" style:min-width={plotWidth ? `${plotWidth}px` : undefined}>
+    {#if rows.length === 0}
+      <p class="empty">{t('chart.noData')}</p>
+    {:else}
+      <canvas bind:this={canvas} aria-label={t('chart.accessible')}></canvas>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -177,6 +187,12 @@
     position: relative;
     width: 100%;
     min-width: 0;
+    overflow-x: auto;
+  }
+  .plot {
+    position: relative;
+    width: 100%;
+    height: 100%;
   }
 
   /* chart.js owns the canvas' inline size (responsive + maintainAspectRatio

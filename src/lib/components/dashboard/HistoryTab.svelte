@@ -1,6 +1,6 @@
 <!--
   Dashboard → History. Token usage recorded from the providers' local session
-  logs: range/bucket/provider/group controls, an activity heatmap, a stacked bar
+  logs: range/bucket/provider/group controls, an activity heatmap, a bar
   chart, an optional monthly-budget burn-up, per-provider comparison cards, a
   sortable bucket/session table with CSV export and the ingestion line.
   [FRONTEND]
@@ -48,6 +48,7 @@
   let project = $state<string | null>(null);
   let projects = $state<string[]>([]);
   let metric = $state<'tokens' | 'cost'>('tokens');
+  let chartLayout = $state<'grouped' | 'stacked'>('grouped');
 
   let result = $state<HistoryResult | null>(null);
   let loading = $state(true);
@@ -610,18 +611,28 @@
   <div class="card panel" aria-busy={loading}>
     <header class="panel-head">
       <h3>{t('history.chartTitle')}</h3>
-      {#if totals}
-        <span class="muted">
-          {t('history.totalTokens')}: {formatTokens(totals.totalTokens)} ·
-          {t('history.requests')}: {formatInt(totals.requests)} ·
-          {t('history.estCost')}: {formatEstimatedCost(totals)}
-        </span>
-      {/if}
+      <div class="head-controls">
+        {#if totals}
+          <span class="muted">
+            {t('history.totalTokens')}: {formatTokens(totals.totalTokens)} ·
+            {t('history.requests')}: {formatInt(totals.requests)} ·
+            {t('history.estCost')}: {formatEstimatedCost(totals)}
+          </span>
+        {/if}
+        <div class="segmented" role="group" aria-label={t('history.chartLayout')}>
+          <button class:active={chartLayout === 'grouped'} aria-pressed={chartLayout === 'grouped'} onclick={() => (chartLayout = 'grouped')}>
+            {t('history.chartLayout.grouped')}
+          </button>
+          <button class:active={chartLayout === 'stacked'} aria-pressed={chartLayout === 'stacked'} onclick={() => (chartLayout = 'stacked')}>
+            {t('history.chartLayout.stacked')}
+          </button>
+        </div>
+      </div>
     </header>
     {#if loading && !result}
       <p class="muted" role="status">{t('common.loading')}</p>
     {:else if result}
-      <UsageChart {rows} {bucket} {groupByModel} {groupByProject} {projectNames} {metric} {themeKey} />
+      <UsageChart {rows} {bucket} {groupByModel} {groupByProject} {projectNames} {metric} layout={chartLayout} {themeKey} />
     {/if}
   </div>
 
