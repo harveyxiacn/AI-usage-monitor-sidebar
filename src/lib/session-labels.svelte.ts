@@ -2,6 +2,7 @@ import { getLocale } from './i18n/i18n.svelte';
 
 const labels = {
   workspace: ['LOCAL WORKSPACE', '本地工作空间'],
+  models: ['Models / effort', '模型／推理强度'],
   title: ['Sessions', '会话'], subtitle: ['Connect usage to the work it supported.', '把用量与实际完成的工作联系起来。'],
   search: ['Search named titles, projects or session IDs', '搜索会话名、项目或 ID'], all: ['All providers', '所有提供商'],
   project: ['Project path (optional)', '项目路径（可选）'], recent: ['Recent activity', '最近活动'], tokens: ['Tokens', 'Tokens'], name: ['Named titles', '按已命名标题'],

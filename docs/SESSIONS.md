@@ -6,8 +6,9 @@ action and is never triggered by polling, ingestion or navigation.
 
 ## Find a session
 
-Filter by provider, project or date, search by title/identity, and sort by recent
-activity, tokens or title. Pagination applies on the server across the matching
+Filter by provider, project or date, search saved names/project/identity, and sort by recent
+activity, tokens or saved name. Prompt-derived title excerpts are displayed on demand;
+their bodies are not indexed for search or title sorting. Pagination applies on the server across the matching
 sessions, including small recent conversations. Session identity is provider plus
 session ID; missing IDs are labelled unassigned.
 
@@ -92,8 +93,9 @@ Neither action deletes provider logs or token history.
 
 ## 中文使用说明
 
-“会话”页面将 Token 消耗关联到具体任务，支持真正的后端分页、日期/项目/服务商筛选、标题与标识搜索，
-以及最近活动、消耗、标题排序。名称会区分本地别名、原生标题、首条需求摘录与默认名称；本地别名不修改 CLI。
+“会话”页面将 Token 消耗关联到具体任务，支持真正的后端分页、日期/项目/服务商筛选、已保存名称与标识搜索，
+以及最近活动、消耗、已保存名称排序。名称会区分本地别名、原生标题、首条需求摘录与默认名称；本地别名不修改 CLI。
+需求摘录仅在开启内容后按需显示，不参与名称搜索和排序。
 
 本地内容默认关闭。后台仍解析日志建立计数和消息位置索引，但不复制对话正文；开启后按页读取原始文件。
 日志被删除或改写时会提示。工具返回和自动注入上下文不算用户提问，无法关联的轮次 Token 显示未知。

@@ -2,10 +2,10 @@
   import { onMount, tick } from 'svelte';
   import { clearSessionAnalysis, getAnalysisSettings, getSessionDetail, listSessions, onIngestProgress, saveAnalysisSettings, setSessionAlias, type Unlisten } from '$lib/api';
   import { formatDuration, formatEstimatedCost, formatTokens } from '$lib/format';
-  import { localDateInput, projectName } from '$lib/history';
+  import { localDateInput, modelVariantLabel, projectName, sessionModelVariants } from '$lib/history';
   import { providerDisplayName } from '$lib/providers';
   import { st } from '$lib/session-labels.svelte';
-  import type { AnalysisSettings as Config, SessionDetail, SessionListQuery, SessionListResult } from '$lib/session-types';
+  import type { AnalysisSettings as Config, SessionDetail, SessionListQuery, SessionListResult, SessionSummary } from '$lib/session-types';
   import { analysisDefaults, mergeMessagePages, pageBounds, sessionIdentity } from '$lib/sessions';
   import { sessionViewState } from '$lib/session-ui-state';
   import AnalysisSettings from './AnalysisSettings.svelte';
@@ -29,6 +29,8 @@
   const bounds = $derived(pageBounds(result?.total ?? 0, query.offset ?? 0, query.limit ?? 25));
   const identity = $derived(selected ? sessionIdentity(selected.provider, selected.sessionId) : '');
   const session = $derived(detail?.session ?? null);
+  const modelNames = (row: SessionSummary) => sessionModelVariants(row)
+    .map(variant => modelVariantLabel(variant.model, variant.reasoningEffort, st('unknown'))).join(', ') || st('unknown');
   $effect(() => { if (pane === 'evaluation' && identity) evaluationOpened = true; });
   const cacheShare = $derived(session && session.inputTokens + session.cacheReadTokens + session.cacheWriteTokens > 0
     ? `${Math.round(session.cacheReadTokens / (session.inputTokens + session.cacheReadTokens + session.cacheWriteTokens) * 100)}%` : '—');
@@ -153,13 +155,13 @@
   <div class="workspace">
     <aside class="card list-panel" aria-label={st('title')} aria-busy={listLoading}>
       <div class="list-heading"><span>{bounds.first}–{bounds.last} / {result?.total ?? 0}</span><button class="link" onclick={() => void loadList()} disabled={listLoading}>{listLoading ? st('loading') : st('refresh')}</button></div>
-      {#if result?.rows.length}<div class="session-list">{#each result.rows as row (sessionIdentity(row.provider, row.sessionId))}<button class="session-row" class:active={identity === sessionIdentity(row.provider, row.sessionId)} aria-pressed={identity === sessionIdentity(row.provider, row.sessionId)} onclick={() => void openSession(row.provider, row.sessionId)}><span class="row-meta"><span>{providerDisplayName(row.provider)}</span><span>{new Date(row.lastTs).toLocaleDateString()}</span></span><strong>{row.title}</strong><span class="row-project" title={row.project}>{projectName(row.project)} · {st(row.titleSource)}</span><span class="row-stats"><b>{formatTokens(row.totalTokens)}</b> tokens <span>{formatEstimatedCost(row)}</span></span></button>{/each}</div>{:else}<p class="empty">{listLoading ? st('loading') : st('empty')}</p>{/if}
+      {#if result?.rows.length}<div class="session-list">{#each result.rows as row (sessionIdentity(row.provider, row.sessionId))}{@const models = modelNames(row)}<button class="session-row" class:active={identity === sessionIdentity(row.provider, row.sessionId)} aria-pressed={identity === sessionIdentity(row.provider, row.sessionId)} onclick={() => void openSession(row.provider, row.sessionId)}><span class="row-meta"><span>{providerDisplayName(row.provider)}</span><span>{new Date(row.lastTs).toLocaleDateString()}</span></span><strong>{row.title}</strong><span class="row-project" title={row.project}>{projectName(row.project)} · {st(row.titleSource)}</span><span class="row-models" title={models}>{st('models')}: {models}</span><span class="row-stats"><b>{formatTokens(row.totalTokens)}</b> tokens <span>{formatEstimatedCost(row)}</span></span></button>{/each}</div>{:else}<p class="empty">{listLoading ? st('loading') : st('empty')}</p>{/if}
       <nav class="pager" aria-label={st('title')}><button class="btn" disabled={bounds.previous === null || listLoading} onclick={() => page(bounds.previous!)}>{st('previous')}</button><button class="btn" disabled={bounds.next === null || listLoading} onclick={() => page(bounds.next!)}>{st('next')}</button></nav>
     </aside>
     <div class="card detail" aria-busy={detailLoading}>
       {#if detailError}<p class="error" role="alert">{detailError}{#if selected}<button class="btn" onclick={() => void openSession(selected!.provider, selected!.sessionId)}>{st('retry')}</button>{/if}</p>{/if}
       {#if detailLoading}<p class="empty">{st('loading')}</p>{:else if session && detail}
-        <header class="detail-head"><span class="eyebrow">{providerDisplayName(session.provider)} · {st(session.titleSource)}</span><h3>{session.title}</h3><p title={session.project}>{session.project || '—'}</p><code>{st('sessionId')}: {session.sessionId || '—'}</code></header>
+        <header class="detail-head"><span class="eyebrow">{providerDisplayName(session.provider)} · {st(session.titleSource)}</span><h3>{session.title}</h3><p title={session.project}>{session.project || '—'}</p><p>{st('models')}: {modelNames(session)}</p><code>{st('sessionId')}: {session.sessionId || '—'}</code></header>
         <form class="alias-form" onsubmit={(e) => { e.preventDefault(); void saveAlias(); }}><input class="field" aria-label={st('alias')} placeholder={st('alias')} maxlength="200" bind:value={alias} /><button class="btn" type="submit" disabled={changing}>{st('save')}</button></form>
         <div class="metrics"><div><span>{st('tokens')}</span><strong>{formatTokens(session.totalTokens)}</strong></div><div><span>{st('estimatedCost')}</span><strong>{formatEstimatedCost(session)}</strong></div><div><span>{st('turns')}</span><strong>{session.userTurns}</strong></div><div><span>{st('cache')}</span><strong>{cacheShare}</strong></div></div>
         <p class="muted small">{st('ownUsage')}</p>
@@ -193,7 +195,7 @@
   .session-list { max-height:70vh; overflow:auto; } .session-row { width:100%; text-align:left; display:grid; gap:.5rem; padding:1rem; border-bottom:1px solid var(--border); border-left:3px solid transparent; }
   .session-row:hover { background:var(--hover); } .session-row.active { border-left-color:var(--focus); background:var(--surface-2); }
   .session-row strong { font-size:.86rem; line-height:1.4; overflow-wrap:anywhere; } .row-meta,.row-stats { display:flex; justify-content:space-between; align-items:center; gap:.35rem; font-size:.7rem; color:var(--muted); }
-  .row-stats { justify-content:flex-start; font-variant-numeric:tabular-nums; } .row-stats b { color:var(--text); font-size:.85rem; } .row-stats span { margin-left:auto; } .row-project { font-size:.7rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row-stats { justify-content:flex-start; font-variant-numeric:tabular-nums; } .row-stats b { color:var(--text); font-size:.85rem; } .row-stats span { margin-left:auto; } .row-project,.row-models { min-width:0; font-size:.7rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .pager { display:flex; justify-content:space-between; gap:.5rem; padding:.75rem; } .detail { padding:1.25rem; display:grid; gap:1rem; min-width:0; }
   .detail-head { display:grid; gap:.5rem; } h3 { font-size:1.35rem; line-height:1.35; overflow-wrap:anywhere; letter-spacing:-.02em; } .detail-head p,.detail-head code { color:var(--muted); font-size:.72rem; overflow-wrap:anywhere; }
   .alias-form { display:flex; gap:.5rem; } .alias-form input { flex:1; } .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.75rem; }
