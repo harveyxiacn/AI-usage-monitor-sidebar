@@ -661,3 +661,51 @@ exercises the three browser routes using synthetic data. Native geometry,
 parsing, persistence and aggregation are tested with `cargo test --locked`.
 CI additionally builds bundles on Linux, macOS and Windows. Browser tests
 do not prove native window-manager behavior; see `docs/VALIDATION.md`.
+
+## 11. Session intelligence (0.5)
+
+`src-tauri/src/sessions/` owns metadata, source-reference indexing, session/turn
+queries and local aliases. Its wire types in `sessions/model.rs` mirror
+`src/lib/session-types.ts`; `SessionSummary` flattens the existing `SessionRow`.
+The old usage APIs and counter-only exports retain their contracts. The new
+dashboard tab name is `sessions`.
+
+`list_sessions(query)` accepts optional ISO `from`/`to`, `provider`, exact
+`project`, `search`, `sort` (`recent|tokens|title`), `offset` and `limit`. It returns
+`{rows,total,offset,limit}` over the complete matching set. `get_session_detail`
+takes `provider`, `sessionId`, optional `offset`/`limit` and returns the summary,
+bounded message page, `totalMessages`, `nextOffset`, turns, children, warnings
+and `sourceUpdatedAt` (the indexed transcript source revision time).
+`set_session_alias(provider,sessionId,alias)` changes only the local display name.
+
+Metadata tables are additive: `session_metadata`, `session_aliases`,
+`session_sources`, `session_message_refs`, `session_turns`, `session_usage_links`.
+Bodies are loaded on demand from indexed source offsets after source validation;
+no frontend command accepts an arbitrary file path. Parent links do not imply
+recursive summing. See [SESSIONS.md](SESSIONS.md) for metric semantics.
+
+`src-tauri/src/evaluation.rs` owns `analysis-settings.json`, preview preparation,
+explicit Chat Completions HTTP calls and the `session_evaluations` table. Commands:
+`get_analysis_settings()`, `save_analysis_settings(settings)`,
+`prepare_session_evaluation(provider,sessionId,turnIds?)`,
+`evaluate_session(preview)`, `get_session_evaluations(provider,sessionId)`,
+`save_evaluation_review(id,requirements)`, `clear_session_analysis(provider,sessionId)`.
+All are registered in `lib.rs` and wrapped in `src/lib/api.ts`.
+
+Content is opt-in, defaults off, and does not disable the metadata scanner.
+Evaluation endpoints are HTTPS or loopback HTTP, without credentials/query/fragment.
+An environment-variable name references the separately supplied API key. Only
+`evaluate_session` sends content, using the exact edited preview, no automatic
+retry or redirects. Response bytes, input chars, output tokens and request time
+are bounded. Invalid evidence references are removed and unsupported conclusions
+become unknown; user confirmation cannot be supplied by the evaluator. The original
+report is preserved separately from user review. Cache identity includes exact
+text, settings, model, source revision and rubric version. At most 100 reports are
+retained; disabling content clears evaluation data. The preview cache key contains
+the reviewed text, so it follows the same explicit-consent and deletion boundary.
+
+Performance: Codex ingestion checkpoints parser context and cumulative counters;
+file rewrites invalidate checkpoints. A dirty-path queue handles ordinary updates
+with periodic full reconciliation. Usage query results use a bounded generation
+and pricing-aware cache. Browser mock and dashboard panels load lazily; chart
+instances update in place, history tables paginate and hidden views reduce polling.

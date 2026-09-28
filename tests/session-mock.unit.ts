@@ -1,0 +1,33 @@
+import { expect, test } from '@playwright/test';
+import { sessionMockInvoke } from '../src/lib/session-mock';
+import { analysisDefaults } from '../src/lib/sessions';
+import type { EvaluationPreview, EvaluationReport, SessionDetail, SessionListResult } from '../src/lib/session-types';
+
+test('browser session mock supports pagination, content opt-in, aliases and explicit assessment history', async () => {
+  const first = await sessionMockInvoke('list_sessions', { query: { limit: 25, offset: 0 } }) as SessionListResult;
+  const second = await sessionMockInvoke('list_sessions', { query: { limit: 25, offset: 25 } }) as SessionListResult;
+  expect(first.total).toBeGreaterThan(25);
+  expect(first.rows).toHaveLength(25);
+  expect(new Set([...first.rows, ...second.rows].map(r => r.sessionId)).size).toBe(50);
+  const args = { provider: 'codex', sessionId: 'demo-1' };
+  await sessionMockInvoke('save_analysis_settings', { settings: analysisDefaults });
+  expect((await sessionMockInvoke('get_session_detail', args) as SessionDetail).messages).toEqual([]);
+  await expect(sessionMockInvoke('prepare_session_evaluation', args)).rejects.toThrow('Enable');
+  await sessionMockInvoke('save_analysis_settings', { settings: { ...analysisDefaults, contentEnabled: true, model: 'synthetic-only' } });
+  const detail = await sessionMockInvoke('get_session_detail', { ...args, limit: 2 }) as SessionDetail;
+  expect(detail.messages).toHaveLength(2);
+  expect(detail.nextOffset).toBe(2);
+  await sessionMockInvoke('set_session_alias', { ...args, alias: 'My local title' });
+  expect((await sessionMockInvoke('get_session_detail', args) as SessionDetail).session.titleSource).toBe('alias');
+  const preview = await sessionMockInvoke('prepare_session_evaluation', { ...args, turnIds: ['turn-1'] }) as EvaluationPreview;
+  expect(preview.messageIds).toHaveLength(3);
+  expect(await sessionMockInvoke('get_session_evaluations', args)).toEqual([]);
+  const report = await sessionMockInvoke('evaluate_session', { preview }) as EvaluationReport;
+  expect(report.cached).toBe(false);
+  expect((await sessionMockInvoke('evaluate_session', { preview }) as EvaluationReport).cached).toBe(true);
+  report.analysis.requirements[0].confirmedByUser = true;
+  expect((await sessionMockInvoke('save_evaluation_review', { id: report.id, requirements: report.analysis.requirements }) as EvaluationReport).analysis.requirements[0].confirmedByUser).toBe(true);
+  await sessionMockInvoke('clear_session_analysis', args);
+  expect(await sessionMockInvoke('get_session_evaluations', args)).toEqual([]);
+  expect((await sessionMockInvoke('get_session_detail', args) as SessionDetail).session.titleSource).toBe('native');
+});

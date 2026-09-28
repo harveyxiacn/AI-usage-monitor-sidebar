@@ -2,9 +2,9 @@
 //!
 //! Unlike Claude's transcripts a Codex rollout is **not** line-independent: the
 //! model name comes from the newest `turn_context` before a record and the cwd
-//! from the `session_meta` at the top of the file. The parser therefore always
-//! walks the file from the start to rebuild that context, but only *emits*
-//! records that begin at or after the stored byte offset — so re-ingesting an
+//! from the `session_meta` at the top of the file. Incremental ingestion persists
+//! that context together with cumulative counters and the complete-line offset.
+//! The compatibility text parser only *emits* records at or after `from_offset` — so re-ingesting an
 //! append-only file stays cheap (a substring pre-filter keeps the walk to
 //! memchr speed) and never produces duplicates.
 //!
@@ -16,7 +16,7 @@
 use crate::commands::providers::CODEX_ID;
 use crate::commands::store::UsageEvent;
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -29,7 +29,7 @@ struct RawLine {
     payload: serde_json::Value,
 }
 
-#[derive(Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(default)]
 struct SessionMeta {
     session_id: Option<String>,
@@ -49,7 +49,7 @@ struct TurnContext {
     reasoning: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 struct EventContext {
     model: Option<String>,
     cwd: Option<String>,
@@ -66,7 +66,7 @@ struct UsageRecord {
     usage: Option<Usage>,
 }
 
-#[derive(Deserialize, Debug, Default, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
 #[serde(default)]
 pub struct Usage {
     pub input_tokens: i64,
@@ -149,13 +149,42 @@ impl Usage {
     }
 }
 
-/// Parse a whole rollout file, emitting only records at/after `from_offset`.
-///
-/// `stem` is the file stem used to build the synthetic request ids of the
-/// `token_count` fallback.
+/// Persisted parsing context; no prompt or response text is retained here.
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct Checkpoint {
+    pub offset: u64,
+    line_no: u64,
+    pub modern: bool,
+    meta: SessionMeta,
+    model: Option<String>,
+    cwd: Option<String>,
+    reasoning_effort: Option<String>,
+    turns: HashMap<String, EventContext>,
+    cumulative: Usage,
+}
+
+pub struct ParsedChunk {
+    pub events: Vec<UsageEvent>,
+    /// IDs of fallback records encountered, also emitted during old-version replay.
+    pub legacy_ids: Vec<String>,
+}
+
+/// Compatibility entry point for synthetic fixtures and diagnostic callers.
 pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec<UsageEvent> {
-    // The fallback is only used for files that have no real usage records.
-    let has_usage_record = text
+    parse_chunk(text, stem, source, from_offset, &mut Checkpoint::default()).events
+}
+
+/// Parse only newly appended complete lines, restoring context from a checkpoint.
+pub fn parse_chunk(
+    text: &str,
+    stem: &str,
+    source: &str,
+    from_offset: u64,
+    state: &mut Checkpoint,
+) -> ParsedChunk {
+    // Inspect this bounded chunk before producing fallback events. A real record
+    // supersedes fallback counts for this source, including in previous chunks.
+    state.modern |= text
         .lines()
         .filter(|line| line.contains("token_usage_record"))
         .any(|line| {
@@ -168,17 +197,21 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                             .is_some_and(|record| record.usage.is_some())
                 })
         });
+    let has_usage_record = state.modern;
+    let mut legacy_ids = Vec::new();
     let mut events = Vec::new();
 
-    let mut meta = SessionMeta::default();
-    let mut model: Option<String> = None;
-    let mut cwd: Option<String> = None;
-    let mut reasoning_effort = None;
-    let mut turns: HashMap<String, EventContext> = HashMap::new();
-    let mut cumulative = Usage::default();
+    let mut meta = std::mem::take(&mut state.meta);
+    let mut model = state.model.take();
+    let mut cwd = state.cwd.take();
+    let mut reasoning_effort = state.reasoning_effort.take();
+    let mut turns = std::mem::take(&mut state.turns);
+    let mut cumulative = state.cumulative;
 
-    let mut pos: u64 = 0;
-    for (line_no, line) in text.split_inclusive('\n').enumerate() {
+    let mut pos = state.offset;
+    for line in text.split_inclusive('\n') {
+        let line_no = state.line_no;
+        state.line_no += 1;
         let start = pos;
         pos += line.len() as u64;
         let line = line.trim_end_matches(['\n', '\r']);
@@ -293,6 +326,9 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
                 } else {
                     continue;
                 };
+                if !delta.is_empty() {
+                    legacy_ids.push(format!("{stem}:{line_no}"));
+                }
                 if has_usage_record {
                     continue;
                 }
@@ -321,7 +357,14 @@ pub fn parse_text(text: &str, stem: &str, source: &str, from_offset: u64) -> Vec
             _ => {}
         }
     }
-    events
+    state.offset = pos;
+    state.meta = meta;
+    state.model = model;
+    state.cwd = cwd;
+    state.reasoning_effort = reasoning_effort;
+    state.turns = turns;
+    state.cumulative = cumulative;
+    ParsedChunk { events, legacy_ids }
 }
 
 fn session_id(meta: &SessionMeta) -> Option<String> {
@@ -398,6 +441,30 @@ pub fn parse_file(path: &Path, from_offset: u64) -> Result<(Vec<UsageEvent>, u64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_roundtrip_retains_cumulative_counts_and_delayed_turn_context() {
+        let mut state = Checkpoint::default();
+        let first = concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session\",\"cwd\":\"/project\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"old\",\"model\":\"old-model\",\"effort\":\"high\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":2}}}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"new\",\"model\":\"new-model\"}}\n"
+        );
+        let initial = parse_chunk(first, "s", "s", 0, &mut state);
+        assert_eq!(initial.events[0].total_tokens, 12);
+        assert_eq!(state.offset, first.len() as u64);
+        let mut restored: Checkpoint =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        let appended = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"turn_id\":\"old\",\"info\":{\"total_token_usage\":{\"input_tokens\":15,\"output_tokens\":4}}}}\n";
+        let next = parse_chunk(appended, "s", "s", restored.offset, &mut restored);
+        assert_eq!(next.events.len(), 1);
+        assert_eq!(next.events[0].request_id, "s:4");
+        assert_eq!(next.events[0].total_tokens, 7);
+        assert_eq!(next.events[0].model, "old-model");
+        assert_eq!(next.events[0].reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(next.events[0].cwd.as_deref(), Some("/project"));
+    }
 
     const ROLLOUT: &str = concat!(
         r#"{"timestamp":"2026-09-14T04:43:04.796Z","ordinal":0,"type":"session_meta","payload":{"session_id":"thread-1","id":"thread-1","cwd":"/home/me/proj","originator":"codex-tui","cli_version":"0.154.0","source":"cli"}}"#,

@@ -3,11 +3,8 @@
   chart.js v4, tree-shaken registration (bar controller + the two scales + the
   tooltip/legend plugins only).
 
-  The chart lives outside Svelte's reactivity, so the whole instance is rebuilt
-  from scratch whenever the data, layout, metric or theme changes — the data
-  sets are small (≤ ~400 bars) and this keeps the colour resolution honest:
-  chart.js needs concrete colour strings, and our palette lives in CSS custom
-  properties that change with the theme.
+  Reuse the canvas instance across data, layout and palette updates. Chart.js
+  receives concrete colours resolved from the current CSS custom properties.
 -->
 <script lang="ts">
   import {
@@ -19,6 +16,7 @@
     Legend,
     Tooltip,
     type ChartDataset,
+    type ChartConfiguration,
   } from 'chart.js';
   import { onDestroy } from 'svelte';
   import { cssVar, lighten, providerAccent, resolveColor } from '$lib/colors';
@@ -39,7 +37,7 @@
     projectNames?: ReadonlyMap<string, string>;
     metric: 'tokens' | 'cost';
     layout: 'grouped' | 'stacked';
-    /** changes whenever the palette changes, forcing a rebuild */
+    /** changes whenever the palette changes, refreshing concrete colours */
     themeKey: string;
     height?: number;
   }
@@ -51,9 +49,10 @@
 
   const missingPrices = $derived(metric === 'cost' && rows.some((row) => row.estimatedCostUsd == null));
   const fmt = (v: number) => (metric === 'cost' ? formatCost(v) : formatTokens(v));
+  const chartSeries = $derived(historySeries(rows, groupByModel, groupByProject, metric));
   const plotWidth = $derived.by(() => {
     if (layout === 'stacked') return 0;
-    const { buckets, series } = historySeries(rows, groupByModel, groupByProject, metric);
+    const { buckets, series } = chartSeries;
     return buckets.length * Math.max(64, series.length * 20 + 28) + 64;
   });
 
@@ -63,7 +62,7 @@
   }
 
   function build(): Built {
-    const { buckets, series } = historySeries(rows, groupByModel, groupByProject, metric);
+    const { buckets, series } = chartSeries;
     const unassigned = t('history.project.unassigned');
     const own = projectLabels(series.map((entry) => entry.project ?? ''), unassigned);
     const projects = projectNames ?? own;
@@ -93,9 +92,7 @@
   }
 
   function render() {
-    chart?.destroy();
-    chart = null;
-    if (!canvas || rows.length === 0) return;
+    if (!canvas || rows.length === 0) { chart?.destroy(); chart = null; return; }
 
     const text = cssVar('--muted', '#9a9aa3');
     const grid = cssVar('--grid', 'rgba(255,255,255,0.07)');
@@ -103,7 +100,7 @@
     const strong = cssVar('--text', '#f5f5f7');
     const { labels, datasets } = build();
 
-    chart = new Chart<'bar', (number | null)[], string>(canvas, {
+    const configuration: ChartConfiguration<'bar', (number | null)[], string> = {
       type: 'bar',
       data: { labels, datasets },
       options: {
@@ -152,10 +149,18 @@
           },
         },
       },
-    });
+    };
+    if (chart?.canvas === canvas) {
+      chart.data = configuration.data;
+      chart.options = configuration.options ?? {};
+      chart.update('none');
+    } else {
+      chart?.destroy();
+      chart = new Chart(canvas, configuration);
+    }
   }
 
-  // one $effect that reads every input: any change rebuilds the chart
+  // One effect updates the existing instance for every input.
   $effect(() => {
     // touched explicitly so the effect re-runs on each of them
     void [rows, bucket, groupByModel, groupByProject, projectNames, metric, layout, themeKey, canvas];

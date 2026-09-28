@@ -61,8 +61,9 @@
   }
 
   $effect(() => {
-    void [range, provider, live, generatedAt];
-    untrack(() => { void load(); });
+    void [range, provider, live, live ? generatedAt : null];
+    const timer = setTimeout(() => untrack(() => { void load(); }), 80);
+    return () => clearTimeout(timer);
   });
   $effect(() => { void [selectedSeriesKey, changesOnly, filterVersion]; visibleCount = 100; });
   onDestroy(() => { disposed = true; requestId++; });

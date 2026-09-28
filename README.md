@@ -54,7 +54,8 @@ quota is left, and when does it reset?*
 | i18n | English and 简体中文 (tray menu included) |
 | History | Incremental ingestion of session logs into SQLite; per-model, per-day/-week/-month totals; native CSV save and clipboard copy |
 | Activity heatmap | 26 weeks of local days (or a weekday × hour punch card); pick a day to narrow the range. Every cell is focusable and labelled |
-| Session drill-down | Per-session totals — provider, project, first/last activity, duration, requests, tokens, models — sortable and exportable. Counters and identifiers only, never prompt or response text |
+| Session workspace | Named sessions, local aliases, real pagination and filters; opt-in prompts, responses, turn metrics and parent/child agents |
+| On-demand AI assessment | Editable send preview, prompt feedback, requirement evidence and efficiency notes; cached reports with separate human review. [Setup](docs/SESSIONS.md) |
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
 | Monthly budget | `monthlyBudgetUsd` draws the month-to-date *estimate* against your budget, with the percentage used and the pace. Estimates only — subscriptions do not bill per token |
 | Autostart | Optional login item (`--hidden`) |
@@ -126,10 +127,15 @@ session logs those CLIs leave on disk.
 > **Privacy.** Your tokens never leave your machine except in the request to
 > Anthropic's, OpenAI's and GitHub's own endpoints — the same ones `claude`,
 > `codex` and the Copilot editor extensions already talk to, and only for a
-> provider you have switched on. There is no telemetry or analytics, and no provider
-> data is sent to an unrelated third-party service. Session JSONL records are parsed locally; only usage counters,
-> model/session identifiers and project paths are retained. Prompt and response
-> text is not stored in the usage database or sent by this app.
+> provider you have switched on. There is no telemetry. Session JSONL records are
+> parsed locally to index usage, titles, turns, tool counters and message locations;
+> the index does not copy conversation bodies. **Sessions → Local content** is off
+> by default and must be enabled to display prompts or derive title excerpts.
+> **AI evaluation is optional:** only pressing Send transmits the reviewed preview
+> to your configured endpoint. Reports and that preview's cache key are retained
+> locally (up to 100 reports); disabling Local content clears them. API keys are
+> read from a named environment variable and are never stored in app settings.
+> See [Session analysis](docs/SESSIONS.md) for data boundaries and setup.
 >
 > Price checks are controlled separately from provider polling. With the
 > default empty **Pricing table URL**, the app checks the project's
@@ -397,6 +403,8 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 主题 | 深色 / 浅色 / 跟随系统 |
 | 多语言 | English 与简体中文（含托盘菜单） |
 | 历史 | 增量解析会话日志入 SQLite，支持按模型、按日/周/月统计，以及原生 CSV 保存与复制 |
+| 会话工作区 | 原生名称、本地别名、后端分页与筛选；按需开启提示词、回复、轮次指标及父子 Agent 展示 |
+| 按需 AI 评测 | 发送前可编辑预览，评估提示词、需求证据与效率；缓存报告，区分 AI 判断与人工确认。[配置说明](docs/SESSIONS.md) |
 | 费用估算 | 可选的 API 等价价格估算，界面明确标注仅作横向参考 |
 | 开机自启 | 可选登录项（带 `--hidden` 参数） |
 | 通知 | 额度超过可编辑阈值时可选提醒 |
@@ -431,8 +439,8 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 
 ## 数据从哪里来
 
-全部在本机完成。应用读取官方 CLI 已经写好的凭据，调用 CLI 同样调用的两个接口，
-并解析这些 CLI 留在磁盘上的会话日志。
+统计在本机完成。应用读取官方 CLI 已经写好的凭据，调用 CLI 的配额接口，
+并解析这些 CLI 留在磁盘上的会话日志。可选 AI 评测仅在主动发送时调用自行配置的服务。
 
 **凭据**
 
@@ -460,9 +468,11 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 
 > **隐私说明**：除了发往 Anthropic、OpenAI 与 GitHub 自家接口（也就是 `claude`、
 > `codex` 和 Copilot 编辑器插件本来就会访问的那几个，且仅限你已启用的服务商）之外，
-> 你的 token 不会离开本机。没有遥测、没有统计上报、
-> 不会把服务商数据发送给无关的第三方服务。会话 JSONL 记录在本机解析，仅保留用量计数、模型与会话标识、项目路径；
-> 提示词和回复正文不会存入用量数据库，也不会由本应用发送出去。
+> 登录凭据不会离开本机。没有遥测或统计上报。会话 JSONL 在本机解析，索引保留用量、标题、轮次、
+> 工具计数和消息位置，不复制对话正文。**会话 → 本地内容**默认关闭，开启后才显示提示词或生成标题摘录。
+> **AI 评测可选**：仅点击发送时，将你检查过的预览发送到配置的接口。评测报告与预览缓存键在本机保留
+> （最多 100 份）；关闭本地内容会清除它们。API Key 仅从指定环境变量读取，不写入应用设置。
+> 设置与统计口径见[会话分析说明](docs/SESSIONS.md)。
 >
 > 价格检查与服务商轮询相互独立。**价格表地址**为空时，应用检查项目维护的
 > [GitHub raw pricing.json](https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json)；

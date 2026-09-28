@@ -8,7 +8,87 @@ use crate::model::{
 };
 use anyhow::Result;
 use chrono::{Datelike, Local, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// Bounded aggregate cache. A short TTL also covers operating-system timezone
+/// changes (including zones sharing today's UTC offset but different past DST).
+#[derive(Default)]
+pub(super) struct QueryCache {
+    entries: VecDeque<(String, Vec<u8>, std::time::Instant)>,
+    bytes: usize,
+    #[cfg(test)]
+    hits: u64,
+}
+
+impl QueryCache {
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+    fn get<T: serde::de::DeserializeOwned>(&mut self, key: &str) -> Option<T> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(k, _, created)| k == key && created.elapsed().as_secs() < 30)?;
+        let entry = self.entries.remove(index)?;
+        let value = serde_json::from_slice(&entry.1).ok();
+        self.entries.push_back(entry);
+        #[cfg(test)]
+        {
+            self.hits += 1;
+        }
+        value
+    }
+    fn put(&mut self, key: String, data: Vec<u8>) {
+        const MAX_BYTES: usize = 8 * 1024 * 1024;
+        let size = key.len() + data.len();
+        if size > MAX_BYTES {
+            return;
+        }
+        while self.entries.len() >= 16 || self.bytes + size > MAX_BYTES {
+            if let Some((old_key, old_data, _)) = self.entries.pop_front() {
+                self.bytes -= old_key.len() + old_data.len();
+            } else {
+                break;
+            }
+        }
+        self.bytes += size;
+        self.entries
+            .push_back((key, data, std::time::Instant::now()));
+    }
+}
+
+/// All fields of the query and pricing table participate in the key. No cached
+/// result can survive an insertion, counter upgrade or metadata enrichment.
+pub fn cached_aggregate<T, Q, F>(
+    db: &Db,
+    namespace: &str,
+    query: &Q,
+    pricing: &PricingTable,
+    compute: F,
+) -> Result<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    Q: serde::Serialize,
+    F: FnOnce() -> Result<T>,
+{
+    let generation = db.usage_generation();
+    let timezone = (
+        std::env::var("TZ").ok(),
+        Local::now().offset().local_minus_utc(),
+    );
+    let key = serde_json::to_string(&(namespace, generation, query, pricing, timezone))?;
+    if let Some(value) = db.usage_cache.lock().get(&key) {
+        return Ok(value);
+    }
+    let value = compute()?;
+    let data = serde_json::to_vec(&value)?;
+    let mut cache = db.usage_cache.lock();
+    if db.usage_generation() == generation {
+        cache.put(key, data);
+    }
+    Ok(value)
+}
 
 /// One parsed request from a provider session log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -47,6 +127,7 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
     let mut conn = db.lock();
     let tx = conn.transaction()?;
     let mut added = 0u64;
+    let mut changed = 0usize;
     {
         let mut insert = tx.prepare(
             "INSERT OR IGNORE INTO usage_events
@@ -59,7 +140,7 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
             "UPDATE usage_events SET model=CASE WHEN ?2='unknown' THEN model ELSE ?2 END,
                ts=?3, input_tokens=?4, cache_write_tokens=?5,
                cache_read_tokens=?6, output_tokens=?7, reasoning_tokens=?8, total_tokens=?9,
-               session_id=?10, cwd=?12, source_file=?13,
+               session_id=COALESCE(?10,session_id), cwd=COALESCE(?12,cwd), source_file=COALESCE(?13,source_file),
                reasoning_effort=CASE WHEN model=?2 OR ?2='unknown' THEN COALESCE(?14, reasoning_effort) ELSE ?14 END
              WHERE provider=?1 AND request_id=?11 AND
                (total_tokens < ?9 OR (total_tokens = ?9 AND reasoning_tokens < ?8))",
@@ -74,7 +155,13 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
                  WHEN model <> ?3 AND (total_tokens <= ?4 OR model='unknown') THEN ?5
                  ELSE COALESCE(?5, reasoning_effort) END
              WHERE provider=?1 AND request_id=?2 AND ?3 <> 'unknown'
-               AND (model=?3 OR total_tokens <= ?4 OR model='unknown')",
+               AND (model=?3 OR total_tokens <= ?4 OR model='unknown')
+               AND (model<>?3 OR (?5 IS NOT NULL AND reasoning_effort IS NOT ?5))",
+        )?;
+        let mut relate = tx.prepare(
+            "UPDATE usage_events SET session_id=COALESCE(?3,session_id),cwd=COALESCE(?4,cwd),source_file=COALESCE(?5,source_file)
+             WHERE provider=?1 AND request_id=?2 AND
+              ((?3 IS NOT NULL AND session_id IS NOT ?3) OR (?4 IS NOT NULL AND cwd IS NOT ?4) OR (?5 IS NOT NULL AND source_file IS NOT ?5))",
         )?;
         for e in events {
             let params = rusqlite::params![
@@ -96,19 +183,30 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
             let n = insert.execute(params)?;
             if n > 0 {
                 added += 1;
+                changed += n;
             } else {
-                upgrade.execute(params)?;
-                enrich.execute(rusqlite::params![
+                changed += upgrade.execute(params)?;
+                changed += enrich.execute(rusqlite::params![
                     e.provider,
                     e.request_id,
                     e.model,
                     e.total_tokens,
                     e.reasoning_effort
                 ])?;
+                changed += relate.execute(rusqlite::params![
+                    e.provider,
+                    e.request_id,
+                    e.session_id,
+                    e.cwd,
+                    e.source_file
+                ])?;
             }
         }
     }
     tx.commit()?;
+    if changed > 0 {
+        db.invalidate_usage_cache();
+    }
     Ok(added)
 }
 
@@ -132,6 +230,16 @@ struct HistoryBucket {
 /// Bucketing happens in Rust (not SQL) so it can use the machine's local time
 /// zone including DST, and so weeks can start on Monday.
 pub fn query_history(db: &Db, q: &HistoryQuery, pricing: &PricingTable) -> Result<HistoryResult> {
+    cached_aggregate(db, "history", q, pricing, || {
+        query_history_uncached(db, q, pricing)
+    })
+}
+
+fn query_history_uncached(
+    db: &Db,
+    q: &HistoryQuery,
+    pricing: &PricingTable,
+) -> Result<HistoryResult> {
     let (from, to) = query_range(&q.from, &q.to)?;
 
     let mut buckets: BTreeMap<HistoryBucket, Acc> = BTreeMap::new();
@@ -296,6 +404,16 @@ pub fn query_calendar(
     q: &CalendarQuery,
     pricing: &PricingTable,
 ) -> Result<CalendarResult> {
+    cached_aggregate(db, "calendar", q, pricing, || {
+        query_calendar_uncached(db, q, pricing)
+    })
+}
+
+fn query_calendar_uncached(
+    db: &Db,
+    q: &CalendarQuery,
+    pricing: &PricingTable,
+) -> Result<CalendarResult> {
     let (from, to) = query_range(&q.from, &q.to)?;
     let mut days: BTreeMap<i64, Acc> = BTreeMap::new();
     let mut slots: BTreeMap<(u8, u8), Acc> = BTreeMap::new();
@@ -376,6 +494,16 @@ struct SessionAcc {
 /// rule. First/last activity and the duration only cover events **inside** the
 /// range, which is what the surrounding history view shows.
 pub fn query_sessions(db: &Db, q: &SessionQuery, pricing: &PricingTable) -> Result<SessionsResult> {
+    cached_aggregate(db, "sessions", q, pricing, || {
+        query_sessions_uncached(db, q, pricing)
+    })
+}
+
+fn query_sessions_uncached(
+    db: &Db,
+    q: &SessionQuery,
+    pricing: &PricingTable,
+) -> Result<SessionsResult> {
     let (from, to) = query_range(&q.from, &q.to)?;
     let limit = q
         .limit
@@ -620,6 +748,122 @@ mod tests {
     fn in_project(mut event: UsageEvent, project: Option<&str>) -> UsageEvent {
         event.cwd = project.map(str::to_owned);
         event
+    }
+
+    #[test]
+    fn aggregate_cache_reuses_results_and_invalidates_on_enrichment_and_repricing() {
+        let db = Db::open_in_memory().unwrap();
+        let mut e = event("codex", "unknown", ms("2026-09-15T13:00:00"), "r", 10, 5);
+        insert_usage_events(&db, &[e.clone()]).unwrap();
+        let q = query("2026-09-15", "2026-09-16", Bucket::Day);
+        let pricing = PricingTable::default();
+        let first = query_history(&db, &q, &pricing).unwrap();
+        assert_eq!(query_history(&db, &q, &pricing).unwrap(), first);
+        assert_eq!(db.usage_cache.lock().hits, 1);
+        let generation = db.usage_generation();
+        e.model = "known".into();
+        e.reasoning_effort = Some("high".into());
+        assert_eq!(insert_usage_events(&db, &[e]).unwrap(), 0);
+        assert!(
+            db.usage_generation() > generation,
+            "metadata enrichment invalidates aggregates even with no added rows"
+        );
+        let priced = PricingTable {
+            entries: vec![crate::model::PricingEntry {
+                model_pattern: "known".into(),
+                input_per_m: 2.,
+                output_per_m: 8.,
+                cache_write_per_m: 0.,
+                cache_read_per_m: 0.,
+            }],
+            updated_at: None,
+        };
+        assert!(query_history(&db, &q, &priced)
+            .unwrap()
+            .totals
+            .estimated_cost_usd
+            .is_some());
+        let mut filtered = q.clone();
+        filtered.project = Some("/missing".into());
+        assert_eq!(
+            query_history(&db, &filtered, &priced)
+                .unwrap()
+                .totals
+                .total_tokens,
+            0
+        );
+        for n in 0..60 {
+            let mut varied = q.clone();
+            varied.project = Some(format!("/p{n}"));
+            query_history(&db, &varied, &priced).unwrap();
+        }
+        assert!(db.usage_cache.lock().entries.len() <= 16);
+    }
+
+    #[test]
+    fn replay_can_correct_child_attribution_without_changing_usage_or_duplicate_rows() {
+        let db = Db::open_in_memory().unwrap();
+        let mut e = event("claude", "claude-opus-5", 1000, "r", 10, 2);
+        e.session_id = Some("parent".into());
+        insert_usage_events(&db, &[e.clone()]).unwrap();
+        let revision = db.usage_generation();
+        e.session_id = Some("parent:agent:child".into());
+        assert_eq!(insert_usage_events(&db, &[e]).unwrap(), 0);
+        let row: (String, i64) = db
+            .lock()
+            .query_row(
+                "SELECT session_id,total_tokens FROM usage_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("parent:agent:child".into(), 12));
+        assert!(db.usage_generation() > revision);
+    }
+
+    #[test]
+    #[ignore = "repeatable synthetic performance measurement"]
+    fn synthetic_query_benchmark() {
+        let db = Db::open_in_memory().unwrap();
+        let base = ms("2026-09-01T00:00:00");
+        let events = (0..50_000)
+            .map(|i| {
+                event(
+                    "codex",
+                    "synthetic",
+                    base + i * 1000,
+                    &format!("r{i}"),
+                    1000,
+                    200,
+                )
+            })
+            .collect::<Vec<_>>();
+        insert_usage_events(&db, &events).unwrap();
+        let q = query("2026-09-01", "2026-09-30", Bucket::Day);
+        let pricing = PricingTable::default();
+        let rounds = 20;
+        let before = std::time::Instant::now();
+        for _ in 0..rounds {
+            assert_eq!(
+                query_history_uncached(&db, &q, &pricing)
+                    .unwrap()
+                    .totals
+                    .requests,
+                50_000
+            );
+        }
+        let cold = before.elapsed();
+        query_history(&db, &q, &pricing).unwrap();
+        let before = std::time::Instant::now();
+        for _ in 0..rounds {
+            assert_eq!(
+                query_history(&db, &q, &pricing).unwrap().totals.requests,
+                50_000
+            );
+        }
+        let warm = before.elapsed();
+        assert_eq!(db.usage_cache.lock().hits, rounds);
+        println!("QUERY_BENCH events=50000 rounds={rounds} baseline_scanned_events={} cached_scanned_events=0 baseline_ms={:.3} cached_ms={:.3}", 50_000 * rounds, cold.as_secs_f64() * 1000., warm.as_secs_f64() * 1000.);
     }
 
     #[test]

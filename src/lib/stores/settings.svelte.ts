@@ -157,7 +157,7 @@ class SettingsStore {
     // The sidebar can start before its event subscription is ready. Read the
     // backend in parallel, then reconcile again after a transient IPC failure
     // or when a long-lived window becomes visible.
-    const sync = () => void this.#read(generation);
+    const sync = () => { if (!document.hidden) void this.#read(generation); };
     const resume = () => { if (!document.hidden) sync(); };
     const timer = setInterval(sync, 30_000);
     window.addEventListener('focus', resume);

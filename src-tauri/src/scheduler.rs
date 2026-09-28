@@ -25,8 +25,8 @@ use crate::model::{
 use crate::state::{AppState, Backoff, PollClocks};
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -42,8 +42,7 @@ const WATCH_DEBOUNCE_MS: i64 = 3_000;
 const TICK: Duration = Duration::from_secs(1);
 
 pub fn start(app: AppHandle) {
-    // Timestamp (unix ms) of the newest file-system event, 0 = nothing pending.
-    let dirty = Arc::new(AtomicI64::new(0));
+    let dirty = Arc::new(Mutex::new(DirtyFiles::default()));
     let clocks = app.state::<AppState>().poll_clocks.clone();
     spawn_log_watcher(dirty.clone(), clocks);
 
@@ -538,26 +537,74 @@ fn notify_forecasts(app: &AppHandle, snapshot: &AppSnapshot) {
 
 // ---------- log ingestion ----------
 
-async fn ingest_loop(app: AppHandle, dirty: Arc<AtomicI64>) {
+/// Bounded path queue; overflow falls back to a full directory reconciliation.
+#[derive(Default)]
+struct DirtyFiles {
+    paths: BTreeMap<PathBuf, String>,
+    first_change: i64,
+    last_change: i64,
+    overflow: bool,
+}
+
+impl DirtyFiles {
+    fn enqueue(&mut self, provider: &str, path: PathBuf, now: i64) {
+        if self.first_change == 0 {
+            self.first_change = now;
+        }
+        self.last_change = now;
+        if self.paths.len() < 4096 {
+            self.paths.insert(path, provider.to_owned());
+        } else {
+            self.overflow = true;
+        }
+    }
+    fn ready(&self, now: i64) -> bool {
+        self.first_change > 0
+            && (now - self.last_change >= WATCH_DEBOUNCE_MS || now - self.first_change >= 10_000)
+    }
+    fn take(&mut self) -> (Vec<(String, PathBuf)>, bool) {
+        let state = std::mem::take(self);
+        (
+            state
+                .paths
+                .into_iter()
+                .map(|(path, provider)| (provider, path))
+                .collect(),
+            state.overflow,
+        )
+    }
+}
+
+async fn ingest_loop(app: AppHandle, dirty: Arc<Mutex<DirtyFiles>>) {
     tokio::time::sleep(INITIAL_INGEST_DELAY).await;
-    let mut last_run_ms = 0i64;
+    let mut last_reconcile_ms = 0i64;
     loop {
-        let enabled = {
-            let state = app.state::<AppState>();
-            let enabled = state.settings.read().ingest_enabled;
-            enabled
-        };
+        let enabled = app.state::<AppState>().settings.read().ingest_enabled;
         if enabled {
             let now = store::now_ms();
-            let pending = dirty.load(Ordering::Relaxed);
-            let debounced = pending > 0 && now - pending >= WATCH_DEBOUNCE_MS;
-            let periodic = now - last_run_ms >= INGEST_INTERVAL_MS;
-            if last_run_ms == 0 || debounced || periodic {
-                if debounced {
-                    dirty.store(0, Ordering::Relaxed);
+            let periodic = last_reconcile_ms == 0 || now - last_reconcile_ms >= INGEST_INTERVAL_MS;
+            let batch = {
+                let mut queue = dirty.lock();
+                (periodic || queue.ready(now)).then(|| queue.take())
+            };
+            if let Some((paths, overflow)) = batch {
+                let reconcile = periodic || overflow;
+                let stats = run_ingest_selected(
+                    &app,
+                    false,
+                    if reconcile { None } else { Some(paths.clone()) },
+                )
+                .await;
+                if stats.running {
+                    // Manual reindex is already running: retry this exact batch.
+                    let mut queue = dirty.lock();
+                    for (provider, path) in paths {
+                        queue.enqueue(&provider, path, now);
+                    }
+                    queue.overflow |= overflow;
+                } else if reconcile {
+                    last_reconcile_ms = store::now_ms();
                 }
-                run_ingest(&app, false).await;
-                last_run_ms = store::now_ms();
             }
         }
         tokio::time::sleep(TICK).await;
@@ -567,6 +614,14 @@ async fn ingest_loop(app: AppHandle, dirty: Arc<AtomicI64>) {
 /// Run one ingestion pass (`full` = forget byte offsets first) and emit
 /// `ingest-progress` at the start and the end.
 pub async fn run_ingest(app: &AppHandle, full: bool) -> IngestStats {
+    run_ingest_selected(app, full, None).await
+}
+
+async fn run_ingest_selected(
+    app: &AppHandle,
+    full: bool,
+    paths: Option<Vec<(String, PathBuf)>>,
+) -> IngestStats {
     let (db, running) = {
         let state = app.state::<AppState>();
         (state.db.clone(), state.ingest_running.clone())
@@ -591,13 +646,16 @@ pub async fn run_ingest(app: &AppHandle, full: bool) -> IngestStats {
             ..IngestStats::default()
         },
     );
-    let stats = tauri::async_runtime::spawn_blocking(move || ingest::run(&db, full))
-        .await
-        .unwrap_or_else(|e| {
-            let mut stats = IngestStats::default();
-            stats.errors.push(format!("ingestion task failed: {e}"));
-            stats
-        });
+    let stats = tauri::async_runtime::spawn_blocking(move || match paths {
+        Some(paths) => ingest::run_paths(&db, &paths),
+        None => ingest::run(&db, full),
+    })
+    .await
+    .unwrap_or_else(|e| {
+        let mut stats = IngestStats::default();
+        stats.errors.push(format!("ingestion task failed: {e}"));
+        stats
+    });
     running.store(false, Ordering::SeqCst);
 
     if stats.events_added > 0 || !stats.errors.is_empty() {
@@ -622,7 +680,7 @@ fn emit_progress(app: &AppHandle, stats: &IngestStats) {
 /// Watch the log roots and record the time of the newest change, globally
 /// (for the ingest debounce) and per provider (for the adaptive interval).
 /// Runs on its own thread which owns the watcher for the lifetime of the app.
-fn spawn_log_watcher(dirty: Arc<AtomicI64>, clocks: Arc<Mutex<PollClocks>>) {
+fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks>>) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
         let roots = ingest::roots();
@@ -651,11 +709,13 @@ fn spawn_log_watcher(dirty: Arc<AtomicI64>, clocks: Arc<Mutex<PollClocks>>) {
             if let Ok(ev) = event {
                 if ev.kind.is_modify() || ev.kind.is_create() {
                     let now = store::now_ms();
-                    dirty.store(now, Ordering::Relaxed);
                     let mut guard = clocks.lock();
                     for path in &ev.paths {
                         if let Some(provider) = provider_for_path(&roots, path) {
                             guard.last_activity_ms.insert(provider.to_string(), now);
+                            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                                dirty.lock().enqueue(provider, path.clone(), now);
+                            }
                         }
                     }
                 }
@@ -1084,5 +1144,35 @@ mod tests {
         clocks.mark_interaction(now);
         assert_eq!(clocks.idle_secs("claude", now), Some(0));
         assert_eq!(clocks.idle_secs("codex", now), Some(0));
+    }
+
+    #[test]
+    fn dirty_queue_deduplicates_files_without_losing_events_during_a_scan() {
+        let mut dirty = DirtyFiles::default();
+        dirty.enqueue("codex", "first.jsonl".into(), 1000);
+        dirty.enqueue("codex", "first.jsonl".into(), 2000);
+        assert!(!dirty.ready(4999));
+        assert!(dirty.ready(5000));
+        let (paths, overflow) = dirty.take();
+        assert_eq!(paths.len(), 1);
+        assert!(!overflow);
+        dirty.enqueue("claude", "second.jsonl".into(), 5500);
+        assert!(!dirty.ready(6000));
+        assert!(dirty.ready(8500));
+        assert_eq!(dirty.take().0[0].0, "claude");
+    }
+
+    #[test]
+    fn busy_dirty_queue_flushes_and_overflow_requests_reconciliation() {
+        let mut dirty = DirtyFiles::default();
+        for now in 1000..12000 {
+            dirty.enqueue("codex", format!("{now}.jsonl").into(), now);
+        }
+        assert!(
+            dirty.ready(12000),
+            "continuous writing cannot postpone ingestion indefinitely"
+        );
+        assert!(dirty.take().1, "a bounded queue reconciles after overflow");
+        assert!(dirty.paths.is_empty());
     }
 }

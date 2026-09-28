@@ -61,16 +61,16 @@ Root defines evaluation TypeScript/Rust contract before frontend integration. Ex
 3. **Session UI and frontend performance:** implement Sessions tab in the existing themes with localized labels and responsive list/detail layout. Add content opt-in, alias editor, pagination/filter state, turn selection, evaluation preview/settings/report/review. Lazy-load mock/tabs, reuse charts, stable row keys, paginate long history tables, coalesce refresh and pause hidden-window fallback polling. Verify pure UI logic tests, typecheck, production build and read-only browser inspection (no mouse/keyboard simulation).
 4. **Evaluation backend:** test redaction, payload validation, prompt-injection isolation, evidence validation, missing-key behavior, localhost mock success/error/timeout/cache and review persistence. Implement bounded explicit HTTP call, settings, preparation, cache, result history and user confirmation. Keep credentials out of logs/IPC/storage.
 5. **Integration/review:** verify fixture coverage for old/new log variants and schema upgrades; no text stored before opt-in; unknown stays unknown; parent aggregation has no double counting. Run independent spec and quality review, fix findings. Update README, ARCHITECTURE, validation guide, release notes and privacy documentation.
-6. **Release:** bump all four version files to next unoccupied minor version (planned 0.5.0). Run frontend check/unit/build, cargo fmt/clippy/test and relevant no-input smoke/benchmark checks. Commit feature branch, fast-forward main after fetching remote, push main; inspect CI. Tag only validated commit, wait for all four release jobs, inspect assets and updater manifest/signatures, publish draft and verify published URLs/version. Existing CI browser tests simulate input; respect AGENTS by replacing that execution gate with non-input render validation rather than executing those tests as an agent.
+6. **Release:** bump all four version files to next unoccupied minor version (planned 0.5.0). Run frontend check/unit/build, cargo fmt/clippy/test and relevant no-input smoke/benchmark checks. Commit feature branch, fast-forward main after fetching remote, push main; inspect CI. Tag only validated commit, wait for all four release jobs, inspect assets and updater manifest/signatures, publish draft and verify published URLs/version. Browser validation uses navigation and assertions without input simulation, as required by AGENTS.md. Existing interactive browser scenarios remain available through an explicit manual workflow option; default CI runs the no-input render suite, unit tests, backend checks and native startup smoke test.
 
 ## Completion evidence checklist
 
-- [ ] Local session titles, aliases and genuine prompts with backwards compatible parsing.
-- [ ] Server pagination/search/sort; per-turn metrics and parent/child display.
-- [ ] Opt-in content, bounded reads, expired-source handling, analysis clearing.
-- [ ] Explicit AI preview/send, configuration, evidence-based report, caching and user review.
-- [ ] Frontend and backend performance changes measured on repeatable synthetic data.
-- [ ] Tests/build/typecheck/lint and independent review complete.
+- [x] Local session titles, aliases and genuine prompts with backwards compatible parsing.
+- [x] Server pagination/search/sort; per-turn metrics and parent/child display.
+- [x] Opt-in content, bounded reads, expired-source handling, analysis clearing.
+- [x] Explicit AI preview/send, configuration, evidence-based report, caching and user review.
+- [x] Frontend and backend performance changes measured on repeatable synthetic data.
+- [x] Tests/build/typecheck/lint and independent review complete (266 Rust tests, 86 frontend unit tests, 6 no-input render tests, 2 separate benchmarks; Clippy/fmt/typecheck/build passed).
 - [ ] main pushed and exact commit verified on remote.
 - [ ] Linux x64, Windows x64, macOS arm64/x64 published assets verified; updater manifest checked.
 

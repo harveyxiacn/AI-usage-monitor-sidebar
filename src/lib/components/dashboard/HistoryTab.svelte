@@ -7,6 +7,8 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { historyViewState } from '$lib/history-view-state';
+  import { st } from '$lib/session-labels.svelte';
   import BudgetChart from '$lib/components/BudgetChart.svelte';
   import UsageChart from '$lib/components/UsageChart.svelte';
   import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
@@ -37,18 +39,18 @@
   let { themeKey }: Props = $props();
 
   const DAY = 86_400_000;
-  let preset = $state<HistoryPreset>('7d');
-  let customFrom = $state(localDateInput(Date.now() - 6 * DAY));
-  let customTo = $state(localDateInput(Date.now()));
+  let preset = $state<HistoryPreset>(historyViewState.preset);
+  let customFrom = $state(historyViewState.customFrom || localDateInput(Date.now() - 6 * DAY));
+  let customTo = $state(historyViewState.customTo || localDateInput(Date.now()));
   let queryTime = $state(Date.now());
-  let bucket = $state<Bucket>('day');
-  let provider = $state<ProviderId | ''>('');
-  let groupByModel = $state(true);
-  let groupByProject = $state(false);
-  let project = $state<string | null>(null);
+  let bucket = $state<Bucket>(historyViewState.bucket);
+  let provider = $state<ProviderId | ''>(historyViewState.provider);
+  let groupByModel = $state(historyViewState.groupByModel);
+  let groupByProject = $state(historyViewState.groupByProject);
+  let project = $state<string | null>(historyViewState.project);
   let projects = $state<string[]>([]);
-  let metric = $state<'tokens' | 'cost'>('tokens');
-  let chartLayout = $state<'grouped' | 'stacked'>('grouped');
+  let metric = $state<'tokens' | 'cost'>(historyViewState.metric);
+  let chartLayout = $state<'grouped' | 'stacked'>(historyViewState.chartLayout);
 
   let result = $state<HistoryResult | null>(null);
   let loading = $state(true);
@@ -56,13 +58,18 @@
 
   /** Activity heatmap: a fixed 26-week window, independent of the range above. */
   const HEATMAP_WEEKS = 26;
-  let heatView = $state<'calendar' | 'punchcard'>('calendar');
+  let heatView = $state<'calendar' | 'punchcard'>(historyViewState.heatView);
   let calendar = $state<CalendarResult | null>(null);
   let calendarError = $state<string | null>(null);
   let calendarId = 0;
 
   /** Session drill-down; loaded only while its view is on screen. */
-  let tableView = $state<'buckets' | 'sessions'>('buckets');
+  let tableView = $state<'buckets' | 'sessions'>(historyViewState.tableView);
+  let tablePage = $state(0);
+  const TABLE_PAGE_SIZE = 100;
+  $effect(() => {
+    Object.assign(historyViewState, { preset, customFrom, customTo, bucket, provider, groupByModel, groupByProject, project, metric, chartLayout, tableView, heatView });
+  });
   let sessions = $state<SessionsResult | null>(null);
   let sessionsLoading = $state(false);
   let sessionsError = $state<string | null>(null);
@@ -158,7 +165,10 @@
   // refetch whenever a query input changes
   $effect(() => {
     void [range, bucket, groupByModel, groupByProject, provider, project];
-    void load();
+    // Invalidate immediately so an older response cannot flash during debounce.
+    requestId++;
+    const timer = setTimeout(() => void load(), 80);
+    return () => clearTimeout(timer);
   });
 
   /**
@@ -203,7 +213,9 @@
   // `dataVersion` changes only when a scan actually added events
   $effect(() => {
     void [heatFrom, heatTo, provider, project, dataVersion];
-    void loadCalendar();
+    calendarId++;
+    const timer = setTimeout(() => void loadCalendar(), 80);
+    return () => clearTimeout(timer);
   });
 
   async function loadSessions() {
@@ -239,7 +251,9 @@
 
   $effect(() => {
     void [range, provider, project, tableView];
-    void loadSessions();
+    sessionsId++;
+    const timer = setTimeout(() => void loadSessions(), 80);
+    return () => clearTimeout(timer);
   });
 
   onMount(() => {
@@ -252,7 +266,11 @@
         dataVersion += 1;
       }
     }).then((u) => (disposed ? u() : (un = u))).catch((e) => { actionError = String(e); });
-    const timer = setInterval(() => { if (!document.hidden && !rescanning) queryTime = Date.now(); }, 60_000);
+    // Ingestion events carry fresh data. The fallback reconciles after hiding,
+    // and midnight moves the local-day boundaries without idle minute queries.
+    const resume = () => { if (!document.hidden && !rescanning) queryTime = Date.now(); };
+    const timer = setInterval(() => { if (!document.hidden && !rescanning && localDateInput(queryTime) !== localDateInput(Date.now())) queryTime = Date.now(); }, 60_000);
+    document.addEventListener('visibilitychange', resume);
     return () => {
       disposed = true;
       requestId++;
@@ -261,6 +279,7 @@
       un?.();
       clearInterval(timer);
       clearTimeout(copiedTimer);
+      document.removeEventListener('visibilitychange', resume);
     };
   });
 
@@ -341,6 +360,9 @@
     });
     return list;
   });
+  const tableCount = $derived(tableView === 'sessions' ? sortedSessions.length : sortedRows.length);
+  $effect(() => { void [preset, customFrom, customTo, bucket, provider, project, tableView, sortKey, sortDir, sessionSortKey, sessionSortDir]; tablePage = 0; });
+  $effect(() => { if (tablePage * TABLE_PAGE_SIZE >= tableCount) tablePage = Math.max(0, Math.ceil(tableCount / TABLE_PAGE_SIZE) - 1); });
 
   function sortSessionsBy(key: typeof sessionSortKey) {
     if (sessionSortKey === key) sessionSortDir = sessionSortDir === 1 ? -1 : 1;
@@ -725,7 +747,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each sortedSessions as s (`${s.provider}:${s.sessionId}`)}
+              {#each sortedSessions.slice(tablePage * TABLE_PAGE_SIZE, (tablePage + 1) * TABLE_PAGE_SIZE) as s (JSON.stringify([s.provider, s.sessionId]))}
                 <tr>
                   <td class="session-id" title={s.sessionId}>{sessionLabel(s)}</td>
                   <td>{providerName(s.provider)}</td>
@@ -767,7 +789,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each sortedRows as r, i (JSON.stringify([r.bucketStart, r.provider, r.model, r.reasoningEffort, r.project, i]))}
+            {#each sortedRows.slice(tablePage * TABLE_PAGE_SIZE, (tablePage + 1) * TABLE_PAGE_SIZE) as r (JSON.stringify([r.bucketStart, r.provider, r.model, r.reasoningEffort, r.project]))}
               <tr>
                 <td>{formatBucket(r.bucketStart, bucket)}</td>
                 <td>{providerName(r.provider)}</td>
@@ -787,6 +809,14 @@
       </div>
     {/if}
   </div>
+
+  {#if tableCount > TABLE_PAGE_SIZE}
+    <nav class="table-pager" aria-label={t('history.table.title')}>
+      <button class="btn" disabled={tablePage === 0} onclick={() => tablePage--}>{st('previous')}</button>
+      <span class="muted">{tablePage * TABLE_PAGE_SIZE + 1}–{Math.min(tableCount, (tablePage + 1) * TABLE_PAGE_SIZE)} / {tableCount}</span>
+      <button class="btn" disabled={(tablePage + 1) * TABLE_PAGE_SIZE >= tableCount} onclick={() => tablePage++}>{st('next')}</button>
+    </nav>
+  {/if}
 
   <div class="card panel ingest">
     <header class="panel-head">
@@ -821,6 +851,7 @@
 </section>
 
 <style>
+  .table-pager { display: flex; justify-content: space-between; align-items: center; gap: .75rem; font-size: .8rem; }
   .history {
     display: flex;
     flex-direction: column;

@@ -513,4 +513,4 @@ export interface MonitorInfo {
   isPrimary: boolean;
 }
 
-export type DashboardTab = 'overview' | 'history' | 'settings';
+export type DashboardTab = 'overview' | 'history' | 'sessions' | 'settings';

@@ -7,9 +7,8 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import HistoryTab from '$lib/components/dashboard/HistoryTab.svelte';
   import OverviewTab from '$lib/components/dashboard/OverviewTab.svelte';
-  import SettingsTab from '$lib/components/dashboard/SettingsTab.svelte';
+  import { st } from '$lib/session-labels.svelte';
   import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
   import { t } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
@@ -23,7 +22,19 @@
   // which window it is (the custom text colour is widget-only)
   markWindow('dashboard');
 
-  const TABS: DashboardTab[] = ['overview', 'history', 'settings'];
+  const TABS: DashboardTab[] = ['overview', 'history', 'sessions', 'settings'];
+  let HistoryTab = $state<typeof import('$lib/components/dashboard/HistoryTab.svelte').default | null>(null);
+  let SettingsTab = $state<typeof import('$lib/components/dashboard/SettingsTab.svelte').default | null>(null);
+  let SessionsTab = $state<typeof import('$lib/components/dashboard/SessionsTab.svelte').default | null>(null);
+  let tabError = $state('');
+  async function loadTab(target: DashboardTab) {
+    tabError = '';
+    try {
+      if (target === 'history' && !HistoryTab) HistoryTab = (await import('$lib/components/dashboard/HistoryTab.svelte')).default;
+      if (target === 'settings' && !SettingsTab) SettingsTab = (await import('$lib/components/dashboard/SettingsTab.svelte')).default;
+      if (target === 'sessions' && !SessionsTab) SessionsTab = (await import('$lib/components/dashboard/SessionsTab.svelte')).default;
+    } catch (e) { if (target === tab) tabError = String(e); }
+  }
 
   let tab = $state<DashboardTab>('overview');
   /** resolved palette name; the chart canvas needs to rebuild when it changes */
@@ -35,6 +46,8 @@
   const pricingRevision = $derived(pricingUpdate.value?.revision ?? 'unknown');
 
   onMount(() => {
+    const requestedTab = new URLSearchParams(window.location.search).get('tab') as DashboardTab;
+    if (TABS.includes(requestedTab)) tab = requestedTab;
     const disposers: Array<() => void> = [settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
 
     // applyTheme() writes data-theme on <html>; watching the attribute also
@@ -60,6 +73,7 @@
   });
 
   $effect(() => applyTheme(settings.value));
+  $effect(() => { void loadTab(tab); });
 </script>
 
 <svelte:head><title>{t('app.name')}</title></svelte:head>
@@ -75,7 +89,7 @@
           aria-current={tab === id ? 'page' : undefined}
           onclick={() => (tab = id)}
         >
-          {t(`tab.${id}` as 'tab.overview')}
+          {id === 'sessions' ? st('title') : t(`tab.${id}` as 'tab.overview')}
         </button>
       {/each}
     </nav>
@@ -100,10 +114,16 @@
   <main>
     {#if tab === 'overview'}
       <OverviewTab />
-    {:else if tab === 'history'}
+    {:else if tab === 'history' && HistoryTab}
       <HistoryTab {themeKey} />
-    {:else}
+    {:else if tab === 'sessions' && SessionsTab}
+      <SessionsTab />
+    {:else if tab === 'settings' && SettingsTab}
       <SettingsTab />
+    {:else if tabError}
+      <p role="alert">{tabError} <button class="btn" onclick={() => void loadTab(tab)}>{t('common.retry')}</button></p>
+    {:else}
+      <p role="status">{t('common.loading')}</p>
     {/if}
   </main>
 </div>

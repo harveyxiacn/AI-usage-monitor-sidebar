@@ -36,6 +36,8 @@ pub struct IngestFile {
 /// Owning handle to the SQLite database.
 pub struct Db {
     conn: Mutex<Connection>,
+    usage_cache: Mutex<usage::QueryCache>,
+    usage_generation: std::sync::atomic::AtomicU64,
 }
 
 impl Db {
@@ -62,14 +64,30 @@ impl Db {
         conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         let db = Db {
             conn: Mutex::new(conn),
+            usage_cache: Mutex::new(usage::QueryCache::default()),
+            usage_generation: std::sync::atomic::AtomicU64::new(0),
         };
         db.migrate()?;
+        crate::sessions::ensure_schema(&db)?;
+        db.migrate_claude_children()?;
         Ok(db)
     }
 
     /// Lock the connection. Never hold the guard across an `.await`.
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock()
+    }
+
+    /// A query caches only results computed against this exact usage revision.
+    pub fn usage_generation(&self) -> u64 {
+        self.usage_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn invalidate_usage_cache(&self) {
+        self.usage_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.usage_cache.lock().clear();
     }
 
     /// Create tables / apply migrations based on `meta.schema_version`.
@@ -113,6 +131,14 @@ impl Db {
               mtime INTEGER NOT NULL,
               byte_offset INTEGER NOT NULL,
               last_ingested_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS ingest_checkpoints (
+              path TEXT PRIMARY KEY,
+              checkpoint TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS ingest_legacy_events (
+              path TEXT NOT NULL,
+              request_id TEXT NOT NULL,
+              PRIMARY KEY(path, request_id));
+            CREATE INDEX IF NOT EXISTS idx_usage_source ON usage_events(provider, source_file);
             "#,
         )?;
         let current: i64 = tx
@@ -151,6 +177,43 @@ impl Db {
             )?;
             log::info!("usage.db schema {} -> {}", current, SCHEMA_VERSION);
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Correct historical child attribution even when its original transcript
+    /// has expired. The stored source path is sufficient explicit evidence.
+    fn migrate_claude_children(&self) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let applied: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM meta WHERE key='claude_child_attribution_v1')",
+            [],
+            |r| r.get(0),
+        )?;
+        if applied {
+            return Ok(());
+        }
+        let candidates = {
+            let mut stmt = tx.prepare("SELECT DISTINCT session_id,source_file FROM usage_events WHERE provider='claude' AND session_id IS NOT NULL AND source_file LIKE '%subagents%'")?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (parent, source) in candidates {
+            if let Some(child) =
+                crate::commands::ingest::claude::session_identity(Some(&parent), None, &source)
+            {
+                if child != parent {
+                    tx.execute("UPDATE usage_events SET session_id=?1 WHERE provider='claude' AND session_id=?2 AND source_file=?3", rusqlite::params![child,parent,source])?;
+                }
+            }
+        }
+        tx.execute(
+            "INSERT INTO meta(key,value) VALUES('claude_child_attribution_v1','1')",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -204,6 +267,51 @@ impl Db {
     pub fn reset_ingest_offsets(&self) -> Result<()> {
         let conn = self.lock();
         conn.execute("DELETE FROM ingest_files", [])?;
+        conn.execute("DELETE FROM ingest_checkpoints", [])?;
+        Ok(())
+    }
+
+    pub fn ingest_checkpoint(&self, path: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT checkpoint FROM ingest_checkpoints WHERE path=?1",
+                [path],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn save_ingest_checkpoint(&self, path: &str, checkpoint: &str) -> Result<()> {
+        self.lock().execute("INSERT INTO ingest_checkpoints(path,checkpoint) VALUES(?1,?2) ON CONFLICT(path) DO UPDATE SET checkpoint=excluded.checkpoint", [path, checkpoint])?;
+        Ok(())
+    }
+
+    /// Remember fallback IDs exactly, never infer them from a response ID's shape.
+    /// A later modern record supersedes fallback usage from this source only.
+    pub fn reconcile_codex_legacy(&self, path: &str, ids: &[String], modern: bool) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT OR IGNORE INTO ingest_legacy_events(path,request_id) VALUES(?1,?2)",
+            )?;
+            for id in ids {
+                stmt.execute(rusqlite::params![path, id])?;
+            }
+        }
+        let removed = if modern {
+            let removed = tx.execute("DELETE FROM usage_events WHERE provider='codex' AND source_file=?1 AND request_id IN (SELECT request_id FROM ingest_legacy_events WHERE path=?1)", [path])?;
+            tx.execute("DELETE FROM ingest_legacy_events WHERE path=?1", [path])?;
+            removed
+        } else {
+            0
+        };
+        tx.commit()?;
+        if removed > 0 {
+            self.invalidate_usage_cache();
+        }
         Ok(())
     }
 }
@@ -216,6 +324,39 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_attribution_migration_retains_expired_source_usage_and_is_idempotent() {
+        let dir = crate::commands::test_support::tempdir();
+        let path = dir.join("children.db");
+        let db = Db::open(&path).unwrap();
+        db.lock().execute_batch("DELETE FROM meta WHERE key='claude_child_attribution_v1';
+            INSERT INTO usage_events(provider,model,ts,total_tokens,request_id,session_id,source_file) VALUES
+            ('claude','model',1000,12,'child-request','parent','C:\\expired\\parent\\subagents\\agent-child.jsonl'),
+            ('claude','model',1000,20,'parent-request','parent','C:\\expired\\parent.jsonl');").unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        let identity: String = db
+            .lock()
+            .query_row(
+                "SELECT session_id FROM usage_events WHERE request_id='child-request'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(identity, "parent:agent:child");
+        db.migrate_claude_children().unwrap();
+        assert_eq!(usage::count_events(&db).unwrap(), 2);
+        assert_eq!(
+            db.lock()
+                .query_row("SELECT SUM(total_tokens) FROM usage_events", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            32
+        );
+        drop(db);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn old_schema(path: &Path) {
         let db = Db::open(path).unwrap();

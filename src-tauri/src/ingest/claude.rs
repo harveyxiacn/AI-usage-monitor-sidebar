@@ -30,6 +30,8 @@ struct Line {
     timestamp: Option<String>,
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
+    #[serde(rename = "agentId")]
+    agent_id: Option<String>,
     cwd: Option<String>,
     uuid: Option<String>,
     /// Explicit request metadata emitted by Claude Code, outside `message`.
@@ -125,7 +127,11 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
                 .saturating_add(usage.cache_creation_input_tokens.max(0))
                 .saturating_add(usage.cache_read_input_tokens.max(0))
                 .saturating_add(usage.output_tokens.max(0)),
-            session_id: parsed.session_id.clone(),
+            session_id: session_identity(
+                parsed.session_id.as_deref(),
+                parsed.agent_id.as_deref(),
+                source,
+            ),
             request_id: key.clone(),
             cwd: parsed.cwd.clone(),
             source_file: Some(source.to_string()),
@@ -152,6 +158,39 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
         .into_iter()
         .filter_map(|k| by_key.remove(&k))
         .collect()
+}
+
+/// Claude child transcripts commonly retain the parent's sessionId. Their
+/// source directory/agentId provides an explicit child identity for own totals.
+pub(crate) fn session_identity(
+    parent: Option<&str>,
+    agent: Option<&str>,
+    source: &str,
+) -> Option<String> {
+    let parent = parent?;
+    let portable = source.replace('\\', "/");
+    let path = Path::new(&portable);
+    let agent = agent.filter(|id| !id.is_empty()).or_else(|| {
+        (path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|s| s.to_str())
+            == Some("subagents"))
+        .then(|| path.file_stem().and_then(|s| s.to_str()))
+        .flatten()
+    });
+    Some(match agent {
+        Some(agent) => {
+            let suffix = agent.strip_prefix("agent-").unwrap_or(agent);
+            let marker = format!(":agent:{suffix}");
+            if parent.ends_with(&marker) {
+                parent.to_owned()
+            } else {
+                format!("{parent}{marker}")
+            }
+        }
+        None => parent.to_owned(),
+    })
 }
 
 pub(super) fn explicit_effort(value: Option<&serde_json::Value>) -> Option<String> {
@@ -350,6 +389,30 @@ mod tests {
     fn garbage_never_panics() {
         assert!(parse_chunk("", "x").is_empty());
         assert!(parse_chunk("not json\n{\"usage\":\"assistant\"}\n", "x").is_empty());
+    }
+
+    #[test]
+    fn subagents_keep_independent_session_identity_without_changing_request_deduplication() {
+        let line = |agent: Option<&str>| {
+            serde_json::json!({"type":"assistant","sessionId":"parent","agentId":agent,
+            "requestId":"r", "message":{"id":"m","model":"claude-opus-5","usage":{"input_tokens":3,"output_tokens":2}}}).to_string()
+        };
+        for (source, agent) in [
+            ("/projects/parent/subagents/agent-child.jsonl", None),
+            (r"C:\projects\parent\subagents\agent-child.jsonl", None),
+            ("/logs/session.jsonl", Some("agent-child")),
+        ] {
+            let events = parse_chunk(&line(agent), source);
+            assert_eq!(events[0].session_id.as_deref(), Some("parent:agent:child"));
+            assert_eq!(events[0].request_id, "m:r");
+            assert_eq!(events[0].total_tokens, 5);
+        }
+        assert_eq!(
+            parse_chunk(&line(None), "/projects/parent.jsonl")[0]
+                .session_id
+                .as_deref(),
+            Some("parent")
+        );
     }
 
     #[test]

@@ -24,6 +24,11 @@ on:
       - 'LICENSE'
       - 'packaging/**'
   workflow_dispatch:
+    inputs:
+      interactive_browser_tests:
+        description: 'Also run browser scenarios that simulate mouse and keyboard input'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -109,9 +114,15 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Test browser workflows
-        if: runner.os == 'Linux'
+      # AGENTS.md disallows simulated input during agent validation. Keep these
+      # scenarios available for an explicitly opted-in manual workflow run.
+      - name: Test interactive browser workflows (manual opt-in)
+        if: runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.interactive_browser_tests
         run: pnpm test:e2e
+
+      - name: Test session rendering and chart reuse
+        if: runner.os == 'Linux'
+        run: pnpm exec playwright test --config=tests/render.config.ts
 
       - name: Upload browser failure diagnostics
         if: failure() && runner.os == 'Linux'

@@ -17,6 +17,7 @@
     LineElement,
     PointElement,
     Tooltip,
+    type ChartConfiguration,
   } from 'chart.js';
   import { onDestroy } from 'svelte';
   import { cssVar, HEAT_ACCENT } from '$lib/colors';
@@ -40,9 +41,7 @@
   let chart: Chart<'line', (number | null)[], string> | null = null;
 
   function render() {
-    chart?.destroy();
-    chart = null;
-    if (!canvas || series.length === 0) return;
+    if (!canvas || series.length === 0) { chart?.destroy(); chart = null; return; }
 
     const text = cssVar('--muted', '#9a9aa3');
     const grid = cssVar('--grid', 'rgba(255,255,255,0.07)');
@@ -51,7 +50,7 @@
     const accent = HEAT_ACCENT[themeKey === 'light' ? 'light' : 'dark'];
     const day = new Intl.DateTimeFormat(intlLocale(), { month: 'numeric', day: 'numeric' });
 
-    chart = new Chart<'line', (number | null)[], string>(canvas, {
+    const configuration: ChartConfiguration<'line', (number | null)[], string> = {
       type: 'line',
       data: {
         labels: series.map((point) => day.format(new Date(`${point.date}T00:00:00`))),
@@ -81,7 +80,7 @@
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 320 },
+        animation: false,
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: {
@@ -123,7 +122,12 @@
           },
         },
       },
-    });
+    };
+    if (chart?.canvas === canvas) {
+      chart.data = configuration.data;
+      chart.options = configuration.options ?? {};
+      chart.update('none');
+    } else { chart?.destroy(); chart = new Chart(canvas, configuration); }
   }
 
   $effect(() => {

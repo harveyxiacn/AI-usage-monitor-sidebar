@@ -43,6 +43,7 @@ class SnapshotStore {
     // long-lived sidebar showing its startup values forever. No provider API
     // is polled by getSnapshot().
     const sync = () => {
+      if (document.hidden) return;
       void this.#subscribe(generation);
       void this.#read(generation);
     };

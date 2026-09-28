@@ -26,7 +26,7 @@ import type {
   SidebarState,
   UpdateStatus,
 } from './types';
-import { mockInvoke, mockListen } from './mock';
+import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionListQuery, SessionListResult } from './session-types';
 import type { SettingsPatch } from './settings-writer';
 
 export const isTauri = (): boolean =>
@@ -37,7 +37,7 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<T>(cmd, args);
   }
-  return mockInvoke<T>(cmd, args);
+  return (await import('./mock')).mockInvoke<T>(cmd, args);
 }
 
 export type Unlisten = () => void;
@@ -47,7 +47,7 @@ export async function listen<T>(event: string, handler: (payload: T) => void): P
     const { listen } = await import('@tauri-apps/api/event');
     return listen<T>(event, (e) => handler(e.payload));
   }
-  return mockListen<T>(event, handler);
+  return (await import('./mock')).mockListen<T>(event, handler);
 }
 
 // ---- backend ----
@@ -58,6 +58,16 @@ export const updateSettings = (patch: SettingsPatch) => invoke<Settings>('update
 export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('get_usage_history', { query });
 export const getUsageCalendar = (query: CalendarQuery) => invoke<CalendarResult>('get_usage_calendar', { query });
 export const getUsageSessions = (query: SessionQuery) => invoke<SessionsResult>('get_usage_sessions', { query });
+export const listSessions = (query: SessionListQuery) => invoke<SessionListResult>('list_sessions', { query });
+export const getSessionDetail = (provider: string, sessionId: string, offset = 0, limit = 40) => invoke<SessionDetail>('get_session_detail', { provider, sessionId, offset, limit });
+export const setSessionAlias = (provider: string, sessionId: string, alias: string) => invoke<void>('set_session_alias', { provider, sessionId, alias });
+export const getAnalysisSettings = () => invoke<AnalysisSettings>('get_analysis_settings');
+export const saveAnalysisSettings = (settings: AnalysisSettings) => invoke<AnalysisSettings>('save_analysis_settings', { settings });
+export const prepareSessionEvaluation = (provider: string, sessionId: string, turnIds: string[] = []) => invoke<EvaluationPreview>('prepare_session_evaluation', { provider, sessionId, turnIds });
+export const evaluateSession = (preview: EvaluationPreview) => invoke<EvaluationReport>('evaluate_session', { preview });
+export const getSessionEvaluations = (provider: string, sessionId: string) => invoke<EvaluationReport[]>('get_session_evaluations', { provider, sessionId });
+export const saveEvaluationReview = (id: string, requirements: RequirementAssessment[]) => invoke<EvaluationReport>('save_evaluation_review', { id, requirements });
+export const clearSessionAnalysis = (provider: string, sessionId: string) => invoke<void>('clear_session_analysis', { provider, sessionId });
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });

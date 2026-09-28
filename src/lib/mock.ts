@@ -364,6 +364,13 @@ const events: MockEvent[] = (() => {
       }
     }
   }
+  // Keep every documented model/effort example in the recent preview window,
+  // independently of weekday weights and probabilistic activity generation.
+  for (const [index, effort] of ['medium', 'ultra', 'xhigh', null].entries()) {
+    for (const model of MODELS.codex) out.push({ ts: startOfToday.getTime() - DAY + index * HOUR,
+      provider: 'codex', model, reasoningEffort: effort, project: PROJECTS[0], session: 'codex-preview-variants',
+      inputTokens: 900, cacheWriteTokens: 0, cacheReadTokens: 600, outputTokens: 150, reasoningTokens: 50, requests: 1 });
+  }
   return out.sort((a, b) => a.ts - b.ts);
 })();
 
@@ -802,6 +809,9 @@ function jitterSnapshot(provider?: ProviderId | null) {
 }
 
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (['list_sessions', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
+    return (await import('./session-mock')).sessionMockInvoke(cmd, args) as Promise<T>;
+  }
   switch (cmd) {
     case 'get_snapshot':
       return structuredClone(snapshot) as T;

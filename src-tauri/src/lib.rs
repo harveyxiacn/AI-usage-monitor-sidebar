@@ -2,9 +2,11 @@
 //! Command handler list must stay in sync with docs/ARCHITECTURE.md §5.
 
 pub mod commands;
+pub mod evaluation;
 pub mod export;
 pub mod model;
 pub mod scheduler;
+pub mod sessions;
 pub mod state;
 pub mod updater;
 pub mod window;
@@ -93,6 +95,16 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            sessions::list_sessions,
+            sessions::get_session_detail,
+            sessions::set_session_alias,
+            evaluation::get_analysis_settings,
+            evaluation::save_analysis_settings,
+            evaluation::prepare_session_evaluation,
+            evaluation::evaluate_session,
+            evaluation::get_session_evaluations,
+            evaluation::save_evaluation_review,
+            evaluation::clear_session_analysis,
             // backend
             commands::get_snapshot,
             commands::refresh_now,

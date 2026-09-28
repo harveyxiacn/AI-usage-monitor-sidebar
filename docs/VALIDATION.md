@@ -4,6 +4,43 @@ The September 2026 stability pass covers the existing Claude/Codex sidebar,
 popover and dashboard, with native CSV export. All automated data fixtures are
 synthetic; tests do not require or print personal credentials or session logs.
 
+## v0.5.0 session analysis validation
+
+The session-analysis implementation was developed and checked on Windows x64.
+Final local results: 266 Rust tests passed (the 2 ignored benchmarks passed in a
+separate run), 86 frontend unit tests and 6 no-input render tests passed. Cargo
+fmt and strict Clippy passed; frontend typecheck reported no errors or warnings,
+and the static production build completed.
+Synthetic Rust fixtures cover title precedence, more than 200 sessions with
+server pagination, source replacement/expiry, partial lines, parent/child
+attribution, delayed streaming replies, unknown turn usage and opt-in preparation.
+Evaluation tests use a loopback HTTP server: exact reviewed payload, missing keys,
+timeouts, disabled redirects/retries, bounded responses, evidence validation,
+report reuse and preserving human revisions. No paid service or private session
+was used for these checks.
+
+Frontend unit checks cover filters, pagination, stable identity, message merging,
+input budgets, mock data and opt-in behavior. The additional render suite observes
+synthetic pages and events without simulated mouse or keyboard input:
+
+```sh
+pnpm exec playwright test --config=tests/render.config.ts
+```
+
+Its fixtures cover English dark/light layouts, a narrow Chinese layout, long
+history tables and Chart.js instance reuse. Default CI runs this no-input suite;
+the older interactive browser scenarios require the explicit
+`interactive_browser_tests` manual workflow option. This follows AGENTS.md's
+restriction on simulated input during agent validation. See [PERFORMANCE.md](PERFORMANCE.md) for repeatable
+benchmarks and measurement limits, and [SESSIONS.md](SESSIONS.md) for content
+retention, endpoint setup and the interpretation of assessments.
+
+The Windows development filesystem required a temporary hoisted pnpm install
+and a Cargo build/cache directory on NTFS. The nested worktree's local Vite
+build used an explicit tsconfig path. These environment-specific workarounds
+are not application configuration or release dependencies. GitHub CI builds
+from a normal checkout with the checked-in lockfiles.
+
 ## Repeatable checks
 
 ```sh
@@ -56,7 +93,7 @@ the six CSS-pixel handle occupies twelve physical pixels at 2× scale, rather
 than an invisible 400-pixel-wide window. Expanded dimensions are retained
 when the frontend reports the collapsed handle's layout.
 
-## Windows / macOS audit (desk check, no native hardware)
+## Earlier Windows / macOS audit (desk check from Linux)
 
 Neither OS can be exercised from the Linux development machine, so the
 following was established by reading the code and the exact dependency

@@ -24,6 +24,8 @@ export interface SessionTurn {
 export interface SessionDetail {
   session: SessionSummary; messages: SessionMessage[]; totalMessages: number;
   nextOffset: number | null; turns: SessionTurn[]; children: SessionSummary[]; warnings: string[];
+  /** Latest indexed transcript modification time, independent of token events. */
+  sourceUpdatedAt?: number | null;
 }
 export interface AnalysisSettings {
   contentEnabled: boolean; endpoint: string; model: string; apiKeyEnv: string;

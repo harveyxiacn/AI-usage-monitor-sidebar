@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Chart, LinearScale, LineController, LineElement, PointElement, Tooltip } from 'chart.js';
+  import { Chart, LinearScale, LineController, LineElement, PointElement, Tooltip, type ChartConfiguration } from 'chart.js';
   import { onDestroy } from 'svelte';
   import { cssVar, providerAccent, resolveColor } from '$lib/colors';
   import { intlLocale, t, tDyn } from '$lib/i18n/i18n.svelte';
@@ -13,9 +13,7 @@
 
   $effect(() => {
     void themeKey;
-    chart?.destroy();
-    chart = null;
-    if (!canvas) return;
+    if (!canvas) { chart?.destroy(); chart = null; return; }
     const entries = series.entries;
     const firstTime = Date.parse(entries[0].sample.ts);
     const lastTime = Date.parse(entries.at(-1)!.sample.ts);
@@ -25,7 +23,7 @@
     const pct = new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 2 });
     const date = new Intl.DateTimeFormat(intlLocale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const label = t(remaining ? 'history.quota.remaining' : 'history.quota.used');
-    chart = new Chart(canvas, {
+    const configuration: ChartConfiguration<'line', { x: number; y: number }[]> = {
       type: 'line',
       data: { datasets: [{
         label,
@@ -65,7 +63,12 @@
           },
         },
       },
-    });
+    };
+    if (chart?.canvas === canvas) {
+      chart.data = configuration.data;
+      chart.options = configuration.options ?? {};
+      chart.update('none');
+    } else { chart?.destroy(); chart = new Chart(canvas, configuration); }
   });
   onDestroy(() => { chart?.destroy(); chart = null; });
 </script>
