@@ -17,3 +17,4 @@ vite.config.ts.timestamp-*
 # misc
 *.log
 .idea
+/.worktrees/
