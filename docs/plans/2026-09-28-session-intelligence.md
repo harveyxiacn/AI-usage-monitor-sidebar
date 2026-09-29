@@ -72,8 +72,8 @@ Root defines evaluation TypeScript/Rust contract before frontend integration. Ex
 - [x] Explicit AI preview/send, configuration, evidence-based report, caching and user review.
 - [x] Frontend and backend performance changes measured on repeatable synthetic data.
 - [x] Tests/build/typecheck/lint and independent review complete (266 Rust tests, 86 frontend unit tests, 6 no-input render tests, 2 separate benchmarks; Clippy/fmt/typecheck/build passed).
-- [ ] main pushed and exact commit verified on remote.
-- [ ] Linux x64, Windows x64, macOS arm64/x64 published assets verified; updater manifest checked.
+- [x] main pushed and exact commit verified on remote (`f5f736fd48860b590fc4337d69262055808cf443`); [CI 36440309118](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/runs/36440309118) passed on Windows, macOS and Linux, including the native Linux startup smoke test.
+- [x] Linux x64, Windows x64, macOS arm64/x64 published assets verified; updater manifest checked. [Release run 36441985420](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/runs/36441985420) passed all four jobs. [v0.5.0](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/tag/v0.5.0) was published on 2026-09-29 UTC: all 17 downloaded assets matched GitHub SHA-256 digests, all seven updater payloads passed byte-level signature verification, and anonymous public downloads plus the latest-version endpoint were checked. See [validation evidence](../VALIDATION.md#v050-release-evidence).
 
 ## Sources checked
 
