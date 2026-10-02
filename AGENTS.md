@@ -166,6 +166,8 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
+| `focusUntil` | `0` (off), `-1` (until turned off) or an epoch-ms deadline | focus / do-not-disturb: native notifications are silenced until then; a timed value expires by itself. Also set from the tray's "Focus mode" submenu |
+| `focusHidesSidebar` | `false`, `true` | hide the bar while focus mode is on, show it again when it ends |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
 | `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |
