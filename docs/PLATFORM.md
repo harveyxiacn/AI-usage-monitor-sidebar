@@ -281,9 +281,28 @@ menu:
 | Check for updates / Update x.y.z available… | One item with two faces (`tray::update_label`): a manual `updater::check()` while nothing is on offer, and `open_dashboard(Some("settings"))` once there is |
 | Quit | `app.exit(0)` |
 
-Labels follow `settings.language` (English / 简体中文, `auto` reads `LANG`).
-On macOS and Windows a left-click on the icon toggles the dashboard; on Linux
-the AppIndicator protocol has no click event, so the menu is all there is.
+Labels follow `settings.language` (English / 简体中文). `auto` follows the OS
+display language: `GetUserDefaultUILanguage` on Windows, `defaults read -g
+AppleLanguages` on macOS (cached), `LC_ALL`/`LC_MESSAGES`/`LANG` on Linux.
+On macOS and Windows a left-click on the icon toggles the dashboard. On Linux
+tao/tray-icon report no tray events at all (the StatusNotifier `Activate` call
+is not forwarded), so a left-click cannot be wired to the dashboard and the
+menu is all there is; this is a known limitation, not a bug in the app.
+
+Beyond the actions above the menu carries:
+
+* **Usage lines** at the top: one disabled item per enabled provider, e.g.
+  `Claude · 5h 73% · resets in 51 min`, refreshed after every snapshot
+  (`tray::sync_usage`; the native menu is only touched when a line changes).
+  The tooltip names the busiest window.
+* **Severity dot** on the icon (Windows, Linux): warn / critical / error, from
+  the worst window of the providers shown on the bar and the `thresholds`
+  setting. The icon is only swapped when the severity changes. macOS keeps
+  the monochrome template glyph; it has no coloured overlay.
+* **Focus mode** submenu (1 hour, until tomorrow 08:00, until turned off, off)
+  writing `focusUntil`. While active, `scheduler::notify_forecasts` shows
+  nothing (`focus::notifications_allowed`) and, with `focusHidesSidebar`, the
+  bar is hidden; a 30 s timer clears an expired deadline and restores the bar.
 
 ## 4b. Global shortcuts (`window/shortcuts.rs`)
 

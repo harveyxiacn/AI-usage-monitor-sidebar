@@ -165,6 +165,8 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.collapsed_width = s.collapsed_width.clamp(2, 24);
     s.auto_hide_delay_ms = s.auto_hide_delay_ms.min(600_000);
     s.popover_timeout_sec = s.popover_timeout_sec.min(600);
+    // 0 = off, -1 = until turned off, otherwise an epoch-ms deadline.
+    s.focus_until = s.focus_until.max(-1);
     // 0 = budget line off; the cap keeps a typo out of the chart's y-axis.
     s.monthly_budget_usd = clamp_f64(s.monthly_budget_usd, 0.0, 1_000_000.0, 0.0);
     // 0 = unknown subscription price; a typo cannot make the ratio absurd.
@@ -863,6 +865,24 @@ mod tests {
         assert!(!merged.forecast_notifications);
         assert!(merged.notifications, "unrelated fields survive");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn focus_mode_defaults_off_and_rejects_nonsense_deadlines() {
+        let d = Settings::default();
+        assert_eq!((d.focus_until, d.focus_hides_sidebar), (0, false));
+        let on = merge(&d, &json!({"focusUntil": 1_900_000_000_000_i64}));
+        assert_eq!(on.focus_until, 1_900_000_000_000);
+        assert_eq!(merge(&d, &json!({"focusUntil": -1})).focus_until, -1);
+        assert_eq!(
+            merge(&d, &json!({"focusUntil": -50})).focus_until,
+            -1,
+            "clamped"
+        );
+        assert_eq!(
+            merge(&on, &json!({"focusUntil": "soon"})).focus_until,
+            on.focus_until
+        );
     }
 
     #[test]

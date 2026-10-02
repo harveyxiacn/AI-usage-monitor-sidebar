@@ -258,6 +258,10 @@ export interface Settings {
   notifications: boolean;
   /** warn when a window is on pace to run out before it resets */
   forecastNotifications: boolean;
+  /** Focus / do-not-disturb: native notifications are off until this epoch ms (0 = off, -1 = until turned off). */
+  focusUntil: number;
+  /** While focus mode is on, also hide the sidebar. */
+  focusHidesSidebar: boolean;
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
   alwaysOnTop: boolean;

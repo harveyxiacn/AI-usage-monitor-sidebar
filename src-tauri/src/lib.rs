@@ -4,6 +4,7 @@
 pub mod commands;
 pub mod evaluation;
 pub mod export;
+pub mod focus;
 pub mod model;
 pub mod scheduler;
 pub mod sessions;

@@ -168,6 +168,8 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `quotaRetentionDays` | `365` (0 – 3650, 0 = keep forever) | quota-history samples older than this are deleted by the daily maintenance pass; samples older than 14 days are thinned to one per hour (peak kept). Token usage events are never deleted |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
+| `focusUntil` | `0` (off), `-1` (until turned off) or an epoch-ms deadline | focus / do-not-disturb: native notifications are silenced until then; a timed value expires by itself. Also set from the tray's "Focus mode" submenu |
+| `focusHidesSidebar` | `false`, `true` | hide the bar while focus mode is on, show it again when it ends |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
 | `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |

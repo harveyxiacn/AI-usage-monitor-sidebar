@@ -409,6 +409,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
     if let Err(e) = app.emit(events::SNAPSHOT_UPDATED, &snapshot) {
         log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
     }
+    crate::window::tray::sync_usage(app, &snapshot);
     snapshot
 }
 
@@ -550,6 +551,10 @@ fn notify_forecasts(app: &AppHandle, snapshot: &AppSnapshot) {
         return;
     }
     let now = store::now_ms();
+    // Focus mode silences every native notification (see `crate::focus`).
+    if !crate::focus::notifications_allowed(&settings, now) {
+        return;
+    }
     let chinese = crate::window::tray::prefers_chinese(&settings);
     for q in &snapshot.providers {
         if q.status != ProviderStatus::Ok {

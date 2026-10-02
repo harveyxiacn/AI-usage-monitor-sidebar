@@ -148,6 +148,8 @@ export const mockSettings: Settings = {
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
+  focusUntil: 0,
+  focusHidesSidebar: false,
   hideAccountEmail: false,
   alwaysOnTop: true,
 };

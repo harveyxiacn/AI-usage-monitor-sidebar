@@ -98,6 +98,8 @@ export const defaultSettings: Settings = {
   sizes: structuredClone(defaultSizes),
   notifications: false,
   forecastNotifications: true,
+  focusUntil: 0,
+  focusHidesSidebar: false,
   hideAccountEmail: false,
   alwaysOnTop: true,
 };

@@ -479,6 +479,11 @@ pub struct Settings {
     pub notifications: bool,
     /// Warn when a window is on pace to run out before it resets.
     pub forecast_notifications: bool,
+    /// Focus / do-not-disturb: native notifications are suppressed until this
+    /// epoch-ms instant. `0` = off, `-1` = until the user turns it off.
+    pub focus_until: i64,
+    /// While focus mode is active, also hide the sidebar window.
+    pub focus_hides_sidebar: bool,
     /// Mask account e-mails everywhere they render (screen sharing).
     pub hide_account_email: bool,
     pub always_on_top: bool,
@@ -547,6 +552,8 @@ impl Default for Settings {
             sizes: SizeSettings::default(),
             notifications: false,
             forecast_notifications: true,
+            focus_until: 0,
+            focus_hides_sidebar: false,
             hide_account_email: false,
             always_on_top: true,
         }
