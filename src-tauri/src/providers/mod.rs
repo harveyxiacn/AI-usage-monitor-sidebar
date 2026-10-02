@@ -50,6 +50,11 @@ pub struct ProviderCtx {
     pub cache_dir: Option<PathBuf>,
     /// value sent as `User-Agent`
     pub user_agent: String,
+    /// Replaces the scheme + host of every provider endpoint (`http://127.0.0.1:PORT`);
+    /// only tests set it, to point a provider at a local stub server.
+    pub api_base: Option<String>,
+    /// Pause before the single transient-failure retry (`send_with_retry`).
+    pub retry_delay: Duration,
 }
 
 impl Default for ProviderCtx {
@@ -57,6 +62,8 @@ impl Default for ProviderCtx {
         Self {
             cache_dir: None,
             user_agent: default_user_agent(),
+            api_base: None,
+            retry_delay: RETRY_DELAY,
         }
     }
 }
@@ -66,9 +73,55 @@ impl ProviderCtx {
     pub fn with_data_dir(data_dir: &std::path::Path) -> Self {
         Self {
             cache_dir: Some(data_dir.join("cache")),
-            user_agent: default_user_agent(),
+            ..Self::default()
         }
     }
+
+    /// `default_url`, or the same path on `api_base` when one is set.
+    pub fn endpoint(&self, default_url: &str) -> String {
+        let Some(base) = &self.api_base else {
+            return default_url.to_string();
+        };
+        let path = default_url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
+            .unwrap_or("");
+        format!("{}{path}", base.trim_end_matches('/'))
+    }
+}
+
+/// Default pause before retrying a transient failure.
+pub const RETRY_DELAY: Duration = Duration::from_millis(1_500);
+
+/// `true` for the gateway statuses worth one more try. 401/403/429 and
+/// every other answer are final: retrying them would only burn rate limit.
+pub fn is_transient_status(status: u16) -> bool {
+    matches!(status, 502..=504)
+}
+
+/// Connection resets, refused/aborted connects and timeouts.
+fn is_transient_error(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request()
+}
+
+/// Send a request, retrying once after `ctx.retry_delay` when the first
+/// attempt hit a transport error or an HTTP 502/503/504. `build` creates a
+/// fresh request for each attempt.
+pub async fn send_with_retry(
+    ctx: &ProviderCtx,
+    build: impl Fn() -> reqwest::RequestBuilder,
+) -> reqwest::Result<reqwest::Response> {
+    let first = build().send().await;
+    let transient = match &first {
+        Ok(resp) => is_transient_status(resp.status().as_u16()),
+        Err(e) => is_transient_error(e),
+    };
+    if !transient {
+        return first;
+    }
+    log::debug!("transient provider failure; retrying once");
+    tokio::time::sleep(ctx.retry_delay).await;
+    build().send().await
 }
 
 pub fn default_user_agent() -> String {
