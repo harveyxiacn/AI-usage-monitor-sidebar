@@ -11,6 +11,8 @@
   "reset.inMin": "{m} 分钟后重置",
   "reset.inHourMin": "{h} 小时 {m} 分后重置",
   "reset.at": "{when} 重置",
+  "reset.atInD": "{when} 重置（{d} 天后）",
+  "reset.atInDH": "{when} 重置（{d} 天 {h} 小时后）",
   "reset.unknown": "—",
   "forecast.runsOutMin": "约 {m} 分钟后用尽",
   "forecast.runsOutHourMin": "约 {h} 小时 {m} 分后用尽",
