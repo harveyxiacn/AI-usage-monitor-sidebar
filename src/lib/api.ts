@@ -165,6 +165,21 @@ export async function exportUsageCsv(csv: string, suggestedName: string): Promis
   return suggestedName;
 }
 
+/** Native save dialog on desktop (the PNG bytes of a share card); a download in browser previews. null = cancelled. */
+export async function saveShareCard(png: Uint8Array, suggestedName: string): Promise<string | null> {
+  if (isTauri()) return invoke<string | null>('save_share_card', { png: Array.from(png), suggestedNameHint: suggestedName });
+  const url = URL.createObjectURL(new Blob([png as BlobPart], { type: 'image/png' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = suggestedName;
+  document.body.appendChild(link);
+  try { link.click(); } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
+  return suggestedName;
+}
+
 // ---- updater ----
 export const getUpdateStatus = () => invoke<UpdateStatus>('get_update_status');
 /** Reads the release feed; never downloads anything. */
@@ -188,6 +203,8 @@ export const hoverReport = (source: 'bar' | 'popover', hovered: boolean) => invo
 export const openDashboard = (tab?: DashboardTab) => invoke<void>('open_dashboard', { tab: tab ?? null });
 export const applyWindowSettings = () => invoke<void>('apply_window_settings');
 export const getMonitors = () => invoke<MonitorInfo[]>('get_monitors');
+/** Show or hide the whole bar window (the tray's "Show/Hide sidebar"). */
+export const toggleSidebar = () => invoke<void>('toggle_sidebar');
 export const quitApp = () => invoke<void>('quit_app');
 
 // ---- events ----

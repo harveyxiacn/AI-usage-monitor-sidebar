@@ -836,6 +836,23 @@ mod tests {
     }
 
     #[test]
+    fn tray_display_defaults_to_icon_and_ignores_unknown_values() {
+        let base = Settings::default();
+        assert_eq!(base.tray_display, crate::model::TrayDisplay::Icon);
+        let old = merge(&base, &json!({"theme": "light"}));
+        assert_eq!(old.tray_display, crate::model::TrayDisplay::Icon);
+        let invalid = merge(&base, &json!({"trayDisplay": "title"}));
+        assert_eq!(invalid.tray_display, crate::model::TrayDisplay::Icon);
+        let percent = merge(&base, &json!({"trayDisplay": "percent"}));
+        assert_eq!(percent.tray_display, crate::model::TrayDisplay::Percent);
+        let wire = serde_json::to_value(&percent).unwrap();
+        assert_eq!(wire["trayDisplay"], "percent");
+        // an invalid value does not undo an earlier valid one
+        let kept = merge(&percent, &json!({"trayDisplay": 7}));
+        assert_eq!(kept.tray_display, crate::model::TrayDisplay::Percent);
+    }
+
+    #[test]
     fn an_experimental_provider_is_seeded_switched_off_without_credentials() {
         // The machine running the tests has no ~/.config/github-copilot, so
         // the registry default is "off" — an unverified quota source must

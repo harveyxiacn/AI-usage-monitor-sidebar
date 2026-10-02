@@ -32,7 +32,7 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   sidebarItems: ['sidebarItems'],
   sizeColour: ['colors', 'sizes'],
   position: ['edge', 'verticalAlign', 'verticalOffset', 'monitor', 'alwaysOnTop'],
-  behaviour: ['autoHide', 'autoHideDelayMs', 'popoverTimeoutSec', 'collapsedWidth', 'refreshIntervalSec', 'adaptiveRefresh', 'autostart'],
+  behaviour: ['autoHide', 'autoHideDelayMs', 'popoverTimeoutSec', 'collapsedWidth', 'refreshIntervalSec', 'adaptiveRefresh', 'autostart', 'trayDisplay'],
   notifications: ['notifications', 'forecastNotifications', 'thresholdNotifications', 'budgetNotifications', 'weeklySummary', 'webhook', 'thresholds', 'focusUntil', 'focusHidesSidebar'],
   privacy: ['hideAccountEmail'],
   shortcuts: ['shortcutToggleSidebar', 'shortcutOpenDashboard'],

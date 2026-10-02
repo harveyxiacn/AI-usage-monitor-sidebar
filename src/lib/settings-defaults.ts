@@ -88,6 +88,7 @@ export const defaultSettings: Settings = {
   hideAccountEmail: false,
   exportSnapshot: false,
   pollingPaused: false,
+  trayDisplay: 'icon',
   alwaysOnTop: true,
   skippedVersion: '',
   lastSeenVersion: '',

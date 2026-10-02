@@ -9,6 +9,7 @@
   import { analysisDefaults, mergeMessagePages, pageBounds, sessionIdentity } from '$lib/sessions';
   import { filtersFromParams } from '$lib/session-insights';
   import { sessionViewState } from '$lib/session-ui-state';
+  import { VIEW_REQUEST_EVENT, type ViewRequest } from '$lib/palette-nav';
   import AnalysisSettings from './AnalysisSettings.svelte';
   import SessionEvaluation from './SessionEvaluation.svelte';
   import Segmented from './history/Segmented.svelte';
@@ -133,6 +134,9 @@
     if (element) element.scrollIntoView({ block: 'nearest', behavior: 'instant' }); else notice = st('evidenceMissing');
   }
   onMount(() => {
+    // the command palette asks an already mounted tab to switch sub-view
+    const onViewRequest = (e: Event) => { const r = (e as CustomEvent<ViewRequest>).detail; if (r.tab === 'sessions') { view = r.view; fromInsights = false; } };
+    window.addEventListener(VIEW_REQUEST_EVENT, onViewRequest);
     const params = new URLSearchParams(window.location.search);
     const linkedSession = params.get('session');
     const linkedProvider = params.get('provider');
@@ -155,7 +159,7 @@
     // A title/prompt-only change need not add token events.
     void onIngestProgress(stats => { if (!stats.running) refresh(); }).then(un => disposed ? un() : unlisten = un).catch(() => {});
     document.addEventListener('visibilitychange', resume);
-    return () => { disposed = true; listVersion++; detailVersion++; clearTimeout(timer); unlisten?.(); document.removeEventListener('visibilitychange', resume); };
+    return () => { disposed = true; listVersion++; detailVersion++; clearTimeout(timer); unlisten?.(); document.removeEventListener('visibilitychange', resume); window.removeEventListener(VIEW_REQUEST_EVENT, onViewRequest); };
   });
 </script>
 

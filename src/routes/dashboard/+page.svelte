@@ -7,13 +7,16 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import CommandPalette from '$lib/components/dashboard/CommandPalette.svelte';
   import OverviewTab from '$lib/components/dashboard/OverviewTab.svelte';
   import OnboardingWizard from '$lib/components/dashboard/OnboardingWizard.svelte';
   import WhatsNew from '$lib/components/dashboard/WhatsNew.svelte';
+  import ShareCardModal from '$lib/components/dashboard/ShareCardModal.svelte';
   import { st } from '$lib/session-labels.svelte';
   import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
   import { DASHBOARD_TAB_EVENT } from '$lib/dashboard-nav';
   import { t } from '$lib/i18n/i18n.svelte';
+  import { overlays } from '$lib/stores/overlays.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
@@ -26,6 +29,9 @@
   // stamped before the first applyTheme() effect so the theme store knows
   // which window it is (the custom text colour is widget-only)
   markWindow('dashboard');
+
+  /** the key the palette hint advertises: Cmd+K on macOS, Ctrl+K elsewhere */
+  const paletteKey = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K';
 
   const TABS: DashboardTab[] = ['overview', 'history', 'sessions', 'settings'];
   let HistoryTab = $state<typeof import('$lib/components/dashboard/HistoryTab.svelte').default | null>(null);
@@ -100,6 +106,17 @@
         </button>
       {/each}
     </nav>
+    <div class="topbar-actions">
+      <button class="btn" type="button" onclick={() => (overlays.share = true)}>{t('share.open')}</button>
+      <button
+        class="btn palette-hint"
+        type="button"
+        aria-label={t('palette.open')}
+        aria-keyshortcuts="Control+K Meta+K"
+        title={t('palette.open')}
+        onclick={() => (overlays.palette = true)}
+      ><kbd>{paletteKey}</kbd></button>
+    </div>
   </header>
 
   {#if updateBannerVisible(update.available, settings.value.skippedVersion, updateDismissed)}
@@ -154,6 +171,9 @@
   {/if}
 </div>
 
+<CommandPalette />
+<ShareCardModal />
+
 <style>
   .app {
     display: flex;
@@ -182,6 +202,18 @@
   .preview-badge {
     color: var(--muted);
     font-size: 0.6875rem;
+  }
+
+  .topbar-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+  }
+
+  .palette-hint kbd {
+    font: inherit;
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
   }
 
   .tabs {
@@ -264,6 +296,10 @@
 
     .tabs button.active::after {
       display: none;
+    }
+
+    .topbar-actions {
+      margin-left: 0;
     }
 
     main {

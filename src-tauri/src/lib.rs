@@ -144,6 +144,7 @@ pub fn run() {
             commands::alerts::get_weekly_summary,
             commands::onboarding::get_provider_setup,
             export::export_usage_csv,
+            export::save_share_card,
             backup::backup_data,
             backup::restore_data,
             backup::restart_app,
@@ -165,6 +166,7 @@ pub fn run() {
             window::open_dashboard,
             window::apply_window_settings,
             window::get_monitors,
+            window::toggle_sidebar,
             window::quit_app,
             window::debug_log,
         ])
