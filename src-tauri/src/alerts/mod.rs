@@ -113,23 +113,33 @@ pub fn on_snapshot(app: &AppHandle, snapshot: &AppSnapshot) {
         return;
     }
     let chinese = crate::window::tray::prefers_chinese(&settings);
-    for alert in snapshot_alerts(snapshot, &settings, now, chinese) {
+    let alerts = {
+        let mut guard = THRESHOLDS.lock();
+        snapshot_alerts(
+            guard.get_or_insert_with(Default::default),
+            snapshot,
+            &settings,
+            now,
+            chinese,
+        )
+    };
+    for alert in alerts {
         notifier::deliver(app, &settings, alert);
     }
 }
 
 /// The alerts one snapshot raises. Threshold state is advanced even while the
 /// toggles are off, so switching notifications on later does not announce
-/// crossings that already happened.
+/// crossings that already happened. `state` is the process-wide `THRESHOLDS`
+/// in the app; tests pass their own so they cannot prune each other's keys.
 fn snapshot_alerts(
+    state: &mut threshold::ThresholdState,
     snapshot: &AppSnapshot,
     settings: &Settings,
     now_ms: i64,
     chinese: bool,
 ) -> Vec<Alert> {
     let mut out = Vec::new();
-    let mut guard = THRESHOLDS.lock();
-    let state = guard.get_or_insert_with(Default::default);
     let mut live = BTreeSet::new();
     for q in &snapshot.providers {
         if q.status != ProviderStatus::Ok {
@@ -339,39 +349,40 @@ mod tests {
 
     #[test]
     fn crossings_follow_the_toggles_and_seed_while_off() {
-        // use a provider id no other test shares: THRESHOLDS is process-wide
+        let mut st = threshold::ThresholdState::default();
         let p = "alerts-test";
         let mut s = Settings::default();
         let r = "2030-01-01T05:00:00Z";
         // while notifications are off the state still tracks the window …
-        assert!(snapshot_alerts(&snap(quota(p, 10.0, r)), &s, 0, false).is_empty());
-        assert!(snapshot_alerts(&snap(quota(p, 80.0, r)), &s, 0, false).is_empty());
+        assert!(snapshot_alerts(&mut st, &snap(quota(p, 10.0, r)), &s, 0, false).is_empty());
+        assert!(snapshot_alerts(&mut st, &snap(quota(p, 80.0, r)), &s, 0, false).is_empty());
         // … so turning them on does not announce the crossing that happened
         s.notifications = true;
-        assert!(snapshot_alerts(&snap(quota(p, 81.0, r)), &s, 0, false).is_empty());
-        let alerts = snapshot_alerts(&snap(quota(p, 95.0, r)), &s, 0, false);
+        assert!(snapshot_alerts(&mut st, &snap(quota(p, 81.0, r)), &s, 0, false).is_empty());
+        let alerts = snapshot_alerts(&mut st, &snap(quota(p, 95.0, r)), &s, 0, false);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].level, notifier::Level::Critical);
-        assert!(snapshot_alerts(&snap(quota(p, 96.0, r)), &s, 0, false).is_empty());
+        assert!(snapshot_alerts(&mut st, &snap(quota(p, 96.0, r)), &s, 0, false).is_empty());
         // the type toggle silences it without disturbing the bookkeeping
         s.threshold_notifications = false;
         let r2 = "2030-01-01T10:00:00Z";
-        snapshot_alerts(&snap(quota(p, 1.0, r2)), &s, 0, false);
-        assert!(snapshot_alerts(&snap(quota(p, 95.0, r2)), &s, 0, false).is_empty());
+        snapshot_alerts(&mut st, &snap(quota(p, 1.0, r2)), &s, 0, false);
+        assert!(snapshot_alerts(&mut st, &snap(quota(p, 95.0, r2)), &s, 0, false).is_empty());
     }
 
     #[test]
     fn providers_that_are_not_ok_never_alert() {
+        let mut st = threshold::ThresholdState::default();
         let p = "alerts-test-err";
         let s = Settings {
             notifications: true,
             ..Settings::default()
         };
         let r = "2030-01-01T05:00:00Z";
-        snapshot_alerts(&snap(quota(p, 10.0, r)), &s, 0, false);
+        snapshot_alerts(&mut st, &snap(quota(p, 10.0, r)), &s, 0, false);
         let mut q = quota(p, 99.0, r);
         q.status = ProviderStatus::Error;
-        assert!(snapshot_alerts(&snap(q), &s, 0, false).is_empty());
+        assert!(snapshot_alerts(&mut st, &snap(q), &s, 0, false).is_empty());
     }
 
     #[test]
@@ -404,7 +415,7 @@ mod tests {
 
     #[test]
     fn two_accounts_of_one_provider_alert_independently() {
-        // THRESHOLDS is process-wide: use an id no other test shares
+        let mut st = threshold::ThresholdState::default();
         let p = "alerts-test-acct";
         let s = Settings {
             notifications: true,
@@ -423,14 +434,16 @@ mod tests {
             providers: vec![a, b],
             ..AppSnapshot::default()
         };
-        assert!(snapshot_alerts(&both(primary(10.0), work(10.0)), &s, 0, false).is_empty());
+        assert!(
+            snapshot_alerts(&mut st, &both(primary(10.0), work(10.0)), &s, 0, false).is_empty()
+        );
         // only the work account crosses: exactly one alert, and it names it
-        let alerts = snapshot_alerts(&both(primary(10.0), work(95.0)), &s, 0, false);
+        let alerts = snapshot_alerts(&mut st, &both(primary(10.0), work(95.0)), &s, 0, false);
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].title.contains("Work"), "{}", alerts[0].title);
         assert_eq!(alerts[0].provider.as_deref(), Some("alerts-test-acct@work"));
         // the primary crossing later is its own event, the work one stays quiet
-        let alerts = snapshot_alerts(&both(primary(95.0), work(96.0)), &s, 0, false);
+        let alerts = snapshot_alerts(&mut st, &both(primary(95.0), work(96.0)), &s, 0, false);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].provider.as_deref(), Some("alerts-test-acct"));
     }
