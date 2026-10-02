@@ -222,8 +222,6 @@ below list every key exactly once; `pnpm check:agents`
 | `labelContent` | `"percent"`, `"reset"`, `"both"` | what the label says: percentage, reset countdown or both |
 | `sidebarAnimations` | `true`, `false` | one-shot pulse when a ring crosses a threshold and a flash on a reset; reduced motion turns them off |
 | `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
-| `showScopedRing` | `true` | deprecated alias of `sidebarItems.scoped` |
-| `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications; each 1 – 100 and `warn` < `critical` |
 
 ### Providers, accounts and polling
@@ -267,6 +265,11 @@ below list every key exactly once; `pnpm check:agents`
 | `lastSeenVersion` | `""` | version whose "What's new" was last shown; leave it to the app |
 | `onboarded` | `false`, `true` | the first-run wizard was done or skipped; a settings file that already exists counts as onboarded |
 | `customPresets` | `{}` | the user's saved presets, name → partial settings object (at most 10, names up to 40 characters; a preset cannot carry `customPresets` or `focusUntil`). Built-in presets (minimal, power, screenShare, cyber) live in `src/lib/builtin-presets.json` |
+
+Old files may still carry `showScopedRing` / `showPercentLabel` (removed in
+0.7): the app reads them as `sidebarItems.scoped` / `sidebarItems.percentLabel`
+(the nested key wins if both are present) and never writes them back. Write the
+nested keys.
 
 Example — Chinese UI, left edge, auto-hide, start at login:
 

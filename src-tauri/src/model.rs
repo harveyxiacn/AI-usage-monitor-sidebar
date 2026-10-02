@@ -400,15 +400,15 @@ pub struct SidebarItems {
     pub five_hour: bool,
     /// account-wide weekly windows
     pub weekly: bool,
-    /// per-model / per-feature windows (any window with a `scope`); replaces
-    /// the deprecated top-level `showScopedRing`
+    /// per-model / per-feature windows (any window with a `scope`); older
+    /// files spelled this top-level `showScopedRing` (still read, never written)
     pub scoped: bool,
     /// account-wide windows that are neither 5-hour nor weekly
     pub other: bool,
     /// provider mark in the middle of a ring group
     pub logo: bool,
-    /// percent under a ring group; replaces the deprecated top-level
-    /// `showPercentLabel`
+    /// percent under a ring group; older files spelled this top-level
+    /// `showPercentLabel` (still read, never written)
     pub percent_label: bool,
     /// the "⋯" button (a grip is still drawn when nothing else is left)
     pub more_button: bool,
@@ -587,9 +587,6 @@ pub struct Settings {
     pub popover_timeout_sec: u64,
     pub collapsed_width: u32,
     pub ring_mode: RingMode,
-    /// Deprecated, mirrors `sidebar_items.scoped` (kept so older builds and
-    /// hand-written settings files keep working).
-    pub show_scoped_ring: bool,
     pub percent_mode: PercentMode,
     /// Render the percentage below the ring (legacy layout) or in its center.
     #[serde(default)]
@@ -603,8 +600,6 @@ pub struct Settings {
     /// One-shot pulse / flash on threshold crossings and resets.
     #[serde(default = "default_true")]
     pub sidebar_animations: bool,
-    /// Deprecated, mirrors `sidebar_items.percent_label`.
-    pub show_percent_label: bool,
     pub sidebar_items: SidebarItems,
     pub refresh_interval_sec: u64,
     /// Stretch the polling period for providers whose session logs have been
@@ -724,13 +719,11 @@ impl Default for Settings {
             popover_timeout_sec: 10,
             collapsed_width: 6,
             ring_mode: RingMode::Concentric,
-            show_scoped_ring: true,
             percent_mode: PercentMode::Used,
             percent_position: PercentPosition::default(),
             label_content: LabelContent::default(),
             ring_style: RingStyle::default(),
             sidebar_animations: true,
-            show_percent_label: true,
             sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
             adaptive_refresh: true,

@@ -261,8 +261,6 @@ export interface Settings {
   /** width of the visible handle when collapsed (px) */
   collapsedWidth: number;
   ringMode: RingMode;
-  /** @deprecated mirror of `sidebarItems.scoped`, kept so old settings files load */
-  showScopedRing: boolean;
   percentMode: PercentMode;
   /** `below` preserves the original label; `center` replaces the provider logo. */
   percentPosition: PercentPosition;
@@ -272,8 +270,6 @@ export interface Settings {
   ringStyle: RingStyle;
   /** one-shot pulse on threshold crossings and flash on resets */
   sidebarAnimations: boolean;
-  /** @deprecated mirror of `sidebarItems.percentLabel` */
-  showPercentLabel: boolean;
   /** what the floating bar may draw; hidden items are still tracked */
   sidebarItems: SidebarItems;
   refreshIntervalSec: number;

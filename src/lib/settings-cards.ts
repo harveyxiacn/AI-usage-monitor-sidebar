@@ -46,8 +46,8 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
 
 export const CARD_IDS = Object.keys(CARD_KEYS) as CardId[];
 
-/** Keys no card resets: schema version, the deprecated mirrors, the user's presets, first-run bookkeeping. */
-export const UNRESET_KEYS: readonly Key[] = ['version', 'showScopedRing', 'showPercentLabel', 'customPresets', 'lastSeenVersion', 'onboarded'];
+/** Keys no card resets: schema version, the user's presets, first-run bookkeeping. */
+export const UNRESET_KEYS: readonly Key[] = ['version', 'customPresets', 'lastSeenVersion', 'onboarded'];
 
 /** Patch that sets each of `keys` to its default (nested groups in full). */
 export function defaultsPatch(keys: readonly Key[], defaults: Settings): SettingsPatch {

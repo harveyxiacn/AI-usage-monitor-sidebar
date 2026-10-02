@@ -77,6 +77,7 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
     let Some(patch) = patch.as_object() else {
         return clamp(base.clone());
     };
+    let patch = &migrate_legacy_keys(patch);
     let mut current = match serde_json::to_value(base) {
         Ok(Value::Object(o)) => o,
         _ => return clamp(base.clone()),
@@ -140,33 +141,40 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         }
     }
     let merged = serde_json::from_value::<Settings>(Value::Object(current)).unwrap_or_default();
-    clamp(reconcile_legacy(merged, patch))
+    clamp(merged)
 }
 
-/// Bridge between the deprecated top-level `showScopedRing` /
-/// `showPercentLabel` and their new home in `sidebarItems`.
+/// Old spellings of settings that moved: (top-level key, member of `sidebarItems`).
+const LEGACY_SIDEBAR_KEYS: [(&str, &str); 2] = [
+    ("showScopedRing", "scoped"),
+    ("showPercentLabel", "percentLabel"),
+];
+
+/// Read the deprecated top-level `showScopedRing` / `showPercentLabel` of an
+/// old settings file (or of anything that still writes them) as the
+/// `sidebarItems` member that replaced them, and drop the flat key.
 ///
-/// * an old settings file (or anything still writing the flat keys) has its
-///   value copied into `sidebarItems`, so nothing changes under the user;
-/// * when the same patch carries both spellings the nested one wins, because
-///   that is the one the UI writes;
-/// * afterwards the flat fields are kept as a mirror of the nested ones, so a
-///   file written by this version is still understood by an older build.
-///
-/// Every `Settings` that leaves `merge` is therefore consistent, which is what
-/// makes the first rule safe to apply to a merged (not raw) value.
-fn reconcile_legacy(mut s: Settings, patch: &serde_json::Map<String, Value>) -> Settings {
-    let nested = patch.get("sidebarItems").and_then(Value::as_object);
-    let patched = |key: &str| nested.is_some_and(|o| o.contains_key(key));
-    if patch.contains_key("showScopedRing") && !patched("scoped") {
-        s.sidebar_items.scoped = s.show_scoped_ring;
+/// When the same patch carries both spellings the nested one wins, because
+/// that is the one the UI writes. The flat keys are no longer part of
+/// `Settings`: they are read here and never written back.
+fn migrate_legacy_keys(patch: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    let mut out = patch.clone();
+    for (flat, nested) in LEGACY_SIDEBAR_KEYS {
+        let Some(value) = out.remove(flat) else {
+            continue;
+        };
+        if !value.is_boolean() {
+            log::warn!("settings: ignoring `{flat}` (not a boolean)");
+            continue;
+        }
+        let items = out
+            .entry("sidebarItems")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Value::Object(items) = items {
+            items.entry(nested).or_insert(value);
+        }
     }
-    if patch.contains_key("showPercentLabel") && !patched("percentLabel") {
-        s.sidebar_items.percent_label = s.show_percent_label;
-    }
-    s.show_scoped_ring = s.sidebar_items.scoped;
-    s.show_percent_label = s.sidebar_items.percent_label;
-    s
+    out
 }
 
 /// `value` if it is a CSS hex colour (or empty), otherwise `fallback`.
@@ -788,11 +796,14 @@ mod tests {
             "migration touches nothing else"
         );
 
-        // the UI writes the nested keys; the flat ones follow so a downgrade
-        // still sees the user's choice
+        // the UI writes the nested keys; the flat ones are not written any more
         let merged = merge(&base, &json!({"sidebarItems": {"percentLabel": false}}));
-        assert!(!merged.show_percent_label);
-        assert!(merged.show_scoped_ring);
+        assert!(!merged.sidebar_items.percent_label);
+        assert!(merged.sidebar_items.scoped);
+        let written = serde_json::to_value(&merged).unwrap();
+        assert!(written.get("showScopedRing").is_none());
+        assert!(written.get("showPercentLabel").is_none());
+        assert_eq!(written["sidebarItems"]["percentLabel"], json!(false));
 
         // both spellings in one patch: the nested one wins
         let merged = merge(
@@ -800,7 +811,36 @@ mod tests {
             &json!({"showScopedRing": true, "sidebarItems": {"scoped": false}}),
         );
         assert!(!merged.sidebar_items.scoped);
-        assert!(!merged.show_scoped_ring);
+
+        // a flat flag of the wrong type is ignored, the item keeps its value
+        let merged = merge(&base, &json!({"showScopedRing": "no"}));
+        assert!(merged.sidebar_items.scoped);
+
+        // a hand-written file with a nested object that lacks the member
+        let merged = merge(
+            &base,
+            &json!({"showPercentLabel": false, "sidebarItems": {"weekly": false}}),
+        );
+        assert!(!merged.sidebar_items.percent_label);
+        assert!(!merged.sidebar_items.weekly);
+    }
+
+    #[test]
+    fn a_file_written_by_v06_with_both_spellings_loads_and_is_rewritten_without_the_flat_keys() {
+        let dir = tempdir();
+        std::fs::write(
+            settings_path(&dir),
+            r#"{"showScopedRing":false,"showPercentLabel":false,
+                "sidebarItems":{"scoped":false,"percentLabel":false,"logo":true}}"#,
+        )
+        .unwrap();
+        let loaded = load(&dir);
+        assert!(!loaded.sidebar_items.scoped && !loaded.sidebar_items.percent_label);
+        save(&dir, &loaded).unwrap();
+        let text = std::fs::read_to_string(settings_path(&dir)).unwrap();
+        assert!(!text.contains("showScopedRing") && !text.contains("showPercentLabel"));
+        assert_eq!(load(&dir), loaded);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
