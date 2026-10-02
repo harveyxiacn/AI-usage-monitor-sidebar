@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "language": "zh-CN",
+  "theme": "light",
+  "surfaceStyle": "cyber",
+  "cyberAccent": "synthwave",
+  "edge": "left",
+  "verticalAlign": "top",
+  "verticalOffset": 120,
+  "monitor": "DISPLAY2",
+  "autoHide": true,
+  "autoHideDelayMs": 1500,
+  "popoverTimeoutSec": 25,
+  "collapsedWidth": 10,
+  "ringMode": "all",
+  "showScopedRing": false,
+  "percentMode": "remaining",
+  "showPercentLabel": true,
+  "sidebarItems": {
+    "fiveHour": true,
+    "weekly": false,
+    "scoped": false,
+    "other": true,
+    "logo": false,
+    "percentLabel": true,
+    "moreButton": true
+  },
+  "refreshIntervalSec": 180,
+  "adaptiveRefresh": false,
+  "providers": {
+    "claude": {
+      "enabled": true,
+      "showInSidebar": true,
+      "order": 1
+    },
+    "codex": {
+      "enabled": false,
+      "showInSidebar": false,
+      "order": 0
+    },
+    "copilot": {
+      "enabled": false,
+      "showInSidebar": true,
+      "order": 2
+    }
+  },
+  "ingestEnabled": false,
+  "pricingUrl": "",
+  "monthlyBudgetUsd": 150,
+  "autostart": true,
+  "autoUpdateCheck": false,
+  "shortcutToggleSidebar": "Ctrl+Alt+U",
+  "shortcutOpenDashboard": "Ctrl+Alt+D",
+  "opacity": 0.8,
+  "scale": 1.25,
+  "thresholds": {
+    "warn": 60,
+    "critical": 85
+  },
+  "colors": {
+    "claude": "#112233",
+    "codex": "#10a37f",
+    "copilot": "#8250df",
+    "warn": "#f5c542",
+    "critical": "#ff3b30",
+    "surface": "#101010",
+    "text": ""
+  },
+  "sizes": {
+    "ringSize": 64,
+    "ringStroke": 4.5,
+    "barGap": 18,
+    "barPadding": 10,
+    "cornerRadius": 26,
+    "labelSize": 13
+  },
+  "notifications": true,
+  "forecastNotifications": false,
+  "hideAccountEmail": true,
+  "alwaysOnTop": false
+}

@@ -326,7 +326,12 @@ fn the_current_queries_read_migrated_data() {
         assert_eq!(all[0].used_percent, 12.5);
         // '' selects the primary account; the v0.6.0 fixture has one "work" sample
         let primary = quota(Some(String::new()));
-        assert_eq!(primary.len(), if f.schema == 3 { 2 } else { 3 }, "{}", f.name);
+        assert_eq!(
+            primary.len(),
+            if f.schema == 3 { 2 } else { 3 },
+            "{}",
+            f.name
+        );
         drop(db);
         cleanup(&path);
     }
@@ -343,13 +348,21 @@ fn a_migration_that_fails_midway_rolls_back_completely() {
         .unwrap();
     let state = |p: &Path| {
         let c = raw(p);
-        (shape(&c), dump(&c, "quota_samples", "id"), schema_version(&c))
+        (
+            shape(&c),
+            dump(&c, "quota_samples", "id"),
+            schema_version(&c),
+        )
     };
     let before = state(&path);
     Db::open(&path)
         .err()
         .expect("the sabotaged migration must fail");
-    assert_eq!(state(&path), before, "a failed migration must leave no trace");
+    assert_eq!(
+        state(&path),
+        before,
+        "a failed migration must leave no trace"
+    );
     assert_eq!(before.2, 2);
 
     // fixing the cause lets the next start complete the upgrade, data intact
