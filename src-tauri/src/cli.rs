@@ -1,4 +1,5 @@
 //! `ai-usage-sidebar --print [--format json|line|statusline] [--provider ID]`
+//! and `ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]`
 //!
 //! Prints the numbers from `snapshot.json` (see `export_snapshot.rs`) and
 //! exits, so a shell prompt, tmux, polybar or Claude Code's `statusLine` can
@@ -281,12 +282,154 @@ pub fn run(
     }
 }
 
+// ---------- --restore-pre-upgrade ----------
+
+const RESTORE_USAGE: &str = "usage: ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RestoreArgs {
+    /// Only list the backups.
+    pub list: bool,
+    /// A backup file name from `--list`; the newest when absent.
+    pub file: Option<String>,
+}
+
+/// `None` when `--restore-pre-upgrade` is absent. `Some(Err)` for bad arguments.
+pub fn parse_restore_args(args: &[String]) -> Option<Result<RestoreArgs, String>> {
+    if !args.iter().any(|a| a == "--restore-pre-upgrade") {
+        return None;
+    }
+    let mut out = RestoreArgs::default();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let (key, inline) = match arg.split_once('=') {
+            Some((k, v)) if k.starts_with("--") => (k, Some(v.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        match key {
+            "--restore-pre-upgrade" => {}
+            "--list" => out.list = true,
+            "--file" => match inline.or_else(|| it.next().cloned()) {
+                Some(v) if !v.trim().is_empty() => out.file = Some(v),
+                _ => return Some(Err("--file needs a backup file name".into())),
+            },
+            other => {
+                return Some(Err(format!(
+                    "unknown option `{other}` for --restore-pre-upgrade"
+                )))
+            }
+        }
+    }
+    if out.list && out.file.is_some() {
+        return Some(Err("--list and --file cannot be combined".into()));
+    }
+    Some(Ok(out))
+}
+
+/// Lists the automatic pre-upgrade backups, or stages one (the newest unless
+/// `--file`) with the same mechanism as Settings -> Restore. Exit codes: 0 ok;
+/// 2 nothing to restore or staging failed.
+pub fn run_restore(
+    args: &RestoreArgs,
+    data_dir: &Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    use crate::commands::store::compat;
+    let all = compat::list(data_dir);
+    if args.list {
+        if all.is_empty() {
+            let _ = writeln!(
+                out,
+                "No pre-upgrade backups in {}",
+                data_dir.join(compat::BACKUP_DIR).display()
+            );
+            return 0;
+        }
+        for b in &all {
+            let _ = writeln!(
+                out,
+                "{}  schema v{} -> v{}  {}  {}  {}",
+                b.name,
+                b.from_version,
+                b.to_version,
+                b.stamp,
+                if b.settings_path.is_some() {
+                    "with settings"
+                } else {
+                    "database only"
+                },
+                b.path
+            );
+        }
+        return 0;
+    }
+    let chosen = match compat::select(data_dir, args.file.as_deref()) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = writeln!(err, "ai-usage-sidebar: {e:#}");
+            return 2;
+        }
+    };
+    let info = match compat::stage(data_dir, &chosen) {
+        Ok(i) => i,
+        Err(e) => {
+            let _ = writeln!(err, "ai-usage-sidebar: cannot stage {}: {e:#}", chosen.name);
+            return 2;
+        }
+    };
+    let _ = writeln!(
+        out,
+        "Staged {} (database schema v{}{}).",
+        chosen.name,
+        info.schema_version.unwrap_or(chosen.from_version),
+        if info.has_settings {
+            ", with the settings from before the upgrade"
+        } else {
+            ""
+        }
+    );
+    let _ = writeln!(
+        out,
+        "Nothing has been changed yet. The next start of any build that can apply a staged restore\n\
+         (v0.6 and later; the app should not be running now) replaces usage.db{} first and keeps\n\
+         what it replaced in {}.\n\
+         Start the OLDER version you want to go back to. If you start this version instead, it\n\
+         restores the backup and then upgrades it again.\n\
+         A build older than v0.6 cannot apply it: with the app closed, copy {} over\n\
+         {} yourself.",
+        if info.has_settings { " and settings.json" } else { "" },
+        data_dir.join(crate::backup::PRE_RESTORE_DIR).display(),
+        chosen.path,
+        data_dir.join(crate::backup::DB_FILE).display(),
+    );
+    0
+}
+
 /// Entry point called first thing in `main()`. `Some(code)` = handled, exit.
 pub fn handle(args: impl Iterator<Item = OsString>) -> Option<i32> {
     let args: Vec<String> = args
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    if let Some(parsed) = parse_restore_args(&args) {
+        let (mut out, mut err) = (console::stdout(), console::stderr());
+        let parsed = match parsed {
+            Ok(p) => p,
+            Err(message) => {
+                let _ = writeln!(err, "ai-usage-sidebar: {message}\n{RESTORE_USAGE}");
+                return Some(1);
+            }
+        };
+        let Some(dir) = default_data_dir() else {
+            let _ = writeln!(
+                err,
+                "ai-usage-sidebar: cannot locate the app data directory"
+            );
+            return Some(2);
+        };
+        return Some(run_restore(&parsed, &dir, &mut out, &mut err));
+    }
     let parsed = parse_args(&args)?;
     let (mut out, mut err) = (console::stdout(), console::stderr());
     let parsed = match parsed {
@@ -619,5 +762,96 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(parsed.provider.as_deref(), Some("claude@work"));
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use crate::commands::test_support::tempdir;
+
+    fn s(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn restore_flag_parsing() {
+        assert!(parse_restore_args(&s(&["--print"])).is_none());
+        assert!(parse_restore_args(&s(&[])).is_none());
+        assert_eq!(
+            parse_restore_args(&s(&["--restore-pre-upgrade"]))
+                .unwrap()
+                .unwrap(),
+            RestoreArgs::default()
+        );
+        let a = parse_restore_args(&s(&["--restore-pre-upgrade", "--list"]))
+            .unwrap()
+            .unwrap();
+        assert!(a.list && a.file.is_none());
+        let a = parse_restore_args(&s(&["--restore-pre-upgrade", "--file", "x.db"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.file.as_deref(), Some("x.db"));
+        let a = parse_restore_args(&s(&["--file=y.db", "--restore-pre-upgrade"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.file.as_deref(), Some("y.db"));
+        for bad in [
+            &["--restore-pre-upgrade", "--file"][..],
+            &["--restore-pre-upgrade", "--bogus"],
+            &["--restore-pre-upgrade", "--list", "--file", "x"],
+        ] {
+            assert!(parse_restore_args(&s(bad)).unwrap().is_err(), "{bad:?}");
+        }
+    }
+
+    fn run(args: &RestoreArgs, dir: &Path) -> (i32, String, String) {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run_restore(args, dir, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    }
+
+    #[test]
+    fn listing_and_staging_pre_upgrade_backups() {
+        let dir = tempdir();
+        let list = RestoreArgs {
+            list: true,
+            file: None,
+        };
+        let (code, out, _) = run(&list, &dir);
+        assert_eq!((code, out.contains("No pre-upgrade backups")), (0, true));
+        let (code, _, err) = run(&RestoreArgs::default(), &dir);
+        assert_eq!(code, 2);
+        assert!(err.contains("no pre-upgrade backup"), "{err}");
+
+        // an old database, upgraded by Db::open, leaves a backup behind
+        let path = dir.join("usage.db");
+        drop(crate::commands::store::Db::open(&path).unwrap());
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE meta SET value='2' WHERE key='schema_version'", [])
+            .unwrap();
+        drop(crate::commands::store::Db::open(&path).unwrap());
+
+        let (code, out, _) = run(&list, &dir);
+        assert_eq!(code, 0);
+        assert!(out.contains("schema v2 -> v3"), "{out}");
+        let (code, out, err) = run(&RestoreArgs::default(), &dir);
+        assert_eq!(code, 0, "{err}");
+        assert!(out.contains("Nothing has been changed yet"), "{out}");
+        assert!(crate::backup::has_pending(&dir));
+        let (code, _, err) = run(
+            &RestoreArgs {
+                list: false,
+                file: Some("missing.db".into()),
+            },
+            &dir,
+        );
+        assert_eq!(code, 2);
+        assert!(err.contains("missing.db"), "{err}");
     }
 }

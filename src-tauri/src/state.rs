@@ -156,6 +156,8 @@ pub struct AppState {
     /// `None` only when SQLite could not be opened at all; every DB-backed
     /// command then reports a friendly error instead of panicking.
     pub db: Option<Arc<Db>>,
+    /// Why `db` is `None` (newer schema, aborted migration, ...), for the dashboard.
+    pub db_status: crate::commands::store::compat::DbStatus,
     /// The single shared HTTP client (15 s timeout).
     pub http: reqwest::Client,
     pub provider_ctx: ProviderCtx,
@@ -186,13 +188,21 @@ impl AppState {
         );
         let provider_ctx = ProviderCtx::with_data_dir(&data_dir);
 
-        let db = match Db::open(&data_dir.join("usage.db")) {
-            Ok(db) => Some(Arc::new(db)),
-            Err(e) => {
-                log::error!("cannot open usage.db: {e:#}");
-                None
-            }
-        };
+        let supported = crate::commands::store::SCHEMA_VERSION;
+        let (db, db_status) =
+            match Db::open_with_settings(&data_dir.join("usage.db"), Some(&config_dir)) {
+                Ok(db) => (
+                    Some(Arc::new(db)),
+                    crate::commands::store::compat::DbStatus::ok(supported),
+                ),
+                Err(e) => {
+                    log::error!("cannot open usage.db: {e:#}");
+                    (
+                        None,
+                        crate::commands::store::compat::DbStatus::from_error(&e, supported),
+                    )
+                }
+            };
 
         // Seed the snapshot from the on-disk cache so the very first
         // `get_snapshot` (before the scheduler's first fetch) is not empty.
@@ -219,6 +229,7 @@ impl AppState {
             snapshot: RwLock::new(snapshot),
             pricing: RwLock::new(pricing),
             db,
+            db_status,
             http: providers::http_client(&provider_ctx.user_agent),
             provider_ctx,
             ingest_running: Arc::new(AtomicBool::new(false)),
