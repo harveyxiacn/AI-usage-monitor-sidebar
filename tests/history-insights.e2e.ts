@@ -69,11 +69,10 @@ test('the sessions view is a summary that exports CSV and hands its filters to t
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/^ai-usage-sessions-.*.csv$/);
+  expect(download.suggestedFilename()).toMatch(/^ai-usage-sessions-.*\.csv$/);
   const csv = await readFile((await download.path())!, 'utf8');
   expect(csv).toContain('session_id,provider,project,first_activity,last_activity,duration_ms,models');
-  expect(csv.trim().split(/?
-/).length).toBeGreaterThan(1);
+  expect(csv.trim().split(/\r?\n/).length).toBeGreaterThan(1);
   // identifiers and counters only — no prompt or response text anywhere
   expect(csv).not.toMatch(/prompt|message|content/i);
 
