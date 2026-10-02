@@ -20,6 +20,7 @@ import type {
   PricingEntry,
   PricingTable,
   PriceUpdateStatus,
+  ProviderSetup,
   ProviderId,
   ProviderInfo,
   QuotaHistoryQuery,
@@ -31,6 +32,7 @@ import type {
   ShortcutStatus,
   TokenTotals,
   UpdateStatus,
+  WeeklySummary,
   WindowUsageQuery,
 } from './types';
 import { localDateInput } from './history';
@@ -148,6 +150,16 @@ export const mockSettings: Settings = {
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
+  thresholdNotifications: true,
+  budgetNotifications: true,
+  weeklySummary: false,
+  webhook: { enabled: false, url: '', kind: 'generic' },
+  skippedVersion: '',
+  // The browser preview behaves like an installed, already-introduced app so
+  // the wizard and "What's new" do not cover every other screen; `?mock=firstrun`
+  // and `?mock=upgraded` switch them on (see seededSettings).
+  lastSeenVersion: '0.1.0-mock',
+  onboarded: true,
   focusUntil: 0,
   focusHidesSidebar: false,
   hideAccountEmail: false,
@@ -234,7 +246,19 @@ const PRICING: PricingEntry[] = [
 
 let pricing: PricingTable = { entries: structuredClone(PRICING), updatedAt: iso(now - 9 * DAY) };
 
+export const mockWeeklySummary: WeeklySummary = {
+  weekStart: '2026-09-21',
+  weekEnd: '2026-09-27',
+  totalTokens: 48_300_000,
+  requests: 912,
+  estimatedCostUsd: 37.42,
+  busiestDay: '2026-09-24',
+  busiestDayTokens: 14_200_000,
+  limitsHit: 1,
+};
+
 export const mockAppInfo: AppInfo = {
+
   version: '0.1.0-mock',
   dataDir: '~/.local/share/ai-usage-sidebar',
   configDir: '~/.config/ai-usage-sidebar',
@@ -259,7 +283,10 @@ let updateStatus: UpdateStatus = {
   installing: false,
   error: null,
   checkedAt: null,
+  downloaded: 0,
+  total: null,
 };
+
 
 /** Preview pricing feed: an offer is available after a manual check. */
 const MOCK_PRICE_REVISION = '2026-09-23';
@@ -754,6 +781,9 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
  */
 export function seededSettings(): Settings {
   const base = structuredClone(mockSettings);
+  const scenario = mockScenario();
+  if (scenario === 'firstrun') base.onboarded = false;
+  if (scenario === 'upgraded') base.lastSeenVersion = '';
   if (typeof window === 'undefined') return base;
   const raw = new URLSearchParams(window.location.search).get('settings');
   if (!raw) return base;
@@ -773,7 +803,16 @@ function mockScenario(): string {
   return new URLSearchParams(location.search).get('mock') ?? '';
 }
 
+/** Scenarios where no provider is signed in (empty states, first-run wizard). */
+const LOGGED_OUT_SCENARIOS = ['logged-out', 'firstrun'];
+
 function applyScenario(base: AppSnapshot): AppSnapshot {
+  if (LOGGED_OUT_SCENARIOS.includes(mockScenario())) {
+    return {
+      ...base,
+      providers: base.providers.map((p) => ({ ...p, status: 'not_logged_in' as const, windows: [], account: null, planLabel: null, plan: null, error: null })),
+    };
+  }
   if (mockScenario() !== 'rate-limited') return base;
   return {
     ...base,
@@ -951,6 +990,29 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       setTimeout(() => mockEmit('ingest-progress', done), 900);
       return new Promise<T>((resolve) => setTimeout(() => resolve(done as T), 900));
     }
+    case 'send_test_notification': {
+      if (args?.channel === 'webhook') {
+        const { url } = settings.webhook;
+        if (!url.trim().toLowerCase().startsWith('https://')) throw new Error('the webhook URL must be an https:// address');
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (url.includes('fail')) throw new Error('webhook example.invalid/…: could not connect');
+        return undefined as T;
+      }
+      if (mockScenario() === 'notif-denied') throw new Error('notifications are blocked by the system');
+      return undefined as T;
+    }
+    case 'get_notification_permission':
+      return (mockScenario() === 'notif-denied' ? 'denied' : 'granted') as T;
+    case 'get_weekly_summary':
+      return structuredClone(mockWeeklySummary) as T;
+    case 'get_provider_setup': {
+      const loggedOut = LOGGED_OUT_SCENARIOS.includes(mockScenario());
+      const setup: ProviderSetup[] = [
+        { provider: 'claude', configDir: '~/.claude', configDirFound: !loggedOut, credentialsFound: !loggedOut, loginSteps: ['claude', '/login'] },
+        { provider: 'codex', configDir: '~/.codex', configDirFound: true, credentialsFound: !loggedOut, loginSteps: ['codex login'] },
+      ];
+      return setup as T;
+    }
     case 'get_update_status':
       return structuredClone(updateStatus) as T;
     case 'check_for_updates': {
@@ -979,7 +1041,8 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     case 'get_providers':
       return structuredClone(mockProviders) as T;
     case 'get_app_info':
-      return structuredClone(mockAppInfo) as T;
+      // `?mock=upgraded` pretends to be a build that has bundled release notes.
+      return structuredClone(mockScenario() === 'upgraded' ? { ...mockAppInfo, version: '0.5.0' } : mockAppInfo) as T;
     case 'get_monitors':
       return structuredClone(mockMonitors) as T;
     case 'popover_show':
