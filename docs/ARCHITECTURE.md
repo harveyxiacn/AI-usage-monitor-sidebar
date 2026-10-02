@@ -725,6 +725,12 @@ takes `provider`, `sessionId`, optional `offset`/`limit` and returns the summary
 bounded message page, `totalMessages`, `nextOffset`, turns, children, warnings
 and `sourceUpdatedAt` (the indexed transcript source revision time).
 `set_session_alias(provider,sessionId,alias)` changes only the local display name.
+`get_session_insights(query)` takes the same filters (paging and sort ignored) and
+returns one aggregate for the Insights view: KPIs, log-scale cost and active-time
+histograms with median/P90, per-session points, four top lists, tool usage and the
+flag thresholds. It analyses at most the newest 1000 matching sessions
+(`truncated` says so), uses only metrics and tool-name metadata, never content,
+and is implemented in `sessions/insights.rs`.
 
 Metadata tables are additive: `session_metadata`, `session_aliases`,
 `session_sources`, `session_message_refs`, `session_turns`, `session_usage_links`.
