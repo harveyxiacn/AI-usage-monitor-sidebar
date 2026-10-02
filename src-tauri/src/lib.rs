@@ -126,6 +126,10 @@ pub fn run() {
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,
+            commands::alerts::send_test_notification,
+            commands::alerts::get_notification_permission,
+            commands::alerts::get_weekly_summary,
+            commands::onboarding::get_provider_setup,
             export::export_usage_csv,
             // updater
             updater::get_update_status,

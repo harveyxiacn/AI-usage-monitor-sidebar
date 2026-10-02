@@ -6,10 +6,14 @@
 //! scheduler, state, window`, so every other backend module hangs off this one
 //! via `#[path]` declarations.
 
+#[path = "alerts/mod.rs"]
+pub mod alerts;
 #[path = "forecast.rs"]
 pub mod forecast;
 #[path = "ingest/mod.rs"]
 pub mod ingest;
+#[path = "onboarding.rs"]
+pub mod onboarding;
 #[path = "pricing.rs"]
 pub mod pricing;
 #[path = "providers/mod.rs"]
