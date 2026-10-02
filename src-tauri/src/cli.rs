@@ -839,7 +839,7 @@ mod restore_tests {
 
         let (code, out, _) = run(&list, &dir);
         assert_eq!(code, 0);
-        assert!(out.contains("schema v2 -> v3"), "{out}");
+        assert!(out.contains("schema v2 -> v4"), "{out}");
         let (code, out, err) = run(&RestoreArgs::default(), &dir);
         assert_eq!(code, 0, "{err}");
         assert!(out.contains("Nothing has been changed yet"), "{out}");

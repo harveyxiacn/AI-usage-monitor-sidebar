@@ -14,8 +14,9 @@
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import type { ProviderId, QuotaSample } from '$lib/types';
 
-  interface Props { range: HistoryRange | null; provider: ProviderId | null; live: boolean; themeKey: string }
-  let { range, provider, live, themeKey }: Props = $props();
+  /** `account`: the History filter bar's choice (`all`, `primary` or an id); without it the panel has its own selector */
+  interface Props { range: HistoryRange | null; provider: ProviderId | null; live: boolean; themeKey: string; account?: string }
+  let { range, provider, live, themeKey, account }: Props = $props();
   let samples = $state<QuotaSample[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -31,13 +32,14 @@
   let disposed = false;
   const generatedAt = $derived(snapshot.value?.generatedAt);
   /** `all`, `primary` or an extra account id; the selector only exists once an extra account is configured */
-  let accountFilter = $state('all');
+  let ownFilter = $state('all');
+  const accountFilter = $derived(account ?? ownFilter);
   const accountChoices = $derived(
     settings.value.accounts.filter((a) => !provider || a.provider === provider)
   );
   $effect(() => {
     // an account that was removed (or filtered out by the provider) cannot stay selected
-    if (accountFilter !== 'all' && accountFilter !== 'primary' && !accountChoices.some((a) => a.id === accountFilter)) accountFilter = 'all';
+    if (ownFilter !== 'all' && ownFilter !== 'primary' && !accountChoices.some((a) => a.id === ownFilter)) ownFilter = 'all';
   });
   const series = $derived(buildQuotaHistory(samples.filter((s) => accountMatches(s.account, accountFilter))));
   const selected = $derived(series.find((s) => s.key === selectedKey) ?? series[0] ?? null);
@@ -107,9 +109,9 @@
 <section class="card quota-panel" aria-label={t('history.quota.title')} aria-busy={loading}>
   <header>
     <div><h3>{t('history.quota.title')}</h3><p class="muted">{t('history.quota.scopeNote')}</p></div>
-    {#if accountChoices.length > 0}
+    {#if accountChoices.length > 0 && account === undefined}
       <label class="window-picker">{t('history.quota.account')}
-        <select class="field" bind:value={accountFilter}>
+        <select class="field" bind:value={ownFilter}>
           <option value="all">{t('history.quota.account.all')}</option>
           <option value="primary">{t('history.quota.account.primary')}</option>
           {#each accountChoices as a (a.id)}<option value={a.id}>{a.label}</option>{/each}

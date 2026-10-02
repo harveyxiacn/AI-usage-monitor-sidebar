@@ -341,6 +341,8 @@ let priceUpdateStatus: PriceUpdateStatus = {
 interface MockEvent {
   ts: number;
   provider: ProviderId;
+  /** extra account id; "" = the primary account */
+  account: string;
   model: string;
   reasoningEffort: string | null;
   project: string | null;
@@ -412,6 +414,7 @@ const events: MockEvent[] = (() => {
           out.push({
             ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
             provider,
+            account: '',
             model: models[m],
             reasoningEffort: provider === 'codex'
               ? ['medium', 'ultra', 'xhigh', null][(dayBack + hour + m) % 4]
@@ -435,11 +438,71 @@ const events: MockEvent[] = (() => {
   // independently of weekday weights and probabilistic activity generation.
   for (const [index, effort] of ['medium', 'ultra', 'xhigh', null].entries()) {
     for (const model of MODELS.codex) out.push({ ts: startOfToday.getTime() - DAY + index * HOUR,
-      provider: 'codex', model, reasoningEffort: effort, project: PROJECTS[0], session: 'codex-preview-variants',
+      provider: 'codex', account: '', model, reasoningEffort: effort, project: PROJECTS[0], session: 'codex-preview-variants',
       inputTokens: 900, cacheWriteTokens: 0, cacheReadTokens: 600, outputTokens: 150, reasoningTokens: 50, requests: 1 });
   }
   return out.sort((a, b) => a.ts - b.ts);
 })();
+
+/**
+ * Token history of one extra account: lighter than the primary's (a "work"
+ * login used mostly on weekdays), deterministic per account id, only for the
+ * flagship model plus the small one. Separate from `events`, so the primary
+ * dataset is exactly what it was without any extra account.
+ */
+function accountEvents(account: AccountSettings): MockEvent[] {
+  let seed = 0x9e3779b9;
+  for (const ch of account.id) seed = (Math.imul(seed, 31) + ch.charCodeAt(0)) >>> 0;
+  const rnd = lcg(seed);
+  const provider = account.provider as ProviderId;
+  const models = MODELS[provider].slice(0, 2);
+  const out: MockEvent[] = [];
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  for (let dayBack = 59; dayBack >= 0; dayBack -= 1) {
+    const dayStart = startOfToday.getTime() - dayBack * DAY;
+    const weekday = new Date(dayStart).getDay();
+    const dayWeight = weekday === 0 || weekday === 6 ? 0.05 : 0.8;
+    for (let m = 0; m < models.length; m += 1) {
+      for (let hour = 9; hour <= 18; hour += 1) {
+        if (rnd() > 0.45 * dayWeight * (m === 0 ? 1 : 0.4)) continue;
+        const requests = 1 + Math.floor(rnd() * 8);
+        const scale = 700 + rnd() * 3000;
+        const output = Math.round(requests * scale * (0.1 + rnd() * 0.3));
+        out.push({
+          ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
+          provider,
+          account: account.id,
+          model: models[m],
+          reasoningEffort: null,
+          project: PROJECTS[(dayBack + hour) % 2] || null,
+          session: `${provider}-${account.id}-${59 - dayBack}-${hour < 13 ? 'am' : 'pm'}`,
+          inputTokens: Math.round(requests * scale * (0.25 + rnd() * 0.3)),
+          cacheWriteTokens: Math.round(requests * scale * 0.2),
+          cacheReadTokens: Math.round(requests * scale * (1.5 + rnd() * 3)),
+          outputTokens: output,
+          reasoningTokens: Math.round(output * rnd() * 0.2),
+          requests,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+const accountEventCache = new Map<string, MockEvent[]>();
+
+/** The primary account's events plus those of every enabled extra account. */
+function allEvents(): MockEvent[] {
+  const extra = settings.accounts
+    .filter((a) => a.enabled)
+    .flatMap((a) => {
+      const key = `${a.provider}:${a.id}`;
+      if (!accountEventCache.has(key)) accountEventCache.set(key, accountEvents(a));
+      return accountEventCache.get(key)!;
+    });
+  return extra.length === 0 ? events : [...events, ...extra].sort((a, b) => a.ts - b.ts);
+}
 
 // ---------------------------------------------------------------- helpers ---
 
@@ -550,6 +613,9 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const rows = new Map<string, HistoryRow>();
   const totals = emptyTotals();
   const byProvider: Record<string, TokenTotals> = {};
+  const byAccount: Record<string, TokenTotals> = {};
+  const accountCost: Record<string, number | null> = {};
+  let hasExtraAccount = false;
   const projects = new Set<string>();
   let costApproximate = false;
   // cost is accumulated per model then summed, because the price list is
@@ -558,16 +624,17 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const providerCost: Record<string, number | null> = {};
   let totalCost: number | null = 0;
 
-  for (const e of events) {
+  for (const e of allEvents()) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    if (q.account != null && e.account !== q.account) continue;
     const project = e.project ?? '';
     projects.add(project);
     if (q.project != null && project !== q.project) continue;
 
     const bs = bucketStart(e.ts, q.bucket);
     const rowProject = q.groupByProject ? project : q.project ?? null;
-    const key = JSON.stringify([bs, e.provider, q.groupByModel ? e.model : null, q.groupByModel ? e.reasoningEffort : null, rowProject]);
+    const key = JSON.stringify([bs, e.provider, e.account, q.groupByModel ? e.model : null, q.groupByModel ? e.reasoningEffort : null, rowProject]);
     let row = rows.get(key);
     if (!row) {
       row = {
@@ -577,6 +644,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
         model: q.groupByModel ? e.model : null,
         reasoningEffort: q.groupByModel ? e.reasoningEffort : null,
         project: rowProject,
+        ...(e.account ? { account: e.account } : {}),
       };
       rows.set(key, row);
       rowCost.set(key, 0);
@@ -585,6 +653,10 @@ function runHistory(q: HistoryQuery): HistoryResult {
     addInto(totals, e);
     byProvider[e.provider] ??= emptyTotals();
     addInto(byProvider[e.provider], e);
+    const accountKey = e.account ? `${e.provider}@${e.account}` : e.provider;
+    hasExtraAccount ||= e.account !== '';
+    byAccount[accountKey] ??= emptyTotals();
+    addInto(byAccount[accountKey], e);
 
     costApproximate ||= costIsApproximate(e.model);
     const c = costOf(e.model, {
@@ -599,17 +671,20 @@ function runHistory(q: HistoryQuery): HistoryResult {
     if (!(e.provider in providerCost)) providerCost[e.provider] = 0;
     const pc = providerCost[e.provider];
     providerCost[e.provider] = pc == null || c == null ? null : pc + c;
+    accountCost[accountKey] = addCost(accountKey in accountCost ? accountCost[accountKey] : 0, c);
     totalCost = totalCost == null || c == null ? null : totalCost + c;
   }
 
   for (const [key, row] of rows) row.estimatedCostUsd = rowCost.get(key) ?? null;
   for (const p of Object.keys(byProvider)) byProvider[p].estimatedCostUsd = providerCost[p] ?? null;
+  for (const k of Object.keys(byAccount)) byAccount[k].estimatedCostUsd = accountCost[k] ?? null;
   totals.estimatedCostUsd = totalCost;
 
   const list = [...rows.values()].sort(
     (a, b) =>
       Date.parse(a.bucketStart) - Date.parse(b.bucketStart) ||
       a.provider.localeCompare(b.provider) ||
+      (a.account ?? '').localeCompare(b.account ?? '') ||
       (a.model ?? '').localeCompare(b.model ?? '') ||
       (a.reasoningEffort ?? '').localeCompare(b.reasoningEffort ?? '') ||
       (a.project ?? '').localeCompare(b.project ?? '')
@@ -618,6 +693,8 @@ function runHistory(q: HistoryQuery): HistoryResult {
     rows: list,
     totals,
     byProvider,
+    // like the backend: only once an extra account has events in range
+    ...(hasExtraAccount ? { byAccount } : {}),
     projects: [...projects].sort((a, b) => a.localeCompare(b)),
     costApproximate,
   };
@@ -650,9 +727,10 @@ function runCalendar(q: CalendarQuery): CalendarResult {
   const totals = emptyTotals();
   let totalCost: number | null = 0;
 
-  for (const e of events) {
+  for (const e of allEvents()) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    if (q.account != null && e.account !== q.account) continue;
     if (q.project != null && (e.project ?? '') !== q.project) continue;
 
     const cost = eventCost(e);
@@ -706,19 +784,21 @@ function runSessions(q: SessionQuery): SessionsResult {
   const totals = emptyTotals();
   let totalCost: number | null = 0;
 
-  for (const e of [...events].sort((a, b) => a.ts - b.ts)) {
+  for (const e of allEvents()) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    if (q.account != null && e.account !== q.account) continue;
     const project = e.project ?? '';
     if (q.project != null && project !== q.project) continue;
 
-    const key = `${e.provider}\u0000${e.session}`;
+    const key = `${e.provider}\u0000${e.account}\u0000${e.session}`;
     let row = rows.get(key);
     if (!row) {
       row = {
         ...emptyTotals(),
         sessionId: e.session,
         provider: e.provider,
+        ...(e.account ? { account: e.account } : {}),
         project,
         firstTs: iso(e.ts),
         lastTs: iso(e.ts),
@@ -772,8 +852,9 @@ function runWindowUsage(q: WindowUsageQuery): TokenTotals[] {
     const to = Date.parse(w.to);
     const totals = emptyTotals();
     let cost: number | null = 0;
-    for (const e of events) {
+    for (const e of allEvents()) {
       if (e.provider !== q.provider || e.ts < from || e.ts >= to) continue;
+      if (q.account != null && e.account !== q.account) continue;
       addInto(totals, e);
       const c = eventCost(e);
       cost = cost == null || c == null ? null : cost + c;
@@ -1152,6 +1233,26 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
           error: null,
           fetchedAt: snapshot.generatedAt,
         })),
+        ...(settings.accounts.length > 0
+          ? {
+              accounts: settings.accounts.map((a) => ({
+                id: `${a.provider}@${a.id}`,
+                provider: a.provider as ProviderId,
+                label: a.label,
+                enabled: a.enabled,
+                configDir: a.configDir,
+                configDirFound: true,
+                credentialsFileFound: true,
+                logDir: `${a.configDir}/${a.provider === 'claude' ? 'projects' : 'sessions'}`,
+                logDirFound: true,
+                status: snapshot.providers.find((q) => q.accountId === a.id)?.status ?? null,
+                planLabel: 'Claude Pro',
+                account: 'y•••@w•••.example',
+                error: null,
+                fetchedAt: snapshot.generatedAt,
+              })),
+            }
+          : {}),
         settings: structuredClone(settings) as unknown as Record<string, unknown>,
         logDir: '~/.local/share/ai-usage-sidebar/logs',
         configDir: mockAppInfo.configDir,
@@ -1279,8 +1380,17 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     }
     case 'get_notification_permission':
       return (mockScenario() === 'notif-denied' ? 'denied' : 'granted') as T;
-    case 'get_weekly_summary':
-      return structuredClone(mockWeeklySummary) as T;
+    case 'get_weekly_summary': {
+      const week = structuredClone(mockWeeklySummary);
+      if (settings.accounts.some((a) => a.enabled)) {
+        // per-account split, like the backend once an extra account had usage
+        week.accounts = [
+          { key: 'claude', totalTokens: 31_100_000, requests: 640, estimatedCostUsd: 26.1 },
+          ...settings.accounts.filter((a) => a.enabled).map((a, i) => ({ key: `${a.provider}@${a.id}`, totalTokens: 17_200_000 / (i + 1), requests: 272, estimatedCostUsd: 11.32 })),
+        ];
+      }
+      return week as T;
+    }
     case 'get_provider_setup': {
       const loggedOut = LOGGED_OUT_SCENARIOS.includes(mockScenario());
       const setup: ProviderSetup[] = [
@@ -1302,6 +1412,13 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         credentialsFile: `${dir.replace(/[\/]+$/, '')}/${claude ? '.credentials.json' : 'auth.json'}`,
         keychainOnly: false,
       };
+      // macOS preview: `?mock=macos-keychain` shows the Keychain lookup of an extra Claude account
+      if (mockScenario() === 'macos-keychain' && claude && found) {
+        check.credentialsFound = false;
+        check.keychainOnly = true;
+        check.keychainService = 'Claude Code-credentials-1a2b3c4d';
+        check.keychainFound = !dir.includes('signedout');
+      }
       return check as T;
     }
     case 'pick_account_folder':

@@ -1,8 +1,9 @@
 <!--
   Settings → Accounts: extra Claude Code / Codex logins next to the primary one.
   Each account is a CLI config directory the app reads exactly like the default
-  one (quota only, no token history). The folder is only checked for existence;
-  nothing in it is ever opened by this card. [FRONTEND]
+  one: quota and the local session logs (token history, cost, sessions). The
+  folder is only checked for existence; nothing in it is ever opened by this
+  card. Each account carries its own subscription price (its own ROI). [FRONTEND]
 -->
 <script lang="ts">
   import { onDestroy } from 'svelte';
@@ -16,6 +17,7 @@
     MAX_ACCOUNTS,
     MAX_LABEL_CHARS,
     accountErrors,
+    providerKey,
     signInCommands,
     suggestAccountId,
   } from '$lib/accounts';
@@ -130,7 +132,18 @@
 
   async function remove(id: string) {
     confirmRemove = null;
-    await settings.patch({ accounts: accounts.filter((a) => a.id !== id) });
+    const gone = accounts.find((a) => a.id === id);
+    // the stored history stays (it is the user's data); only the price entry is reset
+    await settings.patch({
+      accounts: accounts.filter((a) => a.id !== id),
+      ...(gone && (settings.value.subscriptionUsd[providerKey(gone.provider, id)] ?? 0) > 0 ? { subscriptionUsd: { [providerKey(gone.provider, id)]: 0 } } : {}),
+    });
+  }
+
+  /** Monthly plan price of one extra account, filed under its provider key (`claude@work`). */
+  const priceOf = (a: AccountSettings) => settings.value.subscriptionUsd[providerKey(a.provider, a.id)] ?? 0;
+  async function setPrice(a: AccountSettings, value: number) {
+    await settings.patch({ subscriptionUsd: { [providerKey(a.provider, a.id)]: Math.min(10_000, Math.max(0, value || 0)) } });
   }
 
   /** "folder found · credentials file found" for the list and the form */
@@ -138,7 +151,11 @@
     if (!c) return null;
     if (!c.absolute) return { text: t('settings.accounts.check.relative'), tone: 'bad' };
     if (!c.dirFound) return { text: t('settings.accounts.check.noDir'), tone: 'bad' };
-    if (c.keychainOnly) return { text: t('settings.accounts.check.keychain'), tone: 'bad' };
+    if (c.keychainOnly) {
+      return c.keychainFound
+        ? { text: t('settings.accounts.check.keychainFound'), tone: 'ok' }
+        : { text: t('settings.accounts.check.keychain', { service: c.keychainService ?? '' }), tone: 'warn' };
+    }
     if (!c.credentialsFound) return { text: t('settings.accounts.check.noLogin'), tone: 'warn' };
     return { text: t('settings.accounts.check.ok'), tone: 'ok' };
   }
@@ -151,7 +168,8 @@
       t('settings.accounts.signIn'),
       t('settings.accounts.signIn.claude'),
       t('settings.accounts.signIn.codex'),
-      t('settings.accounts.quotaOnly'),
+      t('settings.accounts.dataNote'),
+      t('settings.accounts.price'),
       ...accounts.map((a) => a.label),
     ].join(' ')
   );
@@ -187,6 +205,19 @@
           <button class="btn small" onclick={() => (confirmRemove = a.id)}>{t('common.remove')}</button>
         {/if}
       </div>
+      <label class="aprice">
+        <span>{t('settings.accounts.price', { label: a.label })}</span>
+        <input
+          class="field"
+          type="number"
+          min="0"
+          max="10000"
+          step="1"
+          value={priceOf(a)}
+          aria-label={t('settings.accounts.price', { label: a.label })}
+          onchange={(e) => void setPrice(a, e.currentTarget.valueAsNumber)}
+        />
+      </label>
     {/each}
 
     {#if draft}
@@ -249,7 +280,7 @@
         {#if accounts.length >= MAX_ACCOUNTS}<span class="note">{t('settings.accounts.err.limit')}</span>{/if}
       </div>
     {/if}
-    <p class="note">{t('settings.accounts.quotaOnly')}</p>
+    <p class="note">{t('settings.accounts.dataNote')}</p>
   </SettingsBlock>
 </SettingsCard>
 
@@ -268,8 +299,7 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4375rem 0;
-    border-bottom: 1px solid var(--border);
+    padding: 0.4375rem 0 0;
   }
 
   .alogo {
@@ -303,6 +333,21 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--mono, ui-monospace, monospace);
+  }
+
+  .aprice {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: 0.25rem 0 0.4375rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .aprice .field {
+    width: 5.5rem;
   }
 
   .astatus,

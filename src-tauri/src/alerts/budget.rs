@@ -57,6 +57,7 @@ pub fn month_to_date_usd(db: &Db, pricing: &PricingTable, now_ms: i64) -> anyhow
             provider: None,
             project: None,
             group_by_project: false,
+            account: None,
         },
         pricing,
     )?;
@@ -165,6 +166,7 @@ mod tests {
             request_id: id.into(),
             cwd: None,
             source_file: None,
+            account: String::new(),
         }
     }
 

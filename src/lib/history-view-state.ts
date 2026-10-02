@@ -11,6 +11,8 @@ export const historyViewState = {
   view: 'usage' as HistoryView,
   preset: '7d' as HistoryPreset, customFrom: '', customTo: '', bucket: 'day' as Bucket,
   provider: '' as ProviderId | '', groupByModel: true, groupByProject: false, project: null as string | null,
+  /** account selector: `all`, `primary` or an extra account id */
+  account: 'all',
   metric: 'tokens' as 'tokens' | 'cost', chartLayout: 'grouped' as 'grouped' | 'stacked',
   tableView: 'buckets' as 'buckets' | 'sessions', heatView: 'calendar' as 'calendar' | 'punchcard',
   heatMetric: 'tokens' as HeatMetric,

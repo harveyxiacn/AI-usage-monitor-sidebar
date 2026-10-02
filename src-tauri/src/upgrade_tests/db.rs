@@ -228,9 +228,23 @@ fn every_released_schema_migrates_to_the_current_one_with_its_data() {
             assert_eq!(value(&quota[2], "account"), Some("Text(\"work\")"));
         }
 
-        // session tables of v0.5+ are untouched
+        // session tables of v0.5+ keep every value; v4 only adds
+        // `session_metadata.account`, which is the primary account ('')
         if f.sessions {
-            assert_eq!(dump(&conn, "session_metadata", "session_id"), before.2);
+            let mut meta = dump(&conn, "session_metadata", "session_id");
+            for row in &mut meta {
+                let account = row
+                    .iter()
+                    .position(|(k, _)| k == "account")
+                    .map(|i| row.remove(i));
+                assert_eq!(
+                    account.map(|(_, v)| v).as_deref(),
+                    Some("Text(\"\")"),
+                    "{}",
+                    f.name
+                );
+            }
+            assert_eq!(meta, before.2);
             assert_eq!(count(&conn, "session_evaluations"), 1);
             assert_eq!(count(&conn, "session_aliases"), 1);
         }
@@ -301,6 +315,7 @@ fn the_current_queries_read_migrated_data() {
                 provider: None,
                 project: None,
                 group_by_project: false,
+                account: None,
             },
             &PricingTable::default(),
         )

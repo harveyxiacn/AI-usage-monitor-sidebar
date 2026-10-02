@@ -4,7 +4,7 @@
 //! content access switched off.
 use super::{
     model::*,
-    store::{summary, Range, CANDIDATES_CTE},
+    store::{candidates_cte, summary, Range},
 };
 use crate::{commands::store::Db, model::PricingTable};
 use anyhow::Result;
@@ -31,7 +31,7 @@ pub fn insights(db: &Db, q: &SessionListQuery, pricing: &PricingTable) -> Result
     let range = Range::query(q)?;
     let search = q.search.as_deref().unwrap_or("").trim();
     anyhow::ensure!(search.len() <= 512, "session search is too long");
-    let cte = CANDIDATES_CTE;
+    let cte = candidates_cte(&q.account)?;
     let order = "WHERE session_id<>'' ORDER BY last_ts DESC,provider,session_id LIMIT ?6";
     let (total, keys, tools) = {
         let conn = db.lock();

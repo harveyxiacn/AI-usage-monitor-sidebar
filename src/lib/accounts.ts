@@ -90,3 +90,42 @@ export function accountName(accounts: readonly AccountSettings[], id: string | n
   if (!id) return null;
   return accounts.find((a) => a.id === id)?.label ?? id;
 }
+
+/**
+ * The query value of a selector choice: `all` → null (every account),
+ * `primary` → '' (the primary account only), an id → that extra account.
+ * Matches `HistoryQuery.account` and friends.
+ */
+export function accountQuery(filter: string): string | null {
+  if (filter === 'all') return null;
+  return filter === 'primary' ? '' : filter;
+}
+
+/** Selector choice of an account id found in data: `primary` for none. */
+export function accountFilterOf(account: string | null | undefined): string {
+  return account ? account : 'primary';
+}
+
+/**
+ * The extra accounts a selector offers: the configured ones, then ids that only
+ * appear in stored history (an account that was removed keeps its rows),
+ * labelled by id. Empty while no extra account exists, which hides the selector.
+ */
+export function accountChoices(accounts: readonly AccountSettings[], seen: Iterable<string | null | undefined> = []): Array<{ id: string; label: string; removed: boolean }> {
+  const out = accounts.map((a) => ({ id: a.id, label: a.label, removed: false }));
+  for (const id of seen) {
+    if (id && !out.some((c) => c.id === id)) out.push({ id, label: id, removed: true });
+  }
+  return out;
+}
+
+/** Ids of the extra accounts in a `byAccount` map (`claude@work` → `work`). */
+export function accountIdsOf(byAccount: Record<string, unknown> | undefined): string[] {
+  return Object.keys(byAccount ?? {}).flatMap((key) => {
+    const at = key.indexOf('@');
+    return at > 0 ? [key.slice(at + 1)] : [];
+  });
+}
+
+/** `provider` or `provider@account` (mirrors the backend's `provider_key`). */
+export const providerKey = (provider: string, account?: string | null): string => (account ? `${provider}@${account}` : provider);

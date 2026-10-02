@@ -164,8 +164,9 @@ Details and mapping: **docs/PROVIDERS.md §4**.
 The primary account of each provider is implicit; extra accounts come from
 `Settings.accounts` (at most 6). Each is its own provider instance addressed by
 the registry key `claude@work` (`model::split_key`), with its own cache, backoff and
-poll clock; Claude's 120 s floor applies per account. Extra accounts are quota
-only. See **docs/PROVIDERS.md §5**.
+poll clock; Claude's 120 s floor applies per account. Their local logs are
+ingested from their own roots and tagged with the account (schema v4, §8).
+See **docs/PROVIDERS.md §5**.
 
 ## 3. Repository layout & ownership
 
@@ -301,6 +302,13 @@ Key semantics:
   empty string selects events whose `cwd` is null or empty, and any other
   string matches the original working-directory path exactly. Paths are
   not trimmed, canonicalized or case-folded across platforms.
+* `HistoryQuery`, `CalendarQuery`, `SessionQuery`, `WindowUsageQuery` and
+  `SessionListQuery` take an optional `account` (absent = every account, `""` =
+  the primary account only, `"work"` = that extra account). `HistoryRow` and
+  `SessionRow` carry `account` and `HistoryResult` carries `byAccount` only for
+  extra accounts, so results without extra accounts are unchanged.
+  `Diagnostics.accounts` lists every extra account (omitted when none).
+  `WeeklySummary.accounts` splits the week per account (omitted likewise).
 * `HistoryQuery.groupByProject` defaults to false and combines with
   `groupByModel`. `HistoryRow.project` is the original path (or an empty
   string for unassigned events) when grouped or filtered by project; null
@@ -395,7 +403,7 @@ webhook. Once-only bookkeeping for budget and summary lives in
 ### Account commands — `src-tauri/src/accounts.rs`
 | command | args | returns |
 |---|---|---|
-| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account; contents are never read) |
+| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account, plus on macOS Claude the Keychain service name and whether that item exists; contents are never read) |
 | `pick_account_folder` | – | `string \| null` (native folder dialog) |
 
 ### Export, sharing and backup — `export.rs`, `backup.rs`
@@ -790,8 +798,18 @@ version marker. Every function of `store/quota.rs` takes the registry key
 (the forecast input), the history query, the retention thinning partition and
 the weekly "limits hit" grouping are all per account. A database written by v3
 cannot be opened by v0.5 or older (`unsupported database schema 3`), see §8.1.
-`usage_events` and the session tables are **not** per account (extra accounts
-are quota only).
+Schema v4 (complete multi-account, v0.7) adds `usage_events.account TEXT NOT
+NULL DEFAULT ''` and `idx_usage_account_ts(provider, account, ts)`; additive, so
+`min_reader` stays 2 (a v0.6 build opens a v4 file and sees extra accounts'
+events as primary ones in its own totals). `UNIQUE(provider, request_id)` is
+unchanged: extra accounts' rows use the scoped request id
+`<account>\u{1f}<id>`, primary rows keep the provider's id. `ingest::roots()`
+returns primary roots then those of each enabled `settings.accounts` entry
+(`Root{provider, account, path}`, key `claude@work`); `ingest::set_accounts`
+is fed on startup and on every settings change and wakes the log watcher, whose
+`DirtyFiles` queue and activity clocks are keyed by that provider key. Sessions:
+`session_metadata.account` (guarded `ALTER`), other session tables unchanged.
+Details, money rules and the removal policy: **docs/PROVIDERS.md §5**.
 
 Ingestion is incremental (remember byte offset per file; if the file shrank or
 was rewritten without growth, re-parse from 0). File modification times are

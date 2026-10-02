@@ -85,6 +85,16 @@ fn home_of(ctx: &ProviderCtx) -> Option<PathBuf> {
     }
 }
 
+/// `<codexHome>/sessions` of an extra account.
+pub fn log_root_in(dir: &Path) -> PathBuf {
+    dir.join("sessions")
+}
+
+/// `<codexHome>/archived_sessions` of an extra account.
+pub fn archived_log_root_in(dir: &Path) -> PathBuf {
+    dir.join("archived_sessions")
+}
+
 /// `auth.json` of an extra account's Codex home.
 pub fn auth_path_in(dir: &Path) -> PathBuf {
     dir.join("auth.json")

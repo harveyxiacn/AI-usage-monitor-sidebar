@@ -280,3 +280,16 @@ html[data-surface='glass'] .surface::after {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+
+/* Names the extra account a row belongs to (History table, Sessions list). */
+.account-chip {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}

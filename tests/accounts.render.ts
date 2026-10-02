@@ -51,3 +51,37 @@ test('without extra accounts there is no account selector and no extra card', as
   await expect(page.getByLabel('Account')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('with an extra account the history, table and sessions name and filter by account', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.setViewportSize({ width: 1200, height: 1000 });
+  // the work account has its own token history in the preview data
+  await page.goto('/dashboard?tab=history&mock=accounts');
+  const selector = page.locator('select#account');
+  await expect(selector).toBeVisible();
+  await expect(page.locator('table .account-chip').first()).toBeVisible();
+  await selector.selectOption('work');
+  await expect(page.locator('table .account-chip').first()).toBeVisible();
+  await selector.selectOption('primary');
+  await expect(page.locator('table .account-chip')).toHaveCount(0);
+  await page.screenshot({ path: 'test-results/accounts-history.png', fullPage: true });
+
+  await page.goto('/dashboard?tab=sessions&mock=accounts');
+  await expect(page.locator('.session-row .account-chip').first()).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('without extra accounts the history has no account selector, chip or column', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.setViewportSize({ width: 1200, height: 1000 });
+  await page.goto('/dashboard?tab=history');
+  await expect(page.locator('.table-wrap table').first()).toBeVisible();
+  await expect(page.locator('select#account')).toHaveCount(0);
+  await expect(page.locator('.account-chip')).toHaveCount(0);
+  await page.goto('/dashboard?tab=sessions');
+  await expect(page.locator('.session-row').first()).toBeVisible();
+  await expect(page.locator('.account-chip')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

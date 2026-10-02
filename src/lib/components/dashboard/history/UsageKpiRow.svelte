@@ -24,12 +24,14 @@
     range: HistoryRange | null;
     provider: ProviderId | '';
     project: string | null;
+    /** null = every account, '' = the primary account, else an extra account id */
+    account?: string | null;
     /** bumped when a log scan added events */
     dataVersion: number;
     themeKey: string;
   }
 
-  let { range, provider, project, dataVersion, themeKey }: Props = $props();
+  let { range, provider, project, account = null, dataVersion, themeKey }: Props = $props();
 
   let kpis = $state<KpiSet | null>(null);
   let error = $state<string | null>(null);
@@ -45,7 +47,7 @@
       return;
     }
     const before = previousPeriod(active);
-    const key = JSON.stringify([active.from, provider, project]);
+    const key = JSON.stringify([active.from, provider, project, account]);
     // a real filter change clears stale tiles; a live tick updates in place
     if (key !== filterKey) kpis = null;
     filterKey = key;
@@ -56,6 +58,7 @@
         to: new Date(active.to).toISOString(),
         provider: provider === '' ? null : provider,
         project,
+        account,
       });
       if (id !== requestId || disposed) return;
       const { current, previous } = splitPeriods(result.days, active);
@@ -66,7 +69,7 @@
   }
 
   $effect(() => {
-    void [range, provider, project, dataVersion];
+    void [range, provider, project, account, dataVersion];
     requestId++;
     const timer = setTimeout(() => void load(), 80);
     return () => clearTimeout(timer);

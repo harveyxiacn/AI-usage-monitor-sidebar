@@ -125,8 +125,12 @@ export interface AccountCheck {
   credentialsFound: boolean;
   /** the file that was looked for */
   credentialsFile: string;
-  /** macOS Claude without a credentials file: cannot be read (the login would be in the Keychain) */
+  /** macOS Claude without a credentials file: the login can only be in the Keychain item for this folder */
   keychainOnly: boolean;
+  /** macOS Claude: the Keychain service name looked up for this folder */
+  keychainService?: string | null;
+  /** that Keychain item exists (probed without reading it) */
+  keychainFound?: boolean;
 }
 
 export interface AppSnapshot {
@@ -276,7 +280,7 @@ export interface Settings {
   /** Poll a provider less often while its session logs are quiet (10 min → ×2, 30 min → ×5, capped at 10 min) */
   adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
-  /** Extra accounts (max 6) of Claude Code / Codex; the primary account stays implicit. Quota only. */
+  /** Extra accounts (max 6) of Claude Code / Codex; the primary account stays implicit. Their quota and local usage logs are tracked per account. */
   accounts: AccountSettings[];
   ingestEnabled: boolean;
   /** Optional https source for a user-managed pricing table; empty uses the official project source. */
@@ -357,6 +361,8 @@ export interface HistoryQuery {
   /** Exact cwd; null/omitted = all projects, empty string = unassigned. */
   project?: string | null;
   groupByProject?: boolean;
+  /** null/absent = every account; '' = the primary account only; else that extra account */
+  account?: string | null;
 }
 
 export interface TokenTotals {
@@ -383,6 +389,8 @@ export interface HistoryRow extends TokenTotals {
   reasoningEffort?: string | null;
   /** Exact cwd or "" for unassigned; null for aggregation across projects. */
   project: string | null;
+  /** extra account id; absent for the primary account */
+  account?: string | null;
 }
 
 export interface HistoryResult {
@@ -390,6 +398,8 @@ export interface HistoryResult {
   totals: TokenTotals;
   /** totals per provider */
   byProvider: Record<string, TokenTotals>;
+  /** totals per provider key (`claude`, `claude@work`); absent unless an extra account has events in range */
+  byAccount?: Record<string, TokenTotals>;
   /** Projects in the time/provider range, independent of the project filter. */
   projects: string[];
   /** At least one cost came from an approximate family match (§9). */
@@ -403,6 +413,8 @@ export interface CalendarQuery {
   provider: ProviderId | null;
   /** Same semantics as `HistoryQuery.project`. */
   project?: string | null;
+  /** Same semantics as `HistoryQuery.account`. */
+  account?: string | null;
 }
 
 /** One local calendar day with activity; days without events are omitted. */
@@ -432,6 +444,8 @@ export interface SessionQuery {
   provider: ProviderId | null;
   /** Same semantics as `HistoryQuery.project`. */
   project?: string | null;
+  /** Same semantics as `HistoryQuery.account`. */
+  account?: string | null;
   /** Server-side cap on the returned rows (default 200, clamped to 1..1000). */
   limit?: number | null;
 }
@@ -447,6 +461,8 @@ export interface SessionRow extends TokenTotals {
   /** Provider session id; "" groups the events that carry none. */
   sessionId: string;
   provider: ProviderId;
+  /** extra account id; absent for the primary account */
+  account?: string | null;
   /** Exact cwd of the session's last event in range; "" = unassigned. */
   project: string;
   /** RFC 3339 local, first/last event *inside* the range */
@@ -481,6 +497,8 @@ export interface QuotaHistoryQuery {
 export interface WindowUsageQuery {
   provider: ProviderId;
   windows: Array<{ from: string; to: string }>;
+  /** Same semantics as `HistoryQuery.account`. */
+  account?: string | null;
 }
 
 export interface QuotaSample {
@@ -586,6 +604,27 @@ export interface ProviderDiagnostics {
   fetchedAt: string | null;
 }
 
+/** One extra account in the diagnostics report: existence checks only. */
+export interface AccountDiagnostics {
+  /** registry key, e.g. `claude@work` */
+  id: string;
+  provider: ProviderId;
+  label: string;
+  enabled: boolean;
+  configDir: string;
+  configDirFound: boolean;
+  credentialsFileFound: boolean;
+  logDir: string;
+  logDirFound: boolean;
+  keychainService?: string | null;
+  status: ProviderStatus | null;
+  planLabel: string | null;
+  /** always masked */
+  account: string | null;
+  error: string | null;
+  fetchedAt: string | null;
+}
+
 /** What `get_diagnostics` returns: nothing secret, e-mails always masked. */
 export interface Diagnostics {
   appVersion: string;
@@ -594,6 +633,8 @@ export interface Diagnostics {
   backend: string;
   sessionType: string | null;
   providers: ProviderDiagnostics[];
+  /** every configured extra account; absent without any */
+  accounts?: AccountDiagnostics[];
   settings: Record<string, unknown>;
   logDir: string;
   configDir: string;
@@ -662,6 +703,16 @@ export interface WeeklySummary {
   busiestDayTokens: number;
   /** quota windows that reached 100 % */
   limitsHit: number;
+  /** per-account share of the totals; absent unless an extra account had usage that week */
+  accounts?: WeeklyAccount[];
+}
+
+export interface WeeklyAccount {
+  /** `claude` or `claude@work` */
+  key: string;
+  totalTokens: number;
+  requests: number;
+  estimatedCostUsd: number | null;
 }
 
 /** From `get_provider_setup`: existence checks only, no credential is read. */
