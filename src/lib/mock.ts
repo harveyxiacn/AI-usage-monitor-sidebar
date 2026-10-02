@@ -7,6 +7,7 @@
 import type {
   AccountCheck,
   AccountSettings,
+  AdvisorWindow,
   AppInfo,
   BackupInfo,
   DbStatus,
@@ -17,6 +18,9 @@ import type {
   CalendarQuery,
   CalendarResult,
   CalendarSlot,
+  CommitRow,
+  CommitsQuery,
+  CommitsResult,
   HistoryQuery,
   HistoryResult,
   HistoryRow,
@@ -30,6 +34,7 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  RoutingAdvice,
   SessionQuery,
   SessionRow,
   SessionsResult,
@@ -167,6 +172,7 @@ export const mockSettings: Settings = {
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
+  advisorNotifications: false,
   thresholdNotifications: true,
   budgetNotifications: true,
   weeklySummary: false,
@@ -180,6 +186,7 @@ export const mockSettings: Settings = {
   focusUntil: 0,
   focusHidesSidebar: false,
   hideAccountEmail: false,
+  gitAttribution: false,
   exportSnapshot: false,
   pollingPaused: false,
   trayDisplay: 'icon',
@@ -952,6 +959,124 @@ function jitterSnapshot(provider?: ProviderId | null) {
   return structuredClone(snapshot);
 }
 
+// ------------------------------------------------- decision support (mock) ---
+// Simplified mirrors of src-tauri/src/advisor/{routing,git}.rs: same rules and
+// thresholds, enough to exercise the UI in the browser preview.
+
+/** Routing advice from the live mock snapshot (see `advisor::routing` for the rules). */
+function mockRoutingAdvice(): RoutingAdvice | null {
+  const t0 = Date.now();
+  const evaluated = snapshot.providers
+    .filter((q) => q.status === 'ok')
+    .map((q) => ({
+      q,
+      wins: q.windows
+        .filter((w) => w.scope == null && w.resetsAt && Date.parse(w.resetsAt) > t0)
+        .map((w): AdvisorWindow & { runOutMin: number | null } => {
+          const resetsInMin = Math.floor((Date.parse(w.resetsAt!) - t0) / 60_000);
+          const exhausts = w.forecast?.exhaustsAt ? Math.floor((Date.parse(w.forecast.exhaustsAt) - t0) / 60_000) : null;
+          const runOutMin = w.usedPercent >= 100 ? 0 : exhausts !== null && exhausts > 0 && exhausts < resetsInMin ? exhausts : null;
+          return {
+            key: quotaKey(q), provider: q.provider, displayName: q.displayName, kind: w.kind, label: w.label,
+            usedPercent: w.usedPercent, remainingPercent: 100 - w.usedPercent, resetsInMin, resetsAtMs: Date.parse(w.resetsAt!),
+            safeMinutes: w.usedPercent >= 100 ? 0 : w.forecast ? (runOutMin ?? resetsInMin) : null,
+            projectedPercentAtReset: w.forecast?.projectedPercentAtReset ?? null,
+            confidence: w.usedPercent >= 100 ? 'high' : w.forecast?.confidence ?? null,
+            runOutMin,
+          };
+        }),
+    }))
+    .filter((c) => c.wins.length > 0);
+  const strip = ({ runOutMin: _drop, ...w }: AdvisorWindow & { runOutMin: number | null }): AdvisorWindow => w;
+  const binding = (wins: Array<AdvisorWindow & { runOutMin: number | null }>) =>
+    wins.reduce((a, b) => (b.remainingPercent < a.remainingPercent ? b : a));
+  const basis = evaluated.map((c) => strip(binding(c.wins)));
+  const rank = { low: 0, medium: 1, high: 2 } as const;
+  const sources = evaluated
+    .map((c) => ({ c, w: c.wins.filter((w) => w.runOutMin !== null && w.confidence !== null &&
+      (w.usedPercent >= 100 || (rank[w.confidence] >= 1 && w.runOutMin <= 180))).sort((a, b) => a.runOutMin! - b.runOutMin!)[0] }))
+    .filter((s) => s.w)
+    .sort((a, b) => a.w.runOutMin! - b.w.runOutMin!);
+  if (sources.length === 0) {
+    if (evaluated.length < 2) return null;
+    const confs = evaluated.flatMap((c) => c.wins.map((w) => w.confidence)).filter((c): c is 'low' | 'medium' | 'high' => c !== null);
+    const lowest = confs.length ? confs.reduce((a, b) => (rank[b] < rank[a] ? b : a)) : 'medium';
+    return { kind: 'no_switch', from: null, to: null, useTargetMinutes: null, confidence: lowest, basis };
+  }
+  const src = sources[0];
+  const target = evaluated
+    .filter((c) => c.q !== src.c.q && (c.q.provider === 'claude' || c.q.provider === 'codex') &&
+      !sources.some((s) => s.c === c) && c.wins.every((w) => w.remainingPercent >= 30))
+    .sort((a, b) => binding(b.wins).remainingPercent - binding(a.wins).remainingPercent)[0];
+  if (!target) return null;
+  const tw = binding(target.wins);
+  const confs = [src.w.confidence!, ...target.wins.map((w) => w.confidence).filter((c): c is 'low' | 'medium' | 'high' => c !== null)];
+  const confidence = confs.reduce((a, b) => (rank[b] < rank[a] ? b : a));
+  if (confidence === 'low') return null;
+  const targetRunOut = Math.min(...target.wins.map((w) => w.runOutMin ?? Infinity));
+  return {
+    kind: 'switch', from: strip(src.w), to: strip(tw),
+    useTargetMinutes: Math.min(src.w.resetsInMin, targetRunOut, 1440), confidence, basis,
+  };
+}
+
+const MOCK_COMMIT_SUBJECTS = [
+  'feat: add usage export', 'fix: race in the session loader', 'refactor: split the pricing table', 'docs: explain the quota windows',
+  'test: cover the reset detection', 'chore: bump dependencies', 'feat: per-project budget line', 'fix: off-by-one in the heatmap',
+];
+
+/** Synthetic commits (11:40 and 18:20 every day) with usage attributed like `advisor::git::attribute`. */
+function mockCommits(q: CommitsQuery): CommitsResult {
+  const bare = (status: CommitsResult['status'], message: string | null = null): CommitsResult => ({
+    status, message, commits: [], unattributed: emptyTotals(), truncated: false, cached: false,
+  });
+  if (!settings.gitAttribution) return bare('disabled');
+  if (!q.project || !events.some((e) => (e.project ?? '') === q.project)) return bare('unknown_project');
+  if (q.project.startsWith('C:\\')) return bare('not_a_repo');
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const gap = 6 * HOUR;
+  const stamps: number[] = [];
+  const day = new Date(from - gap);
+  day.setHours(0, 0, 0, 0);
+  for (; day.getTime() <= to; day.setDate(day.getDate() + 1)) {
+    for (const [h, m] of [[11, 40], [18, 20]]) {
+      const ts = new Date(day).setHours(h, m, 0, 0);
+      if (ts >= from - gap && ts <= to) stamps.push(ts);
+    }
+  }
+  const commits = stamps.map((ts, i) => ({ ts, subject: MOCK_COMMIT_SUBJECTS[i % MOCK_COMMIT_SUBJECTS.length], hash: (0x1000000 + i * 7919).toString(16).padStart(8, '0').repeat(5).slice(0, 40) }));
+  const sums = commits.map(() => ({ totals: emptyTotals(), cost: 0 as number | null, sessions: new Set<string>() }));
+  const loose = { totals: emptyTotals(), cost: 0 as number | null };
+  for (const e of events) {
+    if (e.ts < from - gap || e.ts >= to + 1 || (e.project ?? '') !== q.project || (q.provider && e.provider !== q.provider)) continue;
+    const idx = commits.findIndex((c) => c.ts >= e.ts);
+    const claimed = idx >= 0 && e.ts > (idx === 0 ? -Infinity : commits[idx - 1].ts) && e.ts > commits[idx].ts - gap;
+    if (claimed) {
+      addInto(sums[idx].totals, e);
+      sums[idx].cost = addCost(sums[idx].cost, eventCost(e));
+      if (e.session) sums[idx].sessions.add(e.session);
+    } else if (e.ts >= from) {
+      addInto(loose.totals, e);
+      loose.cost = addCost(loose.cost, eventCost(e));
+    }
+  }
+  const finish = (totals: TokenTotals, cost: number | null): TokenTotals => ({
+    ...totals, estimatedCostUsd: totals.requests > 0 ? cost : null,
+    knownCostUsd: totals.requests > 0 ? (totals.knownCostUsd ?? 0) : null,
+  });
+  const rows: CommitRow[] = [];
+  commits.forEach((c, i) => {
+    if (c.ts < from || c.ts > to) return;
+    const start = Math.max(i === 0 ? -Infinity : commits[i - 1].ts, c.ts - gap);
+    rows.push({
+      ...finish(sums[i].totals, sums[i].cost), hash: c.hash, shortHash: c.hash.slice(0, 8), ts: new Date(c.ts).toISOString(),
+      subject: c.subject, windowStart: new Date(Number.isFinite(start) ? start : c.ts - gap).toISOString(), sessions: sums[i].sessions.size,
+    });
+  });
+  return { status: 'ok', message: null, commits: rows.reverse(), unattributed: finish(loose.totals, loose.cost), truncated: false, cached: false };
+}
+
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (['list_sessions', 'get_session_insights', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
     return (await import('./session-mock')).sessionMockInvoke(cmd, args) as Promise<T>;
@@ -1046,6 +1171,10 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return runCalendar(args?.query as CalendarQuery) as T;
     case 'get_usage_sessions':
       return runSessions(args?.query as SessionQuery) as T;
+    case 'get_routing_advice':
+      return mockRoutingAdvice() as T;
+    case 'get_project_commits':
+      return mockCommits(args?.query as CommitsQuery) as T;
     case 'get_window_usage':
       return runWindowUsage(args?.query as WindowUsageQuery) as T;
     case 'get_quota_history':

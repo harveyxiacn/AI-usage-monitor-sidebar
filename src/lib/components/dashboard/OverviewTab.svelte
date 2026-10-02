@@ -9,6 +9,7 @@
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import QuotaExtras from '$lib/components/QuotaExtras.svelte';
   import GettingStarted from './GettingStarted.svelte';
+  import RoutingAdviceCard from './RoutingAdviceCard.svelte';
   import WeeklySummaryCard from './WeeklySummaryCard.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
@@ -145,6 +146,8 @@
   {#if historyError}<p class="hint bad" role="alert">{t('overview.historyError', { message: historyError })}</p>{/if}
 
   <GettingStarted />
+
+  <RoutingAdviceCard />
 
   {#if snapshot.loading}
     <p class="muted">{t('common.loading')}</p>

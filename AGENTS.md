@@ -247,15 +247,17 @@ below list every key exactly once; `pnpm check:agents`
 | `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically |
 | `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what the user pays per month per provider, to compare with the API-equivalent estimate in History |
-| `notifications` | `false`, `true` | master switch for every notification (native and webhook); the four switches below only act while it is on |
+| `notifications` | `false`, `true` | master switch for every notification (native and webhook); the switches below only act while it is on |
 | `thresholdNotifications` | `true`, `false` | warn when a window crosses `thresholds.warn` / `thresholds.critical` (once per window, level and cycle) |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets |
+| `advisorNotifications` | `false`, `true` | suggest another provider ("Claude runs out in ~25 min, Codex has 70 % of its week left") when one is on pace to run out and another has room; confident forecasts only, once per reset period. The suggestion is always shown in the Overview and the popover; this only adds a notification. Needs `notifications` |
 | `budgetNotifications` | `true`, `false` | warn at 80 % and 100 % of `monthlyBudgetUsd` (needs a budget > 0), once a month each |
 | `weeklySummary` | `false`, `true` | Monday ~09:00: one notification summarising last week |
 | `webhook` | `{"enabled":false,"url":"","kind":"generic"}` | optional second channel: `kind` is `"generic"` (JSON), `"ntfy"` or `"slack"`; `https://` only (enabling with another URL turns it off); the URL is never logged |
 | `focusUntil` | `0` (off), `-1` (until turned off), or an epoch-ms deadline | focus mode silences every notification channel; normally set from the tray, the palette or Settings |
 | `focusHidesSidebar` | `false`, `true` | also hide the bar while focus mode is on |
 | `exportSnapshot` | `false`, `true` | write `snapshot.json` after every refresh for `ai-usage-sidebar --print` and status bars (`docs/STATUSLINE.md`) |
+| `gitAttribution` | `false`, `true` | task-level cost: for project folders already in the usage log, run a read-only `git log` (hash, time, subject; no diff, no file contents, 10 s timeout) to show tokens and estimated cost per commit in History → Commits. Off = no process is started |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 
 ### Updates, presets and first-run bookkeeping

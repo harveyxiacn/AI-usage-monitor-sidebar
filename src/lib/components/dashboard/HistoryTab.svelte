@@ -1,12 +1,13 @@
 <!--
-  Dashboard → History. Three sub-views behind one shared, sticky filter bar
+  Dashboard → History. Four sub-views behind one shared, sticky filter bar
   (range / provider / project):
 
     Usage            token analytics from the local session logs: KPI tiles,
                      usage over time, token composition, model & effort mix,
                      project ranking, activity heatmap, provider cards, table
     Quota            the quota-window history (QuotaHistoryPanel)
-    Cost & budget    the monthly budget burn-up
+    Cost & budget    the monthly budget burn-up, subscription value, plan advisor
+    Commits          usage attributed to the git commits of one project (opt-in)
 
   This file owns the filter state and the queries every sub-view shares; the
   panels live in ./history/. `?tab=history&view=quota|cost` deep-links a
@@ -24,6 +25,8 @@
   import { bucketDateRange } from '$lib/analytics';
   import QuotaHistoryPanel from './QuotaHistoryPanel.svelte';
   import SubscriptionRoi from './history/SubscriptionRoi.svelte';
+  import PlanAdvisor from './history/PlanAdvisor.svelte';
+  import CommitsPanel from './history/CommitsPanel.svelte';
   import { subscriptionTotal } from '$lib/subscription';
   import HistoryEmpty, { type EmptyKind } from './history/HistoryEmpty.svelte';
   import HistoryFilterBar from './history/HistoryFilterBar.svelte';
@@ -523,6 +526,8 @@
     {/if}
   {:else if view === 'quota'}
     <QuotaHistoryPanel {range} provider={provider || null} live={preset !== 'custom'} {themeKey} />
+  {:else if view === 'commits'}
+    <CommitsPanel range={range} provider={provider} {project} {projectLabel} refreshKey={dataVersion} />
   {:else}
     <div class="card panel">
       <header class="panel-head">
@@ -554,6 +559,7 @@
       {/if}
     </div>
     <SubscriptionRoi provider={provider || null} {themeKey} refreshKey={dataVersion} />
+    <PlanAdvisor provider={provider || null} refreshKey={dataVersion} />
   {/if}
 </section>
 

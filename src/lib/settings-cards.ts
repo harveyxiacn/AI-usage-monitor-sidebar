@@ -20,7 +20,8 @@ export type CardId =
   | 'accounts'
   | 'data'
   | 'updates'
-  | 'integrations';
+  | 'integrations'
+  | 'advisor';
 
 type Key = keyof Settings;
 
@@ -42,6 +43,7 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   data: ['ingestEnabled', 'monthlyBudgetUsd', 'subscriptionUsd', 'quotaRetentionDays'],
   updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl', 'skippedVersion'],
   integrations: ['exportSnapshot', 'pollingPaused'],
+  advisor: ['advisorNotifications', 'gitAttribution'],
 };
 
 export const CARD_IDS = Object.keys(CARD_KEYS) as CardId[];

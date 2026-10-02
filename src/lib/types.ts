@@ -312,6 +312,8 @@ export interface Settings {
   notifications: boolean;
   /** warn when a window is on pace to run out before it resets */
   forecastNotifications: boolean;
+  /** suggest another provider when one is about to run out and another has room (needs `notifications`) */
+  advisorNotifications: boolean;
   /** warn when a window crosses `thresholds.warn` / `thresholds.critical` (needs `notifications`) */
   thresholdNotifications: boolean;
   /** warn when the month-to-date estimated cost reaches 80 % / 100 % of `monthlyBudgetUsd` (needs `notifications`) */
@@ -332,6 +334,8 @@ export interface Settings {
   focusHidesSidebar: boolean;
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
+  /** Task-level cost: read-only `git log` (hash, time, subject) in the recorded project folders; off = nothing is run. */
+  gitAttribution: boolean;
   /** Write snapshot.json to the app data dir after every snapshot (CLI / status bars). */
   exportSnapshot: boolean;
   /** Skip automatic provider polling (local log ingestion keeps running). */
@@ -734,4 +738,72 @@ export interface PreUpgradeBackup {
   /** YYYYMMDD-HHMMSS, local time */
   stamp: string;
   sizeBytes: number;
+}
+
+// ---- decision support (src-tauri/src/advisor) ----
+
+/** The binding account-wide window of one provider account, with the numbers an advice is based on. */
+export interface AdvisorWindow {
+  /** `claude` or `claude@work` */
+  key: string;
+  provider: ProviderId;
+  displayName: string;
+  kind: WindowKind;
+  label: string;
+  usedPercent: number;
+  /** headroom until the next reset: 100 - used */
+  remainingPercent: number;
+  resetsInMin: number;
+  resetsAtMs: number;
+  /** minutes of safe work at the current pace (0 = full); null = no forecast */
+  safeMinutes: number | null;
+  projectedPercentAtReset: number | null;
+  confidence: ForecastConfidence | null;
+}
+
+/** From `get_routing_advice`: which provider to use next, or "no switch needed". */
+export interface RoutingAdvice {
+  kind: 'switch' | 'no_switch';
+  from: AdvisorWindow | null;
+  to: AdvisorWindow | null;
+  /** "consider `to` for the next ~N minutes" */
+  useTargetMinutes: number | null;
+  confidence: ForecastConfidence;
+  /** binding window of every provider that was considered */
+  basis: AdvisorWindow[];
+}
+
+export type CommitsStatus = 'ok' | 'disabled' | 'unknown_project' | 'not_a_repo' | 'git_missing' | 'error';
+
+export interface CommitsQuery {
+  /** exact cwd, as in the History project filter */
+  project: string;
+  from: string;
+  to: string;
+  provider?: ProviderId | null;
+  /** bypass the cached `git log` */
+  refresh?: boolean;
+}
+
+/** Usage attributed to one commit (flattened token totals). */
+export interface CommitRow extends TokenTotals {
+  hash: string;
+  shortHash: string;
+  /** committer time, RFC 3339 with the local offset */
+  ts: string;
+  subject: string;
+  /** start of the attribution interval */
+  windowStart: string;
+  sessions: number;
+}
+
+export interface CommitsResult {
+  status: CommitsStatus;
+  message: string | null;
+  /** newest first */
+  commits: CommitRow[];
+  /** usage in the range that no commit claimed */
+  unattributed: TokenTotals;
+  truncated: boolean;
+  cached: boolean;
 }

@@ -1,9 +1,9 @@
 import type { Bucket, ProviderId } from './types';
 import type { HeatMetric, HistoryPreset } from './history';
 
-/** The three History sub-views. */
-export type HistoryView = 'usage' | 'quota' | 'cost';
-export const HISTORY_VIEWS: readonly HistoryView[] = ['usage', 'quota', 'cost'];
+/** The History sub-views. */
+export type HistoryView = 'usage' | 'quota' | 'cost' | 'commits';
+export const HISTORY_VIEWS: readonly HistoryView[] = ['usage', 'quota', 'cost', 'commits'];
 
 const VIEW_STORAGE_KEY = 'ai-usage-sidebar.history.view';
 

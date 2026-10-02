@@ -7,6 +7,8 @@ import type {
   AppInfo,
   AppSnapshot,
   BackupInfo,
+  CommitsQuery,
+  CommitsResult,
   DbStatus,
   PreUpgradeBackup,
   CalendarQuery,
@@ -26,6 +28,7 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  RoutingAdvice,
   SessionQuery,
   SessionsResult,
   Settings,
@@ -146,6 +149,12 @@ export async function importSettings(): Promise<ImportResult | null> {
 export const getSettingsHistory = () => invoke<SettingsVersion[]>('get_settings_history');
 /** Make version `index` (0 = newest) the live settings; the replaced one is kept for undoing. */
 export const restoreSettingsVersion = (index: number) => invoke<Settings>('restore_settings_version', { index });
+
+// ---- decision support ----
+/** Which provider to use next when one is about to run out; null = nothing worth saying. */
+export const getRoutingAdvice = () => invoke<RoutingAdvice | null>('get_routing_advice');
+/** Commits of one project with attributed tokens/cost. Runs a read-only `git log` only while `gitAttribution` is on. */
+export const getProjectCommits = (query: CommitsQuery) => invoke<CommitsResult>('get_project_commits', { query });
 
 // ---- notifications / onboarding ----
 /** `channel` is `'native'` or `'webhook'`; a rejected promise carries the user-facing reason. */

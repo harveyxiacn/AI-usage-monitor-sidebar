@@ -81,7 +81,7 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
       id: `nav:history:${view}`,
       group: 'navigate',
       title: goto(`${t('tab.history')} · ${t(`history.view.${view}`)}`),
-      keywords: view === 'cost' ? 'budget spend money' : view === 'quota' ? 'limits windows' : 'tokens analytics',
+      keywords: view === 'cost' ? 'budget spend money plan advisor upgrade' : view === 'quota' ? 'limits windows' : view === 'commits' ? 'git commit task cost' : 'tokens analytics',
       run: () => ctx.openHistoryView(view),
     });
   }
