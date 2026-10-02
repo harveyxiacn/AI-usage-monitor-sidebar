@@ -1,5 +1,6 @@
 import { test as base, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { showAdvancedSettings } from './advanced-settings';
 
 const test = base.extend<{ runtimeErrors: void }>({
   runtimeErrors: [async ({ page }, use) => {
@@ -33,6 +34,7 @@ test('a rate-limited provider reads as stale, not as an error', async ({ page })
 
 test('price list updates use the official source by default and are separate from app updates', async ({ page }) => {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await showAdvancedSettings(page); // the price list editor is an advanced block
   await page.getByRole('button', { name: 'Check for app updates', exact: true }).click();
   await expect(page.locator('.update-bar').filter({ hasText: 'Version 9.9.9 is available.' })).toBeVisible();
   const check = page.getByRole('button', { name: 'Check for price list updates', exact: true });

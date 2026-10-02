@@ -89,7 +89,7 @@ quota is left, and when does it reset?*
 
 | | |
 |---|---|
-| Finding things | A search box, a sticky section index, per-card and global "restore defaults" |
+| Finding things | A search box, a sticky section index, per-card and global "restore defaults". Only the everyday settings show by default; **Show advanced settings** (a switch above the index) reveals the rest, and a search always finds them. Which is which: [docs/SETTINGS-AUDIT.md](docs/SETTINGS-AUDIT.md) |
 | Presets | Four built-in presets (minimal, power, screen share, cyber) and up to ten of your own, with a preview of what changes |
 | Undo, import and export | The last 5 versions of `settings.json` can be restored (an edit burst counts as one); settings export to and import from a file |
 | Backup and restore | A full backup (settings plus a consistent copy of the usage database); a restore is validated, staged and applied at the next start, keeping the replaced files |
@@ -127,7 +127,7 @@ by its `limit_window_seconds` (≤ 6 h → 5-hour, ~7 d → weekly, anything els
 windows are present. The table describes observed payloads, not guaranteed plan entitlements.
 
 **Several accounts.** Claude Code and Codex can be tracked for more than one login
-(a personal and a work account, say): add them under Settings → Accounts, up to 6,
+(a personal and a work account, say): add them under Settings → Accounts (turn on *Show advanced settings* first), up to 6,
 each pointing at that login's CLI config directory (`CLAUDE_CONFIG_DIR` /
 `CODEX_HOME`). Extra accounts get their own rings, popover rows, quota history and
 forecast, but **quota only**: local session logs, token history, the budget alerts
@@ -227,7 +227,7 @@ Windows shows a SmartScreen warning.
 
 ### Staying up to date
 
-The app checks GitHub for a newer release once a day (Settings → Behaviour →
+The app checks GitHub for a newer release once a day (Settings → Updates →
 *Check for updates daily*, on by default) and never installs anything on its
 own: a new version shows up as a tray item, a one-line banner in the dashboard
 and an *Updates* row under Settings → About, where "Install and restart" is a
@@ -323,7 +323,8 @@ Details, including the geometry maths and the hover state machine, are in
 
 ## Status lines and scripts
 
-Turn on *Settings -> Integrations -> Export snapshot file* and
+Turn on *Settings -> Integrations -> Export snapshot file* (an advanced card:
+switch on *Show advanced settings*) and
 `ai-usage-sidebar --print [--format json|line|statusline]` prints your quotas
 from the terminal (exit code 2 when the data is missing or stale). That makes
 them usable in Claude Code's `statusLine`, tmux, polybar or waybar — see
@@ -342,7 +343,7 @@ subscriptions do not bill per token. Prices come from a built-in table
   `claude-opus-4`). Those numbers are approximate and the dashboard says so.
   A model from an unrelated family stays unpriced and shows "—".
 * You can edit any row, add your own prefixes and delete rows in
-  **Settings → Data**. Your table wins over everything else.
+  **Settings → Updates** (advanced settings). Your table wins over everything else.
 * The project-maintained GitHub raw `pricing.json` is the default source when
   **Pricing table URL** is empty. Set a non-empty `https://` URL to use a
   custom source instead. An empty URL no longer disables price checks.
@@ -354,7 +355,7 @@ subscriptions do not bill per token. Prices come from a built-in table
 * Click **Check pricing updates** to fetch the selected source and inspect its
   revision. If an update is available, click **Apply price update** to apply
   it. Checking never changes the applied table. A saved table edited in
-  **Settings → Data** always has priority; click **Use source pricing** to
+  **Settings → Updates** always has priority; click **Use source pricing** to
   explicitly switch away from it, confirm the change and back up the saved
   table first. Downloads are capped in size, strictly validated and cached; an
   invalid source is rejected and the current table remains in use.

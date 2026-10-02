@@ -1,7 +1,19 @@
 import type { Settings } from './types';
 
+/**
+ * Spellings an old settings file or a saved preset may still use. The backend
+ * reads them (src-tauri/src/settings.rs `migrate_legacy_keys`) and never
+ * writes them; `normalizePatch` is the same rule for previews.
+ */
+export interface LegacySettingsKeys {
+  /** @deprecated now `sidebarItems.scoped` */
+  showScopedRing?: boolean;
+  /** @deprecated now `sidebarItems.percentLabel` */
+  showPercentLabel?: boolean;
+}
+
 /** Nested fields are merged by the backend; use the same rule for previews. */
-export type SettingsPatch = Partial<
+export type SettingsPatch = LegacySettingsKeys & Partial<
   Omit<Settings, 'colors' | 'sizes' | 'thresholds' | 'providers' | 'sidebarItems' | 'subscriptionUsd' | 'webhook'>
 > & {
   colors?: Partial<Settings['colors']>;
@@ -13,7 +25,24 @@ export type SettingsPatch = Partial<
   webhook?: Partial<Settings['webhook']>;
 };
 
-export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
+/**
+ * Move the deprecated top-level `showScopedRing` / `showPercentLabel` into
+ * `sidebarItems`; when a patch carries both spellings the nested one wins.
+ * Returns `patch` itself when there is nothing to move.
+ */
+export function normalizePatch(patch: SettingsPatch): SettingsPatch {
+  const { showScopedRing, showPercentLabel, ...rest } = patch;
+  if (typeof showScopedRing !== 'boolean' && typeof showPercentLabel !== 'boolean') {
+    return 'showScopedRing' in patch || 'showPercentLabel' in patch ? rest : patch;
+  }
+  const legacy: Partial<Settings['sidebarItems']> = {};
+  if (typeof showScopedRing === 'boolean') legacy.scoped = showScopedRing;
+  if (typeof showPercentLabel === 'boolean') legacy.percentLabel = showPercentLabel;
+  return { ...rest, sidebarItems: { ...legacy, ...rest.sidebarItems } };
+}
+
+export function mergeSettings(base: Settings, rawPatch: SettingsPatch): Settings {
+  const patch = normalizePatch(rawPatch);
   const providers = { ...base.providers };
   for (const [id, next] of Object.entries(patch.providers ?? {})) {
     providers[id] = { ...(providers[id] ?? { enabled: true, showInSidebar: true, order: 0 }), ...next };

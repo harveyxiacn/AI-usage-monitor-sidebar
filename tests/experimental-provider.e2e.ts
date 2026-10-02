@@ -4,6 +4,7 @@
 // live account — an "Experimental" badge and a switch that starts off.
 // The mock backend reports Copilot in exactly that state (mock.ts).
 import { test as base, expect } from '@playwright/test';
+import { showAdvancedSettings } from './advanced-settings';
 
 const test = base.extend<{ runtimeErrors: void }>({
   runtimeErrors: [async ({ page }, use) => {
@@ -40,6 +41,7 @@ test('an experimental provider is listed, badged and switched off', async ({ pag
 test('an unknown provider gets a colour picker without a hand-written label', async ({ page }) => {
   await page.goto('/dashboard');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await showAdvancedSettings(page); // Size & colour is an advanced-only card
 
   // "Claude accent" / "Codex accent" are translated; a provider with no i18n
   // key of its own is labelled from its name instead of being dropped.

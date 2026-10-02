@@ -594,13 +594,15 @@ Rules, implemented in `src/lib/sidebar-items.ts` and unit-tested in
   anyway (whatever `moreButton` says), so the bar stays hoverable, draggable
   and never measures zero.
 
-`showScopedRing` and `showPercentLabel` are **deprecated** aliases of
-`sidebarItems.scoped` / `sidebarItems.percentLabel`. `settings.rs` migrates an
-old file into the nested object on load and keeps writing both (the nested
-value wins when a patch carries both spellings). Writing both was chosen over
-dropping the flat keys because it costs two lines and keeps hand-written
-settings files, older builds and downgrades working; nothing in the UI reads
-the flat fields any more.
+`showScopedRing` and `showPercentLabel` (v0.6 and earlier) were top-level
+spellings of `sidebarItems.scoped` / `sidebarItems.percentLabel`. Since 0.7
+they are no longer part of `Settings`: `settings::migrate_legacy_keys` reads
+them from any patch or settings file as the nested member (the nested value wins
+when both are present) and drops the flat key, so they are never written back
+(`settings-writer.ts` `normalizePatch` applies the same rule to previews and
+saved presets). Consequence for downgrades: a 0.6 build opening a file written
+by 0.7 sees the defaults for those two flags; the nested object it also reads
+carries the user's choice, so only a hand-edited flat key is lost.
 
 `cyberAccent="neon"`, `hideAccountEmail=false` and `monthlyBudgetUsd=0` (no budget
 line on the History tab) complete the defaults, together with

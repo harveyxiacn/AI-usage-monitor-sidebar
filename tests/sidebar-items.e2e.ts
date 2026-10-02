@@ -3,6 +3,7 @@
 // configuration, because the bar window has no settings UI of its own.
 import { test as base, expect, type Page } from '@playwright/test';
 import type { SettingsPatch } from '../src/lib/settings-writer';
+import { showAdvancedSettings } from './advanced-settings';
 
 const test = base.extend<{ runtimeErrors: void }>({
   runtimeErrors: [async ({ page }, use) => {
@@ -111,6 +112,7 @@ test('the settings tab toggles sidebar items and the preview follows the label s
   await page.goto('/dashboard');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Sidebar items' })).toBeVisible();
+  await showAdvancedSettings(page); // "Provider logo" and "Percent placement" are advanced
 
   // Toggle hides the real checkbox behind its track, so flip it by its label
   const toggle = (name: string) => page.getByRole('checkbox', { name, exact: true });

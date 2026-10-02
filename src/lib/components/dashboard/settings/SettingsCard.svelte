@@ -7,7 +7,7 @@
   import type { Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { t } from '$lib/i18n/i18n.svelte';
-  import { isCardModified, resetPatch, type CardId } from '$lib/settings-cards';
+  import { cardAdvancedOnly, isCardModified, resetPatch, type CardId } from '$lib/settings-cards';
   import { matchesQuery } from '$lib/settings-search';
   import { getSettingsSearch, provideCardScope } from '$lib/settings-scope.svelte';
   import { defaultSettings, settings } from '$lib/stores/settings.svelte';
@@ -27,12 +27,22 @@
   let { id, title, keywords = '', reset, wide = false, children }: Props = $props();
 
   const search = getSettingsSearch();
+  const modified = $derived(reset ? isCardModified(reset, settings.value, defaultSettings) : false);
   const fields = new SvelteMap<symbol, boolean>();
   const headMatches = $derived(!search?.active || matchesQuery(search.query, title, keywords));
-  const visible = $derived(headMatches || [...fields.values()].some(Boolean));
+  // a card made only of advanced settings has none of its rows showing until
+  // advanced is on, so it drops out of the page and the index by itself; the
+  // `size === 0` case is the first paint, before the rows have registered
+  const anyShown = $derived([...fields.values()].some(Boolean));
+  const visible = $derived(search?.active ? headMatches || anyShown : fields.size === 0 || anyShown);
   provideCardScope({
     get headMatches() {
       return headMatches;
+    },
+    get advanced() {
+      // a card of advanced settings stays on the page once the user has changed
+      // something in it (a configured extra account, a custom colour, a shortcut)
+      return reset ? cardAdvancedOnly(reset) && !modified : false;
     },
     fields,
   });
@@ -42,7 +52,13 @@
     return () => search.cards.delete(id);
   });
 
-  const modified = $derived(reset ? isCardModified(reset, settings.value, defaultSettings) : false);
+  /** Resets every key of the card, the advanced ones hidden right now included, so it says so. */
+  function resetCard() {
+    if (!reset) return;
+    if (!window.confirm(t('settings.resetCard.confirm', { card: title }))) return;
+    void settings.patch(resetPatch(reset, defaultSettings));
+  }
+
 </script>
 
 <article class="card group settings-card" class:wide {id} hidden={!visible} data-settings-card>
@@ -53,7 +69,7 @@
         class="btn reset"
         disabled={!modified}
         aria-label={t('settings.resetCard', { card: title })}
-        onclick={() => void settings.patch(resetPatch(reset, defaultSettings))}
+        onclick={resetCard}
       >{t('settings.resetDefaults')}</button>
     {/if}
   </header>

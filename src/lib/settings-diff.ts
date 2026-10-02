@@ -9,8 +9,8 @@ export interface SettingChange {
   after: unknown;
 }
 
-/** Deprecated mirrors and the schema version are noise in a change list. */
-const SKIP = new Set(['version', 'showScopedRing', 'showPercentLabel']);
+/** The schema version is noise in a change list. */
+const SKIP = new Set(['version']);
 /** Whole-value leaves: shown as one change instead of being flattened. */
 const LEAVES = new Set(['customPresets']);
 

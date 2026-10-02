@@ -6,6 +6,7 @@
   import SettingsCard from './SettingsCard.svelte';
   import { getMonitors } from '$lib/api';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { settings } from '$lib/stores/settings.svelte';
   import type { Edge, MonitorInfo, VerticalAlign } from '$lib/types';
 
@@ -42,13 +43,13 @@
     </select>
   </Field>
 
-  <Field label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')}>
+  <Field advanced={isAdvanced('verticalAlign')} label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')}>
     <select aria-label={tDyn(alongIsHorizontal ? 'settings.horizontalAlign' : 'settings.verticalAlign')} class="field" value={s.verticalAlign} onchange={(e) => void settings.patch({ verticalAlign: e.currentTarget.value as VerticalAlign })}>
       {#each ALIGNS as v (v)}<option value={v}>{tDyn(alignLabel(v))}</option>{/each}
     </select>
   </Field>
 
-  <Field label={tDyn(alongIsHorizontal ? 'settings.horizontalOffset' : 'settings.verticalOffset')}>
+  <Field advanced={isAdvanced('verticalOffset')} label={tDyn(alongIsHorizontal ? 'settings.horizontalOffset' : 'settings.verticalOffset')}>
     <input
       class="field num"
       type="number"
@@ -72,7 +73,7 @@
     </select>
   </Field>
 
-  <Field label={t('settings.alwaysOnTop')}>
+  <Field advanced={isAdvanced('alwaysOnTop')} label={t('settings.alwaysOnTop')}>
     <Toggle
       checked={s.alwaysOnTop}
       label={t('settings.alwaysOnTop')}
