@@ -104,7 +104,7 @@ quota is left, and when does it reset?*
 | Webhook | An optional second channel (generic JSON, ntfy or Slack-compatible; `https` only, the URL is never logged) and a "send test" button |
 | Status lines | `ai-usage-sidebar --print [--format json\|line\|statusline] [--provider ID]` prints your quotas from a snapshot file, for Claude Code's `statusLine`, tmux, polybar or waybar. [Details](docs/STATUSLINE.md) |
 | Providers | Claude Code and Codex (verified); GitHub Copilot and OpenRouter (experimental, never tested against a live account) |
-| Multiple accounts | Track extra Claude Code and Codex logins (up to 6) next to the primary one: each has its own ring group, quota history and forecast. Quota only; see the note under *Providers* |
+| Multiple accounts | Track extra Claude Code and Codex logins (up to 6) next to the primary one: each has its own ring group, quota history, forecast, and its own token, cost and session history (read from that login's own log folder). See the note under *Providers* |
 
 ## Providers
 
@@ -130,10 +130,15 @@ windows are present. The table describes observed payloads, not guaranteed plan 
 (a personal and a work account, say): add them under Settings → Accounts, up to 6,
 each pointing at that login's CLI config directory (`CLAUDE_CONFIG_DIR` /
 `CODEX_HOME`). Extra accounts get their own rings, popover rows, quota history and
-forecast, but **quota only**: local session logs, token history, the budget alerts
-and the weekly summary's token and cost figures cover the primary account. On macOS an extra Claude account is
-read from `<dir>/.credentials.json` only, because the Keychain item of a
-non-default config directory could not be verified.
+forecast, and their local session logs are ingested from that folder too: History
+(with an account selector and an `account` CSV column once an extra account
+exists), cost, sessions, the subscription ROI (one plan price per account) and
+the tokens-per-percent cycles are per account. The monthly budget alerts and the
+weekly summary total every account (the summary also lists each one). Removing an
+account keeps everything already stored. On macOS an extra Claude account is read
+from `<dir>/.credentials.json`, else from the Keychain item Claude Code files for
+that folder (`Claude Code-credentials-<8 hex of sha256(folder)>`, derived from
+third-party reports; see docs/PROVIDERS.md §5, a wrong guess just finds nothing).
 
 **About "experimental".** The Claude and Codex providers were built by
 inspecting real responses from real accounts. The Copilot provider was built
@@ -182,7 +187,7 @@ its documented API), and parses the session logs those CLIs leave on disk.
 | GitHub Copilot | none — no Copilot client is known to log token counts, so Copilot has no token history |
 | OpenRouter | none — it is an API gateway, so there is no token history |
 
-Only the primary Claude Code and Codex accounts are ingested; extra accounts are quota only.
+The primary Claude Code and Codex accounts and every enabled extra account are ingested, each from its own log folder.
 
 > **Privacy.** Your tokens never leave your machine except in the request to
 > Anthropic's, OpenAI's, GitHub's and OpenRouter's own endpoints — the same ones
@@ -404,12 +409,12 @@ exported), `alerts-state.json` (which alerts already fired) and, after a restore
 - [x] Blur behind the bar on KWin (X11 / XWayland)
 - [x] GitHub Copilot (experimental, unverified — see [docs/PROVIDERS.md](docs/PROVIDERS.md))
 - [x] OpenRouter (experimental, unverified)
-- [x] Multiple Claude Code / Codex accounts (quota only)
+- [x] Multiple Claude Code / Codex accounts (quota, token history, cost, sessions)
 - [x] Native CSV export and clipboard copy
 - [x] Per-project token breakdown
 - [x] Burn-rate forecast ("at this rate your weekly window runs out in …")
 - [x] Alerts: threshold, forecast, budget, weekly summary, webhook
-- [ ] Token history and budget alerts for extra accounts
+- [ ] Budget alerts per account (the monthly budget covers all accounts)
 - [ ] Verify Copilot, OpenRouter and native Wayland on real accounts and hardware
 - [ ] Gemini CLI — blocked on its move to OS-keychain credential storage ([why](docs/PROVIDERS.md))
 - [ ] ~~Cursor~~ — not planned: ToS and endpoint stability ([why](docs/PROVIDERS.md))
@@ -541,7 +546,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | Webhook | 可选的第二渠道（通用 JSON、ntfy 或兼容 Slack；仅 `https`，URL 不写入日志），并带“发送测试” |
 | 状态栏 | `ai-usage-sidebar --print [--format json\|line\|statusline] [--provider ID]` 从快照文件输出额度，用于 Claude Code 的 `statusLine`、tmux、polybar、waybar。[详情](docs/STATUSLINE.md) |
 | 服务商 | Claude Code 与 Codex（已验证）；GitHub Copilot 与 OpenRouter（实验性，从未在真实账号上测试） |
-| 多账号 | 在主账号之外再跟踪最多 6 个 Claude Code / Codex 登录：各有自己的圆环组、配额历史与预测。仅配额，见“支持的服务与套餐”下的说明 |
+| 多账号 | 在主账号之外再跟踪最多 6 个 Claude Code / Codex 登录：各有自己的圆环组、配额历史与预测，以及各自独立的 token、费用与会话历史（从该登录自己的日志目录读取），见“支持的服务与套餐”下的说明 |
 
 ## 支持的服务与套餐
 
@@ -564,8 +569,11 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 **多个账号**：Claude Code 与 Codex 可以同时跟踪多个登录（例如个人与工作账号）：在“设置 → 账号”中添加，
 最多 6 个，各自指向该登录的 CLI 配置目录（`CLAUDE_CONFIG_DIR` / `CODEX_HOME`）。额外账号有独立的圆环、弹层行、
-配额历史与预测，但**只有配额**：本地会话日志、token 历史、预算提醒与每周摘要中的 token 与费用只覆盖主账号。
-macOS 上额外的 Claude 账号只读取 `<目录>/.credentials.json`，因为非默认配置目录对应的钥匙串条目无法验证。
+配额历史与预测，其本地会话日志也会从该目录摄取：历史（出现额外账号后有账号选择器和 CSV 的 `account` 列）、费用、
+会话、订阅回报（每个账号一个套餐价格）与“每 1% 的 token 数”周期都按账号统计。每月预算提醒与每周摘要合并所有账号
+（摘要中另列各账号）。移除账号会保留已存储的全部数据。macOS 上额外的 Claude 账号先读 `<目录>/.credentials.json`，
+否则读 Claude Code 为该目录建立的钥匙串条目（`Claude Code-credentials-<目录 sha256 的前 8 位十六进制>`，来自第三方
+报告，见 docs/PROVIDERS.md §5；猜错只会找不到条目）。
 
 **关于“实验性”**：Claude 与 Codex 两个服务商是对着真实账号的真实响应写出来的；
 GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自家 Copilot SDK 的
@@ -608,7 +616,7 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 | GitHub Copilot | 无 —— 目前没有任何 Copilot 客户端会把 token 计数写到本地，因此 Copilot 没有 token 历史 |
 | OpenRouter | 无 —— 它是 API 网关，没有 token 历史 |
 
-只有主账号的 Claude Code 与 Codex 会被解析日志；额外账号只有配额。
+主账号的 Claude Code 与 Codex 以及每个已启用的额外账号都会被解析日志，各自读取自己的日志目录。
 
 > **隐私说明**：除了发往 Anthropic、OpenAI、GitHub 与 OpenRouter 自家接口（也就是 `claude`、
 > `codex` 和 Copilot 编辑器插件本来就会访问的那几个，且仅限你已启用的服务商）之外，
@@ -790,12 +798,12 @@ https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pric
 - [x] KWin 下的背景模糊（X11 / XWayland）
 - [x] GitHub Copilot（实验性，未在真实账号上验证，详见 [docs/PROVIDERS.md](docs/PROVIDERS.md)）
 - [x] OpenRouter（实验性，未验证）
-- [x] 多个 Claude Code / Codex 账号（仅配额）
+- [x] 多个 Claude Code / Codex 账号（配额、token 历史、费用、会话）
 - [x] 原生 CSV 导出与剪贴板复制
 - [x] 按项目统计 token
 - [x] 消耗速率预测（“按此速度，你的每周额度将在 …… 用尽”）
 - [x] 提醒：阈值、预测、预算、每周摘要、Webhook
-- [ ] 额外账号的 token 历史与预算提醒
+- [ ] 按账号的预算提醒（月度预算目前覆盖所有账号）
 - [ ] 在真实账号与硬件上验证 Copilot、OpenRouter 与原生 Wayland
 - [ ] Gemini CLI —— 其凭据已迁入系统钥匙串，暂时受阻（[原因](docs/PROVIDERS.md)）
 - [ ] ~~Cursor~~ —— 不计划支持：服务条款与接口稳定性（[原因](docs/PROVIDERS.md)）

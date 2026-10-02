@@ -455,8 +455,9 @@ they write):
 * Codex: `CODEX_HOME=<dir> codex login`.
 
 **What an account reads.** The same credential loader as the primary account,
-with the dir passed explicitly: `<configDir>/.credentials.json` (Claude) or
-`<configDir>/auth.json` (Codex), the same endpoints, the same status mapping.
+with the dir passed explicitly: `<configDir>/.credentials.json` (Claude; on
+macOS then the Keychain item below) or `<configDir>/auth.json` (Codex), the same
+endpoints, the same status mapping.
 Each account is its own provider instance: separate last-good cache
 (`cache/quota-claude@work.json`), separate backoff, `Retry-After` and
 adaptive-poll clock, and Claude's 120 s floor applies **per account**. The
@@ -469,30 +470,96 @@ notification dedupe (threshold, forecast), `snapshot.json` (`id`, plus an
 `--print --provider claude@work`. `--provider claude` still means the primary
 account only.
 
-**Storage.** `quota_samples.account` (`''` = primary). Every quota query,
-throttling check, forecast input, the weekly "limits hit" count and the
+**Storage.** `quota_samples.account` (schema v3) and `usage_events.account`
+(schema v4), `''` = primary; every existing row migrates as primary. Every quota
+query, throttling check, forecast input, the weekly "limits hit" count and the
 retention thinning are per account.
+
+**Local usage (v0.7).** Each enabled extra account contributes its own log roots
+to ingestion: Claude `<configDir>/projects`; Codex `<configDir>/sessions` and
+`<configDir>/archived_sessions` (the primary resolves the same way from
+`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, so the layout is identical). A root already
+listed (an extra account pointing at the default dir) is never listed twice, so
+the primary wins and nothing is counted twice. The log watcher re-plans its
+watches within about two seconds of an account being added, removed, enabled or
+disabled (no restart) and then reconciles the new roots.
+
+* *Dedupe.* `usage_events` keeps `UNIQUE(provider, request_id)` (changing it
+  would need a table rebuild and make the schema non-additive). The primary
+  account keeps the provider's own id; an extra account's rows are stored under
+  the scoped id `<account>\u{1f}<id>` (`usage::scoped_request_id`), so the same
+  request id in two logins can never collide. The sessions index links turns to
+  usage with the same scoped id.
+* *Sessions.* `session_metadata.account` (added next to the table, guarded like
+  a migration step) tags each session; the other session tables stay keyed by
+  `(provider, session_id)`: session ids are UUIDs, so two logins sharing one is
+  not a case worth a rebuild. `list_sessions` / `get_session_insights` take an
+  `account` filter and rows carry `account` (absent for the primary account).
+* *Queries.* `HistoryQuery`, `CalendarQuery`, `SessionQuery` (usage) and
+  `WindowUsageQuery` take `account` (`null` = every account, `""` = primary,
+  `"work"`). History rows are split per account and `byAccount` (keyed `claude`,
+  `claude@work`) is only present once an extra account has events in range, so
+  without extra accounts every result serialises exactly as in v0.6. The token
+  based forecast fallback and the tokens-per-percent cycles read the events of
+  that account.
+* *Money.* The monthly budget (`monthlyBudgetUsd`) and its alerts total every
+  account (one user, one budget); the budget chart in History follows the
+  History filters. A plan price is per login: `subscriptionUsd` keys are provider
+  keys (`claude`, `claude@work`), because each login is its own subscription; the
+  ROI lists one line per login and an account without a price shows "unset".
+  The weekly summary totals every account and, when an extra account had usage,
+  lists each one.
+* *Removing an account* keeps all rows already stored (events, sessions, quota
+  samples); they stay in the "all accounts" totals and the History selector
+  offers the id as "<id> (removed)". There is no "forget data" action; deleting
+  `usage.db` is the only way to drop them.
+* *Diagnostics* lists every extra account: config dir, whether the folder, the
+  credentials file and the log folder exist (existence only; nothing is read),
+  the macOS Keychain service name tried, the last status, plan and masked e-mail.
+
+**macOS Keychain for extra Claude accounts.** The login of the *default* config
+dir is the item `Claude Code-credentials`. For a non-default `CLAUDE_CONFIG_DIR`
+Claude Code uses a suffixed service name. Anthropic does not document it; the
+rule below is what independent tools reverse-engineered, and it is what the app
+tries (file first, then the item; never the primary's item):
+
+    service = "Claude Code-credentials-" + sha256(configDir).hex()[0..8]
+    account = the macOS user name (`id -un`)   (the app does not pass -a)
+
+Sources (all third party, read by a research pass that only saw page summaries,
+except where noted):
+
+* robinebers/openusage issue #423, https://github.com/robinebers/openusage/issues/423
+  (re-fetched: `"Claude Code-credentials-${sha256(expandedClaudeConfigDir).slice(0, 8)}"`,
+  `sha256("/Users/<user>/.claude").slice(0, 8) == 8bab74ae`, account `$(id -un)`).
+* mhelbich/VS-Code-Claude-Usage PR #38 (NFC-normalises the path before hashing,
+  "matching Claude Code's own secureStorage naming"; lookup order suffixed item,
+  plain item, `.credentials.json`).
+* deepansh96/ccdm PR #69 (suffix whenever `CLAUDE_CONFIG_DIR` is explicitly set;
+  the default home can hold both a hashed and a plain item).
+* sbigstar0310/cc-donut issue #84 (same rule; Claude Code honours
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR` before `CLAUDE_CONFIG_DIR`).
+
+What is **not** verified, and why a wrong guess is harmless: no Anthropic
+document, changelog entry or source was found; reports of Claude Code issues
+#84275 (suffixed items that look time dependent) and kunchenguid/quota-axi #170
+(a suffix that did not match the computed hash on a fresh install) suggest the
+rule may differ in some versions. The app hashes the folder string exactly as
+configured (no `realpath`, no NFC normalisation, so a non-ASCII path may not
+match; a trailing separator is also tried without), does not honour
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`, and does not enumerate other items. A name
+that does not exist finds nothing, so the account falls back to its credentials
+file and then to "not logged in" with the looked-up service name in the message;
+the name always carries the hash of *this* folder, so it cannot return another
+account's token. The Accounts card probes existence with
+`security find-generic-password -s <service>` (attributes only, no secret, no
+prompt). The code path is `cfg(target_os = "macos")` and was not run on a Mac.
 
 **Limitations.**
 
-* **Quota only.** Local session logs of extra accounts are *not* ingested
-  (`usage_events`, sessions, token/cost history and the token-based forecast
-  fallback exist for the primary account only). Ingestion roots, the sessions
-  tables and the evaluation features all key on the provider, and generalising
-  them would change rows existing users already have. Cost-based features
-  (the monthly budget alerts, the weekly summary's tokens and cost) therefore
-  describe the primary accounts only; quota features (rings, forecasts,
-  threshold and forecast alerts, quota history, the weekly "limits hit" count)
-  cover every account.
-* **macOS and Claude Code.** On macOS the login of the *default* config dir is
-  in the Keychain item `Claude Code-credentials`. Claude Code files the login of
-  a non-default `CLAUDE_CONFIG_DIR` under a **different** Keychain service name,
-  which could not be verified, and guessing it risks reading the wrong
-  account's token. Extra Claude accounts are therefore read from
-  `<configDir>/.credentials.json` only; when that file is absent the account
-  shows `not_logged_in` with an explicit "not supported on macOS unless a
-  credentials file exists" message, and the Settings card says the same.
-  Codex accounts are file based on every platform.
+* Budget alerts and the weekly summary are not per account (see *Money*).
+* Sessions share `(provider, session_id)` keys across accounts (see *Sessions*).
+* macOS extra Claude accounts depend on the unverified Keychain rule above.
 * The tray shows one usage line per account (up to 6 extra ones).
 * Only Claude Code and Codex support extra accounts; an `accounts` entry for
   another provider is dropped.

@@ -136,10 +136,12 @@ environment variable, below).
   enabled}`; `configDir` must be absolute). The user signs the extra login in
   themself (`CLAUDE_CONFIG_DIR=<dir> claude` then `/login`, or
   `CODEX_HOME=<dir> codex login`); you never read what those write. Extra
-  accounts get quota only (no token history), their keys read `claude@work`,
-  and **on macOS an extra Claude account is read from
-  `<configDir>/.credentials.json` only** (non-default Keychain items are not
-  supported). `accounts` is replaced as a whole by a patch; invalid entries
+  accounts get quota and their own local usage history (their logs are read
+  from `<configDir>/projects` or `<configDir>/sessions`), their keys read
+  `claude@work`, and **on macOS an extra Claude account is read from
+  `<configDir>/.credentials.json`, else from the Keychain item
+  `Claude Code-credentials-<8 hex of sha256(configDir)>`** (best effort, see
+  docs/PROVIDERS.md §5). `accounts` is replaced as a whole by a patch; invalid entries
   are dropped.
 - Non-default locations of the primary account are honoured through
   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
@@ -246,7 +248,7 @@ below list every key exactly once; `pnpm check:agents`
 | `pricingUrl` | `""` | price source URL. Empty = the project's GitHub raw `pricing.json`; non-empty must be an `https://` custom source |
 | `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically |
 | `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
-| `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what the user pays per month per provider, to compare with the API-equivalent estimate in History |
+| `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what the user pays per month per provider, to compare with the API-equivalent estimate in History; an extra account's price is a further key `claude@work` (each login is its own subscription) |
 | `notifications` | `false`, `true` | master switch for every notification (native and webhook); the four switches below only act while it is on |
 | `thresholdNotifications` | `true`, `false` | warn when a window crosses `thresholds.warn` / `thresholds.critical` (once per window, level and cycle) |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets |
