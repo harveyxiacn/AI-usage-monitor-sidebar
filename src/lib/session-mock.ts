@@ -6,8 +6,10 @@ let config = structuredClone(analysisDefaults);
 const aliases = new Map<string, string>();
 const reports = new Map<string, EvaluationReport[]>();
 const now = Date.now();
+/** `?mock=accounts`: some Claude sessions belong to the extra "work" account. */
+const withAccounts = typeof location !== 'undefined' && new URLSearchParams(location.search).get('mock') === 'accounts';
 const rows: SessionSummary[] = Array.from({ length: 83 }, (_, i) => ({
-  provider: i % 2 ? 'claude' : 'codex', sessionId: `demo-${i + 1}`, project: i % 3 ? '/workspace/sidebar' : '/workspace/api',
+  provider: i % 2 ? 'claude' : 'codex', ...(withAccounts && i % 4 === 1 ? { account: 'work' } : {}), sessionId: `demo-${i + 1}`, project: i % 3 ? '/workspace/sidebar' : '/workspace/api',
   title: ['Improve startup loading', 'Investigate session pagination', 'Add keyboard accessibility', 'Review API error handling'][i % 4], titleSource: 'native',
   firstTs: new Date(now - (i + 1) * 3600000).toISOString(), lastTs: new Date(now - i * 3600000).toISOString(),
   durationMs: 3600000, models: [i % 2 ? 'claude-example' : 'codex-example'], parentSessionId: i === 2 ? 'demo-1' : null,
@@ -35,6 +37,7 @@ export async function sessionMockInvoke(cmd: string, args: Record<string, unknow
       const q = (args.query ?? {}) as SessionListQuery;
       const offset = q.offset ?? 0; const limit = q.limit ?? 25;
       const filtered = rows.map(summary).filter(r => (!q.provider || r.provider === q.provider) && (!q.project || r.project === q.project)
+        && (q.account == null || (r.account ?? '') === q.account)
         && (!q.from || r.lastTs >= q.from) && (!q.to || r.firstTs < q.to)
         && (!q.search || `${r.title} ${r.sessionId} ${r.project}`.toLowerCase().includes(q.search.toLowerCase())));
       filtered.sort((a, b) => q.sort === 'tokens' ? b.totalTokens - a.totalTokens : q.sort === 'title' ? a.title.localeCompare(b.title) : b.lastTs.localeCompare(a.lastTs));
@@ -43,6 +46,7 @@ export async function sessionMockInvoke(cmd: string, args: Record<string, unknow
     case 'get_session_insights': {
       const q = (args.query ?? {}) as SessionListQuery;
       const matching = rows.map(summary).filter(r => (!q.provider || r.provider === q.provider) && (!q.project || r.project === q.project)
+        && (q.account == null || (r.account ?? '') === q.account)
         && (!q.from || r.lastTs >= q.from) && (!q.to || r.firstTs < q.to)
         && (!q.search || `${r.title} ${r.sessionId} ${r.project}`.toLowerCase().includes(q.search.toLowerCase())));
       const tools = ['run_tests', 'read_file', 'shell', 'apply_patch'].map((tool, n) => {

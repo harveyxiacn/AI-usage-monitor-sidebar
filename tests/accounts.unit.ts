@@ -4,7 +4,12 @@
 import { test, expect } from '@playwright/test';
 import {
   MAX_ACCOUNTS,
+  accountChoices,
   accountErrors,
+  accountFilterOf,
+  accountIdsOf,
+  accountQuery,
+  providerKey,
   accountMatches,
   accountName,
   isAbsolutePath,
@@ -22,7 +27,11 @@ import { CARD_KEYS, isCardModified, resetPatch } from '../src/lib/settings-cards
 import { defaultSettings } from '../src/lib/settings-defaults';
 import { mergeSettings } from '../src/lib/settings-writer';
 import { mockSettings, mockSnapshot } from '../src/lib/mock';
-import type { AccountSettings, AppSnapshot, ProviderQuota, QuotaSample, Settings } from '../src/lib/types';
+import { historyCsv } from '../src/lib/history';
+import { sessionFilters } from '../src/lib/session-insights';
+import { subscriptionTotal } from '../src/lib/subscription';
+import { todaySummaries } from '../src/lib/today';
+import type { AccountSettings, AppSnapshot, HistoryRow, ProviderQuota, QuotaSample, Settings } from '../src/lib/types';
 
 const acct = (over: Partial<AccountSettings> = {}): AccountSettings => ({
   id: 'work',
@@ -181,4 +190,70 @@ test('accounts live in exactly one settings card and an empty list is not "modif
   // the list is replaced as a whole, and the card reset empties it
   expect(mergeSettings(edited, { accounts: [acct({ id: 'b' })] }).accounts.map((a) => a.id)).toEqual(['b']);
   expect(mergeSettings(edited, resetPatch('accounts', defaultSettings)).accounts).toEqual([]);
+});
+
+test('the account selector maps to the backend query values and lists removed accounts', () => {
+  expect(accountQuery('all')).toBeNull();
+  expect(accountQuery('primary')).toBe('');
+  expect(accountQuery('work')).toBe('work');
+  expect(accountFilterOf(null)).toBe('primary');
+  expect(accountFilterOf('work')).toBe('work');
+  // no extra account anywhere: no choices, so the selector stays hidden
+  expect(accountChoices([], [])).toEqual([]);
+  expect(accountChoices([acct()], ['work', 'old', null, undefined])).toEqual([
+    { id: 'work', label: 'Work', removed: false },
+    { id: 'old', label: 'old', removed: true },
+  ]);
+  expect(accountIdsOf(undefined)).toEqual([]);
+  expect(accountIdsOf({ claude: 1, 'claude@work': 2, 'codex@lab': 3 })).toEqual(['work', 'lab']);
+  expect(providerKey('claude', 'work')).toBe('claude@work');
+  expect(providerKey('claude', null)).toBe('claude');
+  expect(providerKey('claude', '')).toBe('claude');
+});
+
+test('a plan price belongs to one login: provider key, or provider@account', () => {
+  const prices = { claude: 100, codex: 20, 'claude@work': 20 };
+  expect(subscriptionTotal({ claude: 100, codex: 20 }, null)).toBe(120);
+  expect(subscriptionTotal(prices, null)).toBe(140);
+  expect(subscriptionTotal(prices, 'claude')).toBe(120);
+  expect(subscriptionTotal(prices, 'claude', '')).toBe(100);
+  expect(subscriptionTotal(prices, 'claude', 'work')).toBe(20);
+  expect(subscriptionTotal(prices, null, 'work')).toBe(20);
+  expect(subscriptionTotal(prices, 'codex', 'work')).toBe(0);
+});
+
+test('the CSV gains an account column only when asked (an extra account exists)', () => {
+  const row = {
+    bucketStart: '2026-09-22T00:00:00+00:00', provider: 'claude', model: 'm', reasoningEffort: null, project: null, account: 'work',
+    inputTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 2, reasoningTokens: 0, totalTokens: 3, requests: 1, estimatedCostUsd: null,
+  } as HistoryRow;
+  const [plain] = historyCsv([row]).split('\r\n');
+  expect(plain).not.toContain('account');
+  expect(plain.split(',').slice(0, 3)).toEqual(['bucket_start', 'provider', 'model']);
+  const [header, record] = historyCsv([row, { ...row, account: null }], true).split('\r\n');
+  expect(header.split(',').slice(0, 4)).toEqual(['bucket_start', 'provider', 'account', 'model']);
+  expect(record.split(',')[2]).toBe('work');
+  expect(historyCsv([{ ...row, account: null }], true).split('\r\n')[1].split(',')[2]).toBe('');
+});
+
+test('today summaries split by account once an extra account has usage', () => {
+  const t = (totalTokens: number) => ({ inputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens, requests: 1, estimatedCostUsd: null });
+  const at = new Date(2026, 8, 22, 9).toISOString();
+  const row = (account: string | null, totalTokens: number) => ({ ...t(totalTokens), bucketStart: at, provider: 'claude', model: null, project: null, ...(account ? { account } : {}) });
+  const noExtra = todaySummaries({ rows: [row(null, 10)], totals: t(10), byProvider: { claude: t(10) }, projects: [], costApproximate: false });
+  expect([...noExtra.keys()]).toEqual(['claude']);
+  const split = todaySummaries({
+    rows: [row(null, 10), row('work', 30)], totals: t(40), byProvider: { claude: t(40) },
+    byAccount: { claude: t(10), 'claude@work': t(30) }, projects: [], costApproximate: false,
+  });
+  expect(split.get('claude')!.totals.totalTokens).toBe(10);
+  expect(split.get('claude@work')!.totals.totalTokens).toBe(30);
+  expect(split.get('claude@work')!.hours[9]).toBe(30);
+  expect(split.get('claude')!.hours[9]).toBe(10);
+});
+
+test('session filters only carry an account when one is chosen', () => {
+  expect('account' in sessionFilters(null, '', null)).toBe(false);
+  expect(sessionFilters(null, 'claude', null, '').account).toBe('');
+  expect(sessionFilters(null, 'claude', null, 'work').account).toBe('work');
 });
