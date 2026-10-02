@@ -1,7 +1,9 @@
 //! Local session metadata and bounded, opt-in transcript access.
+mod insights;
 pub mod model;
 mod parser;
 mod store;
+pub use insights::insights;
 pub use store::{
     clear_analysis, content_page, detail, ensure_schema, index_codex_titles, index_file, list,
     set_alias,
@@ -21,6 +23,19 @@ pub async fn list_sessions(
         .map_err(|e| e.to_string())?
         .content_enabled;
     tauri::async_runtime::spawn_blocking(move || list(&db, &query, &pricing, content))
+        .await
+        .map_err(|e| format!("session worker failed: {e}"))?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_session_insights(
+    state: State<'_, AppState>,
+    query: model::SessionListQuery,
+) -> Result<model::SessionInsights, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    tauri::async_runtime::spawn_blocking(move || insights(&db, &query, &pricing))
         .await
         .map_err(|e| format!("session worker failed: {e}"))?
         .map_err(|e| e.to_string())

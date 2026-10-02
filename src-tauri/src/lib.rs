@@ -97,6 +97,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             sessions::list_sessions,
+            sessions::get_session_insights,
             sessions::get_session_detail,
             sessions::set_session_alias,
             evaluation::get_analysis_settings,
