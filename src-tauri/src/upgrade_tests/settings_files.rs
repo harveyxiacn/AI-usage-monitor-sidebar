@@ -102,10 +102,27 @@ fn same(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// v0.7 stopped writing the flat mirrors of two `sidebarItems` members; an old
+/// file's value lives on in the nested key (unless the file also sets that).
+fn legacy_target(key: &str) -> Option<&'static str> {
+    match key {
+        "showPercentLabel" => Some("percentLabel"),
+        "showScopedRing" => Some("scoped"),
+        _ => None,
+    }
+}
+
 fn assert_preserved(label: &str, file: &Value, loaded: &Settings) {
     let loaded = to_value(loaded);
     for (key, want) in file.as_object().unwrap() {
         if PLATFORM_DEPENDENT.contains(&key.as_str()) {
+            continue;
+        }
+        if let Some(member) = legacy_target(key) {
+            if file["sidebarItems"].get(member).is_none() && want.is_boolean() {
+                let got = &loaded["sidebarItems"][member];
+                assert!(same(got, want), "{label}: legacy `{key}` not carried into sidebarItems.{member}: {want} -> {got}");
+            }
             continue;
         }
         match (want, &loaded[key]) {
@@ -186,6 +203,13 @@ fn the_default_fixtures_still_match_todays_defaults() {
         for (key, v) in file.as_object().unwrap() {
             if key == "providers" || key == "onboarded" {
                 continue; // copilot depends on local credentials
+            }
+            if let Some(member) = legacy_target(key) {
+                assert!(
+                    same(&today["sidebarItems"][member], v),
+                    "{name}: default sidebarItems.{member} changed"
+                );
+                continue;
             }
             if let (Value::Object(w), Value::Object(t)) = (v, &today[key]) {
                 for (k, v) in w {
