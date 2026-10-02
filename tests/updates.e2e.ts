@@ -2,11 +2,13 @@
 // The mock backend offers version 9.9.9 on the first explicit check and
 // reports `canInstall: false`, i.e. the package-manager branch.
 import { test, expect } from '@playwright/test';
+import { showAdvancedSettings } from './advanced-settings';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/dashboard');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'About', exact: true })).toBeVisible();
+  await showAdvancedSettings(page); // the Shortcuts card is advanced-only
 });
 
 test('a manual check surfaces the offer in the Updates card and in the banner', async ({ page }) => {
