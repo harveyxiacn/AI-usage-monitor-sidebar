@@ -182,3 +182,14 @@ export function haloChannels(textHex: string): string | null {
   const white = { r: 255, g: 255, b: 255 };
   return contrastRatio(rgb, black) >= contrastRatio(rgb, white) ? '0 0 0' : '255 255 255';
 }
+
+/**
+ * Token-composition segments (input, cache read, cache write, output,
+ * reasoning). Five categorical hues with a per-theme variant; the legend, the
+ * stacking order and the data table carry the same information in text, so
+ * the hue is never the only differentiator.
+ */
+export const COMPOSITION_COLORS: Record<'dark' | 'light', Record<'input' | 'cacheRead' | 'cacheWrite' | 'output' | 'reasoning', string>> = {
+  dark: { input: '#5b9bff', cacheRead: '#3fc6a0', cacheWrite: '#e6b34a', output: '#e57fb0', reasoning: '#a897ff' },
+  light: { input: '#2b6fd8', cacheRead: '#16876a', cacheWrite: '#a8700a', output: '#bf3f7d', reasoning: '#6a54d4' },
+};
