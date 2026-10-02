@@ -61,6 +61,7 @@ export const defaultSettings: Settings = {
     copilot: { enabled: false, showInSidebar: true, order: 2 },
     openrouter: { enabled: false, showInSidebar: true, order: 3 },
   },
+  accounts: [],
   ingestEnabled: true,
   pricingUrl: '',
   monthlyBudgetUsd: 0,

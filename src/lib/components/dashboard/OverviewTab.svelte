@@ -16,6 +16,7 @@
   import { formatAgo, formatEstimatedCost, formatTokens, staleHint, windowLabel } from '$lib/format';
   import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
   import { accountEmail } from '$lib/privacy';
+  import { quotaKey, sampleKey } from '$lib/providers';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -39,11 +40,11 @@
     );
   });
 
-  /** provider + kind + scope → chronological used-percent series */
+  /** provider[@account] + kind + scope → chronological used-percent series */
   const series = $derived.by(() => {
     const map = new Map<string, number[]>();
     for (const sample of [...samples].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))) {
-      const key = `${sample.provider}|${sample.kind}|${sample.scope ?? ''}`;
+      const key = `${sampleKey(sample)}|${sample.kind}|${sample.scope ?? ''}`;
       const arr = map.get(key);
       if (arr) arr.push(sample.usedPercent);
       else map.set(key, [sample.usedPercent]);
@@ -51,8 +52,8 @@
     return map;
   });
 
-  function trend(provider: ProviderId, kind: string, scope: string | null): number[] {
-    return series.get(`${provider}|${kind}|${scope ?? ''}`) ?? [];
+  function trend(key: string, kind: string, scope: string | null): number[] {
+    return series.get(`${key}|${kind}|${scope ?? ''}`) ?? [];
   }
 
   async function loadQuotaHistory() {
@@ -121,7 +122,7 @@
     return t('popover.noCredits');
   }
 
-  async function refresh(provider?: ProviderId) {
+  async function refresh(provider?: string) {
     await snapshot.refresh(provider);
     await loadQuotaHistory();
     now = Date.now();
@@ -151,11 +152,12 @@
     <p class="muted">{t('overview.noProviders')}</p>
   {:else}
     <div class="grid">
-      {#each providers as q (q.provider)}
+      {#each providers as q (quotaKey(q))}
         {@const accent = accentFor(q.provider, 0)}
         {@const hint = statusHint(q)}
         {@const credits = creditsLine(q)}
-        {@const day = today.get(q.provider)}
+        <!-- an extra account has no ingested token log: its card has no usage line -->
+        {@const day = q.accountId ? undefined : today.get(q.provider)}
         {@const email = accountEmail(q.account?.email, s.hideAccountEmail)}
         <article class="card provider">
           <header class="head">
@@ -172,9 +174,9 @@
             <button
               class="btn"
               disabled={snapshot.refreshing !== null}
-              onclick={() => void refresh(q.provider)}
+              onclick={() => void refresh(quotaKey(q))}
             >
-              {snapshot.refreshing === q.provider ? t('common.refreshing') : t('common.refresh')}
+              {snapshot.refreshing === quotaKey(q) ? t('common.refreshing') : t('common.refresh')}
             </button>
           </header>
 
@@ -187,7 +189,7 @@
           {:else}
             <div class="windows">
               {#each q.windows as w, i (w.label + ':' + i)}
-                {@const line = w.scope == null ? trend(q.provider, w.kind, null) : []}
+                {@const line = w.scope == null ? trend(quotaKey(q), w.kind, null) : []}
                 <div class="win">
                   <WindowRow
                     window={w}

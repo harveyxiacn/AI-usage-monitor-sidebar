@@ -42,5 +42,6 @@ export function formatSettingValue(value: unknown): string {
   if (value === '') return '""';
   if (typeof value === 'boolean') return value ? 'on' : 'off';
   if (isObject(value)) return `{${Object.keys(value).length}}`;
+  if (Array.isArray(value)) return `[${value.length}]`;
   return String(value);
 }

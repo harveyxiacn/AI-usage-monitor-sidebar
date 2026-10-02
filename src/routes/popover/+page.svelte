@@ -29,6 +29,7 @@
     getQuotaHistory,
     type Unlisten,
   } from '$lib/api';
+  import { quotaKey, splitQuotaKey } from '$lib/providers';
   import { SPARK_SPAN_MS, SparkCache } from '$lib/quota-spark';
   import { nextTickDelay } from '$lib/countdown';
   import { t } from '$lib/i18n/i18n.svelte';
@@ -52,7 +53,7 @@
   const quota = $derived.by(() => {
     const providers = snapshot.value?.providers ?? [];
     if (providers.length === 0) return null;
-    if (target) return providers.find((p) => p.provider === target!.provider) ?? null;
+    if (target) return providers.find((p) => quotaKey(p) === target!.provider) ?? null;
     // browser preview / first paint before the platform picked a target
     return isTauri() ? null : providers[0];
   });
@@ -64,7 +65,8 @@
    */
   const sparkCache = new SparkCache();
   let history = $state<QuotaSample[]>([]);
-  const provider = $derived(quota?.provider ?? null);
+  /** `claude` or `claude@work`: the cache key and, split, the history query */
+  const provider = $derived(quota ? quotaKey(quota) : null);
   $effect(() => {
     void target; // a fresh show request re-checks the cache
     const id = provider;
@@ -76,7 +78,8 @@
     const at = Date.now();
     sparkCache
       .get(id, () =>
-        getQuotaHistory({ from: new Date(at - SPARK_SPAN_MS).toISOString(), to: new Date(at + 60_000).toISOString(), provider: id })
+        // `account: ''` = this provider's primary account only, never a mix with the extra ones
+        getQuotaHistory({ from: new Date(at - SPARK_SPAN_MS).toISOString(), to: new Date(at + 60_000).toISOString(), provider: splitQuotaKey(id).provider, account: splitQuotaKey(id).account })
       )
       .then((samples) => {
         if (!cancelled) history = samples;

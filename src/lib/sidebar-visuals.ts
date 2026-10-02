@@ -4,8 +4,8 @@
 // i18n-free so `tests/sidebar-visuals.unit.ts` can import it in plain Node.
 // [FRONTEND]
 import { clampPercent, severityOf, type Severity } from './severity';
-import { barSeverity, providerPolled } from './sidebar-items';
-import { altVar, rampVar } from './providers';
+import { providerPolled } from './sidebar-items';
+import { altVar, quotaKey, rampVar } from './providers';
 import type {
   AppSnapshot,
   LabelContent,
@@ -122,6 +122,8 @@ export function willRunOut(projected: number | null | undefined): boolean {
 
 export interface HandleSegment {
   provider: ProviderId;
+  /** `quotaKey()` of the quota: unique even when two accounts share a provider */
+  key: string;
   /** css colour: provider accent, or amber / red once it crossed a threshold */
   accent: string;
   severity: Severity;
@@ -148,16 +150,18 @@ export function handleSegments(snap: AppSnapshot | null, s: Settings): HandleSeg
     const severity = peak == null ? 'normal' : severityOf(peak, s.thresholds);
     const base = s.ringMode === 'concentric' ? rampVar(q.provider, 0) : altVar(q.provider, 0);
     const accent = severity === 'critical' ? 'var(--critical)' : severity === 'warn' ? 'var(--warn)' : base;
-    return { provider: q.provider, accent, severity, usedPercent: peak };
+    return { provider: q.provider, key: quotaKey(q), accent, severity, usedPercent: peak };
   });
 }
 
 /** Highest used percent across everything polled, null when nothing is known. */
-export function handlePeak(snap: AppSnapshot | null, s: Settings): { provider: ProviderId; used: number } | null {
-  const { leader } = barSeverity(snap, s);
-  if (!leader) return null;
-  const seg = handleSegments(snap, s).find((g) => g.provider === leader);
-  return seg?.usedPercent == null ? null : { provider: leader, used: seg.usedPercent };
+export function handlePeak(snap: AppSnapshot | null, s: Settings): { provider: ProviderId; key: string; used: number } | null {
+  // the first segment with the highest percent, which is the provider/account `barSeverity` calls the leader
+  let best: HandleSegment | null = null;
+  for (const seg of handleSegments(snap, s)) {
+    if (seg.usedPercent != null && (best === null || seg.usedPercent > (best.usedPercent ?? -1))) best = seg;
+  }
+  return best ? { provider: best.provider, key: best.key, used: best.usedPercent! } : null;
 }
 
 // -------------------------------------------------------------- popover ----

@@ -2,6 +2,7 @@
 // previous and the next snapshot of every window and says what just happened.
 // Pure, so `tests/ring-events.unit.ts` covers it; never fires on first load.
 // [FRONTEND]
+import { quotaKey } from './providers';
 import { severityOf, type Severity } from './severity';
 import type { AppSnapshot, ProviderId, QuotaWindow, Thresholds } from './types';
 
@@ -32,7 +33,7 @@ export function levelsOf(snap: AppSnapshot | null, th: Thresholds): Map<string, 
   for (const q of snap?.providers ?? []) {
     for (const w of q.windows) {
       if (w.usedPercent == null || !Number.isFinite(w.usedPercent)) continue;
-      out.set(windowKey(q.provider, w), { percent: w.usedPercent, severity: severityOf(w.usedPercent, th) });
+      out.set(windowKey(quotaKey(q), w), { percent: w.usedPercent, severity: severityOf(w.usedPercent, th) });
     }
   }
   return out;

@@ -25,7 +25,7 @@
   let requestId = 0;
   let disposed = false;
 
-  const sameScope = $derived(allSeries.filter((s) => s.provider === selected.provider && s.scope === selected.scope &&
+  const sameScope = $derived(allSeries.filter((s) => s.provider === selected.provider && s.account === selected.account && s.scope === selected.scope &&
     (s.kind === 'five_hour' || s.kind === 'seven_day')));
   const kinds = $derived(sameScope.map((s) => s.kind as 'five_hour' | 'seven_day'));
   const series = $derived(sameScope.find((s) => s.kind === kindChoice) ?? sameScope.find((s) => s.kind === selected.kind) ?? sameScope[0] ?? null);
@@ -49,7 +49,8 @@
     if (key === totalsKey) return;
     totalsKey = key;
     const id = ++requestId;
-    if (list.length === 0) { totals = []; return; }
+    // token logs are only ingested for the primary account
+    if (list.length === 0 || series?.account) { totals = []; return; }
     try {
       const result = await getWindowUsage({
         provider: provider as 'claude' | 'codex',
