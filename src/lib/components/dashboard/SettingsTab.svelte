@@ -11,6 +11,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import AboutCard from './settings/AboutCard.svelte';
+  import AccountsCard from './settings/AccountsCard.svelte';
   import AppearanceCard from './settings/AppearanceCard.svelte';
   import BackupCard from './settings/BackupCard.svelte';
   import BehaviourCard from './settings/BehaviourCard.svelte';
@@ -44,6 +45,7 @@
     { id: 'notifications', title: 'settings.card.notifications' },
     { id: 'shortcuts', title: 'settings.card.shortcuts' },
     { id: 'providers', title: 'settings.providers' },
+    { id: 'accounts', title: 'settings.accounts' },
     { id: 'data', title: 'settings.data' },
     { id: 'integrations', title: 'integrations.title' },
     { id: 'updates', title: 'settings.card.updates' },
@@ -170,6 +172,7 @@
     <NotificationsCard />
     <ShortcutsCard />
     <ProvidersCard />
+    <AccountsCard />
     <DataCard />
     <IntegrationsPanel />
     <UpdatesCard />
