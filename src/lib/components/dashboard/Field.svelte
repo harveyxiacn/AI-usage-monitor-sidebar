@@ -1,6 +1,12 @@
-<!-- One settings row: label (+ hint) on the left, control on the right. [FRONTEND] -->
+<!--
+  One settings row: label (+ hint) on the left, control on the right. [FRONTEND]
+  Inside the Settings tab the row also hides itself when it does not match the
+  search box (label and hint, in the current language).
+-->
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { matchesQuery } from '$lib/settings-search';
+  import { getCardScope, getSettingsSearch } from '$lib/settings-scope.svelte';
 
   interface Props {
     label: string;
@@ -11,9 +17,19 @@
   }
 
   let { label, hint, wide = false, children }: Props = $props();
+
+  const search = getSettingsSearch();
+  const scope = getCardScope();
+  const shown = $derived(!search?.active || !!scope?.headMatches || matchesQuery(search.query, label, hint));
+  const id = Symbol('field');
+  $effect(() => {
+    if (!scope) return;
+    scope.fields.set(id, shown);
+    return () => scope.fields.delete(id);
+  });
 </script>
 
-<div class="setting-field" class:wide>
+<div class="setting-field" class:wide hidden={!shown}>
   <div class="text">
     <span class="label">{label}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}
@@ -29,6 +45,10 @@
     gap: 1rem;
     padding: 0.5rem 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .setting-field[hidden] {
+    display: none;
   }
 
   .setting-field:last-child {

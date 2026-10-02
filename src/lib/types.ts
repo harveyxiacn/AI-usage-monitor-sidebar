@@ -265,6 +265,8 @@ export interface Settings {
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
   alwaysOnTop: boolean;
+  /** The user's own presets, name → partial settings patch (at most 10). */
+  customPresets: Record<string, Record<string, unknown>>;
 }
 
 // ---------- history ----------
@@ -465,6 +467,52 @@ export interface PriceUpdateStatus {
   customPricing: boolean;
 }
 
+/** One earlier settings version from the undo ring (newest first). */
+export interface SettingsVersion {
+  /** epoch ms at which this version stopped being the live one */
+  replacedAt: number;
+  settings: Settings;
+}
+
+/** Result of importing a settings file. */
+export interface ImportResult {
+  path: string;
+  before: Settings;
+  after: Settings;
+  /** file keys that were unknown, invalid or clamped */
+  ignored: string[];
+}
+
+export interface ProviderDiagnostics {
+  id: ProviderId;
+  displayName: string;
+  enabled: boolean;
+  experimental: boolean;
+  loggedIn: boolean;
+  status: ProviderStatus | null;
+  planLabel: string | null;
+  /** always masked */
+  account: string | null;
+  error: string | null;
+  fetchedAt: string | null;
+}
+
+/** What `get_diagnostics` returns: nothing secret, e-mails always masked. */
+export interface Diagnostics {
+  appVersion: string;
+  os: string;
+  arch: string;
+  backend: string;
+  sessionType: string | null;
+  providers: ProviderDiagnostics[];
+  settings: Record<string, unknown>;
+  logDir: string;
+  configDir: string;
+  dataDir: string;
+  logFile: string | null;
+  logTail: string;
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;
@@ -490,6 +538,20 @@ export interface UpdateStatus {
   error: string | null;
   /** RFC 3339 UTC of the last completed check */
   checkedAt: string | null;
+}
+
+/** What became of one configured global shortcut. */
+export type RegistrationState = 'off' | 'registered' | 'failed' | 'unsupported';
+
+export interface ShortcutRegistration {
+  state: RegistrationState;
+  /** why, for `failed` and `unsupported` */
+  message: string | null;
+}
+
+export interface ShortcutRegistrations {
+  toggleSidebar: ShortcutRegistration;
+  openDashboard: ShortcutRegistration;
 }
 
 /** Why a configured global shortcut is not active; null = fine (or disabled). */

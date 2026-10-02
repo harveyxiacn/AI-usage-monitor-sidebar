@@ -8,8 +8,10 @@ import type {
   CalendarQuery,
   CalendarResult,
   DashboardTab,
+  Diagnostics,
   HistoryQuery,
   HistoryResult,
+  ImportResult,
   IngestStats,
   MonitorInfo,
   PopoverRequest,
@@ -22,6 +24,8 @@ import type {
   SessionQuery,
   SessionsResult,
   Settings,
+  SettingsVersion,
+  ShortcutRegistrations,
   ShortcutStatus,
   SidebarState,
   TokenTotals,
@@ -40,6 +44,16 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     return invoke<T>(cmd, args);
   }
   return (await import('./mock')).mockInvoke<T>(cmd, args);
+}
+
+/** Opens an https link in the system browser (a new tab in browser previews). */
+export async function openExternal(url: string): Promise<void> {
+  if (isTauri()) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  } else {
+    window.open(url, '_blank', 'noopener');
+  }
 }
 
 export type Unlisten = () => void;
@@ -86,6 +100,34 @@ export const useSourcePricing = () => invoke<PricingTable>('use_source_pricing')
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');
+/** Everything a bug report needs; nothing secret, e-mails always masked. */
+export const getDiagnostics = () => invoke<Diagnostics>('get_diagnostics');
+/** Opens one of the app's own folders in the file manager. */
+export const openFolder = (which: 'log' | 'config' | 'data') => invoke<void>('open_folder', { which });
+
+// ---- settings backup / undo ----
+/** Native save dialog (a download in browser previews); the saved path, or null when cancelled. */
+export const exportSettings = () => invoke<string | null>('export_settings');
+
+/** Native open dialog (a file picker in browser previews); null when cancelled. */
+export async function importSettings(): Promise<ImportResult | null> {
+  if (isTauri()) return invoke<ImportResult | null>('import_settings');
+  const file = await new Promise<File | null>((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+  if (!file) return null;
+  return (await import('./mock')).mockInvoke<ImportResult>('import_settings', { file });
+}
+
+/** The last few settings versions, newest first. */
+export const getSettingsHistory = () => invoke<SettingsVersion[]>('get_settings_history');
+/** Make version `index` (0 = newest) the live settings; the replaced one is kept for undoing. */
+export const restoreSettingsVersion = (index: number) => invoke<Settings>('restore_settings_version', { index });
 
 /** Native save dialog on desktop; a normal file download in browser previews. */
 export async function exportUsageCsv(csv: string, suggestedName: string): Promise<string | null> {
@@ -112,6 +154,8 @@ export const installUpdate = () => invoke<void>('install_update');
 
 // ---- platform ----
 export const getShortcutStatus = () => invoke<ShortcutStatus>('get_shortcut_status');
+/** Per shortcut: off / registered / failed / unsupported (native Wayland). */
+export const getShortcutRegistrations = () => invoke<ShortcutRegistrations>('get_shortcut_registrations');
 export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_set_expanded', { expanded });
 export const sidebarRelayout = (width: number, height: number) => invoke<void>('sidebar_relayout', { width, height });
 /** dx/dy: CSS px the pointer travelled since the drag started */
