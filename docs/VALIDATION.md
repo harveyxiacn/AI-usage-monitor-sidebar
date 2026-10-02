@@ -123,6 +123,9 @@ was parsed and applied at start-up); and, for `v0.5.0`, the line
 a migration line, because it is legitimately absent when the schema did not
 change. These checks would have caught both v0.6 release bugs.
 
+First all-green run of the full set (12 jobs, including all six upgrade legs):
+[CI run 37016050751](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/runs/37016050751).
+
 On failure each job uploads its logs as an artifact (`smoke-logs-*`,
 `upgrade-logs-*`, 7 days). The Windows and macOS scripts refuse to run outside
 CI unless `SMOKE_ALLOW_REAL_PROFILE=1` is set, because they use the real
