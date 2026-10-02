@@ -11,7 +11,8 @@
   that changed.
 -->
 <script lang="ts">
-  import Field from './Field.svelte';
+  import Field from '../Field.svelte';
+  import SettingsCard from './SettingsCard.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import Ring from '$lib/components/Ring.svelte';
   import { parseHex } from '$lib/colors';
@@ -19,7 +20,6 @@
   import { providerColorKeys, providerDisplayName } from '$lib/providers';
   import {
     clampSize,
-    defaultColors,
     defaultSizes,
     settings,
     SIZE_LIMITS,
@@ -68,13 +68,6 @@
   const swatchFallback = (key: (typeof OPTIONAL_KEYS)[number]) =>
     key === 'surface' ? '#0c0c0e' : '#f5f5f7';
 
-  function resetAll() {
-    void settings.patch({
-      colors: structuredClone(defaultColors),
-      sizes: structuredClone(defaultSizes),
-    });
-  }
-
   // the preview is pinned to the live form values so it updates even before the
   // sidebar window has re-measured itself
   const previewArcs = $derived([
@@ -84,12 +77,7 @@
   ]);
 </script>
 
-<article class="card group wide">
-  <header class="head">
-    <h3>{t('settings.sizeColour')}</h3>
-    <button class="btn" onclick={resetAll}>{t('settings.resetDefaults')}</button>
-  </header>
-
+<SettingsCard id="sizeColour" title={t('settings.sizeColour')} reset="sizeColour" wide>
   <div class="split">
     <div class="controls">
       <h4>{t('settings.sizes')}</h4>
@@ -194,22 +182,9 @@
       </div>
     </aside>
   </div>
-</article>
+</SettingsCard>
 
 <style>
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  h3 {
-    margin: 0;
-    font-size: 0.875rem;
-    font-weight: 600;
-  }
-
   h4 {
     margin: 0.75rem 0 0;
     font-size: 0.75rem;

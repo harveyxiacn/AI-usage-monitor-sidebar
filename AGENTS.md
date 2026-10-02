@@ -176,6 +176,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `exportSnapshot` | `false`, `true` | write `snapshot.json` (versioned, no e-mails) to the app data dir after every snapshot; `ai-usage-sidebar --print [--format json|line|statusline] [--provider ID]` reads it and exits 0, or 2 when missing/older than 15 min. See `docs/STATUSLINE.md` |
 | `pollingPaused` | `false`, `true` | skip the automatic provider polling (log ingestion continues; an explicit refresh still polls). Persisted; also a tray check item |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
+| `customPresets` | `{}` | the user's own presets, name → partial settings patch (max 10; created in the dashboard, rarely hand-written) |
 | `autostart` | `false`, `true` | start at login |
 | `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |
 | `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS) |

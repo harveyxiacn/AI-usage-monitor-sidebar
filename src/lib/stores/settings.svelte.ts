@@ -2,32 +2,12 @@
 // One instance per window (each Tauri window is its own page load); the
 // `settings-updated` event keeps the three windows in sync.
 import { applyWindowSettings, getSettings, onSettingsUpdated, updateSettings, type Unlisten } from '$lib/api';
+import { defaultColors, defaultSettings, defaultSizes } from '$lib/settings-defaults';
 import { defaultSidebarItems } from '$lib/sidebar-items';
-import type { ColorSettings, Settings, SizeSettings } from '$lib/types';
+import type { Settings, SizeSettings } from '$lib/types';
 import { SettingsWriter, type SettingsPatch } from '$lib/settings-writer';
 
-export { defaultSidebarItems };
-
-/** Contract defaults for the user-tunable palette (empty = keep the theme's). */
-export const defaultColors: ColorSettings = {
-  claude: '#ff5c1a',
-  codex: '#10a37f',
-  copilot: '#8250df',
-  warn: '#f5c542',
-  critical: '#ff3b30',
-  surface: '',
-  text: '',
-};
-
-/** Contract defaults for the user-tunable geometry, in CSS px at scale 1. */
-export const defaultSizes: SizeSettings = {
-  ringSize: 56,
-  ringStroke: 4.5,
-  barGap: 18,
-  barPadding: 10,
-  cornerRadius: 26,
-  labelSize: 13,
-};
+export { defaultColors, defaultSettings, defaultSidebarItems, defaultSizes };
 
 /** [min, max, step] per size key — the UI and applyTheme both clamp with these. */
 export const SIZE_LIMITS: Record<keyof SizeSettings, [min: number, max: number, step: number]> = {
@@ -53,61 +33,6 @@ export function clampSizes(sizes: Partial<SizeSettings> | undefined): SizeSettin
   }
   return out;
 }
-
-/** Frontend-side fallback so the first paint never has to null-check. */
-export const defaultSettings: Settings = {
-  version: 1,
-  language: 'auto',
-  theme: 'dark',
-  surfaceStyle: 'glass',
-  cyberAccent: 'neon',
-  edge: 'right',
-  verticalAlign: 'center',
-  verticalOffset: 0,
-  monitor: null,
-  autoHide: false,
-  autoHideDelayMs: 800,
-  popoverTimeoutSec: 10,
-  collapsedWidth: 6,
-  ringMode: 'concentric',
-  showScopedRing: true,
-  percentMode: 'used',
-  percentPosition: 'below',
-  labelContent: 'percent',
-  ringStyle: 'ring',
-  sidebarAnimations: true,
-  showPercentLabel: true,
-  sidebarItems: structuredClone(defaultSidebarItems),
-  refreshIntervalSec: 60,
-  adaptiveRefresh: true,
-  providers: {
-    claude: { enabled: true, showInSidebar: true, order: 0 },
-    codex: { enabled: true, showInSidebar: true, order: 1 },
-  },
-  ingestEnabled: true,
-  pricingUrl: '',
-  monthlyBudgetUsd: 0,
-  subscriptionUsd: { claude: 0, codex: 0 },
-  quotaRetentionDays: 365,
-  autostart: false,
-  autoUpdateCheck: true,
-  autoPricingCheck: true,
-  shortcutToggleSidebar: '',
-  shortcutOpenDashboard: '',
-  opacity: 1,
-  scale: 1,
-  thresholds: { warn: 70, critical: 90 },
-  colors: structuredClone(defaultColors),
-  sizes: structuredClone(defaultSizes),
-  notifications: false,
-  forecastNotifications: true,
-  focusUntil: 0,
-  focusHidesSidebar: false,
-  hideAccountEmail: false,
-  exportSnapshot: false,
-  pollingPaused: false,
-  alwaysOnTop: true,
-};
 
 /** Keys that require the platform layer to move/resize/restyle the windows. */
 export const WINDOW_KEYS = ['surfaceStyle', 

@@ -6,6 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Field from '../Field.svelte';
+  import SettingsCard from './SettingsCard.svelte';
   import Toggle from '../Toggle.svelte';
   import { backupData, getAppInfo, restartApp, restoreData } from '$lib/api';
   import { t } from '$lib/i18n/i18n.svelte';
@@ -84,8 +85,7 @@
   );
 </script>
 
-<article class="card group">
-  <h3>{t('integrations.title')}</h3>
+<SettingsCard id="integrations" title={t('integrations.title')} reset="integrations">
 
   <Field label={t('integrations.pause')} hint={t('integrations.pause.hint')}>
     <Toggle
@@ -147,14 +147,9 @@
   {#if error}
     <p class="err" role="alert">{t('common.error', { message: error })}</p>
   {/if}
-</article>
+</SettingsCard>
 
 <style>
-  .group {
-    padding: 0.75rem 1rem 1rem;
-    min-width: 0;
-  }
-
   h3 {
     margin: 0 0 0.25rem;
     font-size: 0.875rem;

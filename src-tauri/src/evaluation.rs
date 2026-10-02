@@ -266,7 +266,7 @@ fn validate_settings(settings: &AnalysisSettings) -> Result<()> {
 
 /// Conservative best-effort redaction. The editable preview remains the final
 /// consent boundary: secrets may occur in arbitrary prose we cannot recognize.
-fn redact(text: &str) -> String {
+pub(crate) fn redact(text: &str) -> String {
     let mut safe = String::new();
     let mut private_block = false;
     for line in text.lines() {

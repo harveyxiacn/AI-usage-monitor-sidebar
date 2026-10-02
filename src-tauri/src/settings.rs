@@ -6,6 +6,7 @@
 //! The file is also **watched**, so a user or an AI agent can edit it while
 //! the app runs (see `watch`).
 
+use super::settings_history;
 use crate::model::{ColorSettings, ProviderSettings, Settings, SizeSettings};
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -174,6 +175,7 @@ pub fn clamp(mut s: Settings) -> Settings {
         *v = clamp_f64(*v, 0.0, 10_000.0, 0.0);
     }
     s.quota_retention_days = s.quota_retention_days.min(3650);
+    s.custom_presets = clamp_presets(std::mem::take(&mut s.custom_presets));
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);
@@ -222,6 +224,32 @@ pub fn clamp(mut s: Settings) -> Settings {
             });
     }
     s
+}
+
+/// Most custom presets a user can keep.
+pub const MAX_CUSTOM_PRESETS: usize = 10;
+const MAX_PRESET_NAME_CHARS: usize = 40;
+
+/// Presets are name → patch objects. Anything else is dropped, a preset may
+/// not carry presets or the transient focus deadline, and only the first ten
+/// (by name) survive.
+fn clamp_presets(
+    presets: std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, Value> {
+    presets
+        .into_iter()
+        .filter_map(|(name, mut patch)| {
+            let name = name.trim().to_string();
+            if name.is_empty() || name.chars().count() > MAX_PRESET_NAME_CHARS {
+                return None;
+            }
+            let object = patch.as_object_mut()?;
+            object.remove("customPresets");
+            object.remove("focusUntil");
+            Some((name, patch))
+        })
+        .take(MAX_CUSTOM_PRESETS)
+        .collect()
 }
 
 fn clamp_f64(v: f64, min: f64, max: f64, fallback: f64) -> f64 {
@@ -305,14 +333,74 @@ fn persist_patch(
     patch: &Value,
     notify: impl FnOnce(&Settings),
 ) -> Result<Settings> {
+    persist_with(
+        settings,
+        config_dir,
+        |current| merge(current, patch),
+        notify,
+    )
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// Remember `previous` in the undo ring before it is replaced. Never fails the
+/// caller: a history that cannot be written only costs the undo entry.
+fn remember(config_dir: &Path, previous: &Settings, force: bool) {
+    if let Err(e) = settings_history::record(config_dir, previous, now_ms(), force) {
+        log::warn!("could not record the settings history: {e:#}");
+    }
+}
+
+/// Shared by every write: derive the next settings from the current ones,
+/// remember the replaced version, save, store and notify, all under one lock.
+fn persist_with(
+    settings: &parking_lot::RwLock<Settings>,
+    config_dir: &Path,
+    next: impl FnOnce(&Settings) -> Settings,
+    notify: impl FnOnce(&Settings),
+) -> Result<Settings> {
     // Hold one write lock through read/merge/save/notify so concurrent windows
     // cannot overwrite patches or deliver stale events after newer settings.
     let mut current = settings.write();
-    let merged = merge(&current, patch);
+    let merged = next(&current);
     save(config_dir, &merged)?;
+    if merged != *current {
+        remember(config_dir, &current, false);
+    }
     *current = merged.clone();
     notify(&merged);
     Ok(merged)
+}
+
+/// Make version `index` of the undo ring (0 = the newest) the live settings.
+/// The version it replaces goes into the ring, so a restore can be undone too.
+pub fn restore_version(app: &AppHandle, index: usize) -> Result<Settings> {
+    let state = app.state::<AppState>();
+    let versions = settings_history::load(&state.config_dir);
+    let version = versions
+        .get(index)
+        .with_context(|| format!("no saved settings version #{index}"))?;
+    // Go through `merge` onto the defaults so a hand-edited history file is
+    // clamped like any other input.
+    let target = merge(
+        &Settings::default(),
+        &serde_json::to_value(&version.settings).context("serialize version")?,
+    );
+    let mut current = state.settings.write();
+    if target == *current {
+        return Ok(target);
+    }
+    save(&state.config_dir, &target)?;
+    // A restore is a deliberate step, never part of a slider burst.
+    remember(&state.config_dir, &current, true);
+    *current = target.clone();
+    emit_updated(app, &target);
+    Ok(target)
 }
 
 /// Toggle `autoHide` from outside the command layer (the tray menu).
@@ -402,6 +490,7 @@ fn apply_external(app: &AppHandle) {
         match reload_action(on_disk.as_deref(), own.as_deref(), &current) {
             ReloadAction::Ignore | ReloadAction::Wait => return,
             ReloadAction::Apply(next) => {
+                remember(&state.config_dir, &current, false);
                 *current = (*next).clone();
                 *next
             }
@@ -1082,7 +1171,45 @@ mod tests {
         assert_eq!(saved, *current.read());
         assert_eq!(emitted.lock().len(), 2);
         assert_eq!(emitted.lock().last(), Some(&saved));
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        // settings.json and its history, no temp files left behind
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["settings.history.json", "settings.json"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_real_change_remembers_the_version_it_replaced() {
+        let dir = tempdir();
+        let current = parking_lot::RwLock::new(Settings::default());
+        persist_patch(&current, &dir, &json!({"theme": "light"}), |_| {}).unwrap();
+        // an identical patch is not a change and adds no undo entry
+        persist_patch(&current, &dir, &json!({"theme": "light"}), |_| {}).unwrap();
+        let versions = settings_history::load(&dir);
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].settings.theme, Theme::Dark);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn custom_presets_are_capped_named_and_never_nested() {
+        let mut patch = serde_json::Map::new();
+        for i in 0..14 {
+            patch.insert(
+                format!("p{i:02}"),
+                json!({"edge": "left", "customPresets": {"x": {}}, "focusUntil": -1}),
+            );
+        }
+        patch.insert("not-an-object".into(), json!(5));
+        patch.insert("  ".into(), json!({}));
+        patch.insert("x".repeat(41), json!({}));
+        let merged = merge(&Settings::default(), &json!({"customPresets": patch}));
+        assert_eq!(merged.custom_presets.len(), MAX_CUSTOM_PRESETS);
+        let first = &merged.custom_presets["p00"];
+        assert_eq!(first, &json!({"edge": "left"}), "nested keys are stripped");
+        assert!(!merged.custom_presets.contains_key("not-an-object"));
     }
 }

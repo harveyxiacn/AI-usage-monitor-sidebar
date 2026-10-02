@@ -29,7 +29,12 @@ import type {
   SessionRow,
   SessionsResult,
   Settings,
+  ShortcutRegistration,
+  ShortcutRegistrations,
   ShortcutStatus,
+  Diagnostics,
+  ImportResult,
+  SettingsVersion,
   TokenTotals,
   UpdateStatus,
   WindowUsageQuery,
@@ -158,6 +163,7 @@ export const mockSettings: Settings = {
   exportSnapshot: false,
   pollingPaused: false,
   alwaysOnTop: true,
+  customPresets: {},
 };
 
 export const mockProviders: ProviderInfo[] = [
@@ -799,6 +805,21 @@ function applyScenario(base: AppSnapshot): AppSnapshot {
 }
 
 let settings = seededSettings();
+/** Undo ring of the preview (newest first, max 5): the Rust side coalesces slider bursts, this does not need to. */
+let settingsHistory: SettingsVersion[] = [];
+
+function rememberSettings(previous: Settings, next: Settings): void {
+  if (JSON.stringify(previous) === JSON.stringify(next)) return;
+  if (settingsHistory[0] && JSON.stringify(settingsHistory[0].settings) === JSON.stringify(previous)) return;
+  settingsHistory = [{ replacedAt: Date.now(), settings: structuredClone(previous) }, ...settingsHistory].slice(0, 5);
+}
+
+/** Same wording as the Rust `classify`, for the browser preview. */
+function mockRegistration(value: string): ShortcutRegistration {
+  if (!value.trim()) return { state: 'off', message: null };
+  if (shortcutProblem(value)) return { state: 'failed', message: `invalid shortcut: ${value}` };
+  return { state: 'registered', message: null };
+}
 let snapshot = applyScenario(structuredClone(mockSnapshot));
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 
@@ -854,10 +875,76 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       const patch = (args?.patch ?? {}) as SettingsPatch;
       // `providers`, `colors` and `sizes` are merged per key, like the Rust
       // update_settings does (docs/ARCHITECTURE.md §5 / §7).
+      const previous = settings;
       settings = mergeSettings(settings, patch);
+      rememberSettings(previous, settings);
       mockEmit('settings-updated', structuredClone(settings));
       return structuredClone(settings) as T;
     }
+    case 'get_settings_history':
+      return structuredClone(settingsHistory) as T;
+    case 'restore_settings_version': {
+      const version = settingsHistory[Number(args?.index)];
+      if (!version) throw new Error('no saved settings version');
+      const previous = settings;
+      settings = structuredClone(version.settings);
+      rememberSettings(previous, settings);
+      mockEmit('settings-updated', structuredClone(settings));
+      return structuredClone(settings) as T;
+    }
+    case 'export_settings': {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ai-usage-sidebar-settings.json';
+      document.body.appendChild(link);
+      try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30_000); }
+      return 'ai-usage-sidebar-settings.json' as T;
+    }
+    case 'import_settings': {
+      const file = args?.file as File | undefined;
+      if (!file) return null as T;
+      const patch = JSON.parse(await file.text()) as Record<string, unknown>;
+      delete patch.focusUntil;
+      delete patch.version;
+      const before = structuredClone(settings);
+      const ignored = Object.keys(patch).filter((key) => !(key in settings));
+      settings = mergeSettings(settings, patch as SettingsPatch);
+      rememberSettings(before, settings);
+      mockEmit('settings-updated', structuredClone(settings));
+      const result: ImportResult = { path: file.name, before, after: structuredClone(settings), ignored };
+      return result as T;
+    }
+    case 'get_diagnostics': {
+      const report: Diagnostics = {
+        appVersion: mockAppInfo.version,
+        os: 'linux',
+        arch: 'x86_64',
+        backend: 'browser',
+        sessionType: null,
+        providers: mockProviders.map((p) => ({
+          id: p.id,
+          displayName: p.displayName,
+          enabled: settings.providers[p.id]?.enabled ?? true,
+          experimental: p.experimental,
+          loggedIn: p.loggedIn,
+          status: snapshot.providers.find((q) => q.provider === p.id)?.status ?? null,
+          planLabel: p.planLabel,
+          account: p.loggedIn ? 'h•••@g•••.com' : null,
+          error: null,
+          fetchedAt: snapshot.generatedAt,
+        })),
+        settings: structuredClone(settings) as unknown as Record<string, unknown>,
+        logDir: '~/.local/share/ai-usage-sidebar/logs',
+        configDir: mockAppInfo.configDir,
+        dataDir: mockAppInfo.dataDir,
+        logFile: 'ai-usage-sidebar.log',
+        logTail: '[INFO] browser preview: no real log',
+      };
+      return report as T;
+    }
+    case 'open_folder':
+      return undefined as T;
     case 'get_usage_history':
       return runHistory(args?.query as HistoryQuery) as T;
     case 'get_usage_calendar':
@@ -981,6 +1068,13 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         openDashboard: reason(settings.shortcutOpenDashboard),
       };
       return status as T;
+    }
+    case 'get_shortcut_registrations': {
+      const registrations: ShortcutRegistrations = {
+        toggleSidebar: mockRegistration(settings.shortcutToggleSidebar),
+        openDashboard: mockRegistration(settings.shortcutOpenDashboard),
+      };
+      return registrations as T;
     }
     case 'get_providers':
       return structuredClone(mockProviders) as T;
