@@ -167,7 +167,15 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what you pay per month per provider; History compares the month's API-equivalent *estimate* with it ("N× your subscription") and draws it on the budget chart. A merge keeps providers a patch does not mention |
 | `quotaRetentionDays` | `365` (0 – 3650, 0 = keep forever) | quota-history samples older than this are deleted by the daily maintenance pass; samples older than 14 days are thinned to one per hour (peak kept). Token usage events are never deleted |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
-| `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
+| `thresholdNotifications` | `true`, `false` | with `notifications` on: one alert per provider, window, level (`thresholds.warn` / `.critical`) and cycle, on upward crossings only; re-armed when the window resets |
+| `budgetNotifications` | `true`, `false` | with `notifications` on and `monthlyBudgetUsd` > 0: one alert each at 80 % and 100 % of the month-to-date *estimated* cost, once per month |
+| `weeklySummary` | `false`, `true` | with `notifications` on: Monday ~09:00 local, one notification with last week's tokens, estimated cost, busiest day and limits hit |
+| `webhook` | `{"enabled":false,"url":"","kind":"generic"}` | second channel next to the native one. `url` must be `https://` (5 s timeout, redirects refused, never logged: it may hold a secret); `kind` is `generic` (JSON `{title, body, provider, window, level, ts}`), `ntfy` (plain text + `Title` header) or `slack` (`{"text": …}`). Focus mode silences every channel, the webhook included |
+| `skippedVersion` | `""` | update version whose banner the user skipped; a newer version shows the banner again |
+| `lastSeenVersion` | `""` | app version whose release notes ("What's new") were last shown; written by the dashboard |
+| `onboarded` | `false`, `true` | first-run wizard finished or skipped. An existing settings file without this key counts as onboarded, so upgrading users never see the wizard |
+| `forecastNotifications` | `true`, `false` |
+ warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `focusUntil` | `0` (off), `-1` (until turned off) or an epoch-ms deadline | focus / do-not-disturb: native notifications are silenced until then; a timed value expires by itself. Also set from the tray's "Focus mode" submenu |
 | `focusHidesSidebar` | `false`, `true` | hide the bar while focus mode is on, show it again when it ends |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
