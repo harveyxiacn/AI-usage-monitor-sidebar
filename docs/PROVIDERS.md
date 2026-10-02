@@ -1,7 +1,10 @@
 # Provider research — candidates beyond Claude Code and Codex
 
 Researched 2026-09-21 for v0.2.0 (§1–§3), extended for v0.6 with OpenRouter (§4)
-and multiple accounts (§5). **Nothing about Copilot, Gemini, Cursor or OpenRouter
+and multiple accounts (§5; their local usage history and the macOS Keychain
+rule were added in v0.7). The v0.7 routing advice only ever recommends Claude
+or Codex as the target; Copilot and OpenRouter stay experimental and are never
+suggested (`advisor/routing.rs`). **Nothing about Copilot, Gemini, Cursor or OpenRouter
 was tested against a live account**: the research machine has none of these tools
 installed or signed in (`~/.gemini`, `~/.cursor`, `~/.config/github-copilot` do
 not exist, there is no OpenRouter key). Every factual claim below is a citation to
