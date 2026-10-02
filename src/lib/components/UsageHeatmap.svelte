@@ -14,8 +14,9 @@
   real focusable control with its own accessible name.
 -->
 <script lang="ts">
+  import { peakWindow } from '$lib/analytics';
   import { formatCost, formatInt, formatTokens } from '$lib/format';
-  import { calendarWeeks, heatLevel, heatThresholds, metricOf } from '$lib/history';
+  import { calendarWeeks, heatLevel, heatThresholds, metricOf, type HeatMetric } from '$lib/history';
   import { intlLocale, t } from '$lib/i18n/i18n.svelte';
   import type { CalendarDay, CalendarSlot } from '$lib/types';
 
@@ -25,7 +26,7 @@
     /** the heatmap window, `[from, to)` in ms */
     from: number;
     to: number;
-    metric: 'tokens' | 'cost';
+    metric: HeatMetric;
     view: 'calendar' | 'punchcard';
     /** the day currently selected as the history range, if any */
     selected?: string | null;
@@ -34,7 +35,12 @@
 
   let { days, slots, from, to, metric, view, selected = null, onpick }: Props = $props();
 
-  const fmt = (value: number) => (metric === 'cost' ? formatCost(value) : formatTokens(value));
+  const fmt = (value: number | null) =>
+    value == null ? (metric === 'cost' ? formatCost(null) : '—')
+    : metric === 'cost' ? formatCost(value)
+    : metric === 'requests' ? formatInt(value)
+    : metric === 'cache' ? `${Math.round(value * 100)}%`
+    : formatTokens(value);
 
   const weeks = $derived(calendarWeeks(from, to));
   const byDate = $derived(new Map(days.map((day) => [day.date, day])));
@@ -80,7 +86,7 @@
     const value = metricOf(day, metric);
     if (value == null) {
       // a priced-out day is not an empty day: say so instead of drawing zero
-      return { level: 'unknown', label: t('history.activity.day', { date: dayLabel(date), value: formatCost(null), requests: formatInt(day.requests) }) };
+      return { level: 'unknown', label: t('history.activity.day', { date: dayLabel(date), value: fmt(null), requests: formatInt(day.requests) }) };
     }
     return {
       level: heatLevel(value, dayThresholds),
@@ -94,7 +100,7 @@
     if (!slot) return { level: 0, label: t('history.activity.slotEmpty', when) };
     const value = metricOf(slot, metric);
     if (value == null) {
-      return { level: 'unknown', label: t('history.activity.slot', { ...when, value: formatCost(null), requests: formatInt(slot.requests) }) };
+      return { level: 'unknown', label: t('history.activity.slot', { ...when, value: fmt(null), requests: formatInt(slot.requests) }) };
     }
     return {
       level: heatLevel(value, slotThresholds),
@@ -103,6 +109,24 @@
   }
 
   const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+
+  /**
+   * "Your peak is 14–17h": the busiest three-hour window of the day, from the
+   * same hour-of-week slots as the punch card. A hit rate has no "peak", so
+   * that metric reads the activity (tokens) instead.
+   */
+  const insight = $derived.by(() => {
+    const basis: HeatMetric = metric === 'cache' ? 'tokens' : metric;
+    const peak = peakWindow(slots, (slot) => metricOf(slot, basis) ?? 0);
+    if (!peak) return '';
+    return t('history.activity.insight', {
+      from: peak.startHour,
+      to: peak.endHour,
+      share: Math.round(peak.share),
+      metric: t(`history.activity.metric.${basis}` as 'history.activity.metric.tokens').toLocaleLowerCase(),
+      weekday: weekdayNames[peak.weekday],
+    });
+  });
 </script>
 
 <div class="heat">
@@ -168,6 +192,8 @@
       </table>
     </div>
   {/if}
+
+  {#if insight}<p class="insight">{insight}</p>{/if}
 
   <footer class="legend">
     <span class="hint">{view === 'calendar' ? t('history.activity.hint') : ''}</span>
@@ -347,6 +373,12 @@
     justify-content: space-between;
     gap: 0.75rem;
     flex-wrap: wrap;
+  }
+
+  .insight {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text);
   }
 
   .hint,
