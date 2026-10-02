@@ -120,6 +120,14 @@ login of its own.
   it was never tested against a live account.
 - OpenRouter: **experimental and unverified**, off by default. There is no CLI login; the app reads the API key from an environment variable whose *name* is the `openrouterKeyEnv` setting (default `OPENROUTER_API_KEY`). Never ask for, store or print the key; tell the user to export the variable and restart the app, then enable it under Providers.
 - Non-default locations are honoured through `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
+- A **second account** of Claude Code or Codex (personal + work) is added with
+  the `accounts` setting (§5), each pointing at that login's config dir. Sign it
+  in first, in a terminal: `CLAUDE_CONFIG_DIR=<dir> claude` then `/login`, or
+  `CODEX_HOME=<dir> codex login`. Extra accounts are **quota only** (no token
+  history or cost). On macOS an extra Claude account works only when
+  `<dir>/.credentials.json` exists (the Keychain item of a non-default dir is not
+  read). The CLI filter is `--print --provider claude@work`. See
+  `docs/PROVIDERS.md` §5.
 
 A ring in an error state has its message in the popover and in the log.
 `HTTP 429` from Anthropic means "polled too often"; it clears by itself.
@@ -165,6 +173,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
 | `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2},"openrouter":{"enabled":false,"showInSidebar":true,"order":3}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` and `openrouter` are **experimental** (never verified against a live account); `copilot` only turns itself on when its credentials are found, `openrouter` never does |
 | `openrouterKeyEnv` | `"OPENROUTER_API_KEY"` | **name** of the environment variable holding the OpenRouter API key (never the key; a value that is not an upper-case variable name is reset to the default) |
+| `accounts` | `[]`; each entry `{"id":"work","provider":"claude"\|"codex","label":"Work","configDir":"/abs/path","enabled":true}` | extra accounts, at most 6, quota only. `id` is a slug `[a-z0-9-]{1,24}`, unique; `label` 1-40 characters; `configDir` must be absolute; an invalid entry is dropped. The list is replaced as a whole (write the complete list). Provider-level `providers.*` switches apply to all accounts of that provider; `enabled` here switches one account. The primary account of each provider is always implicit |
 | `pricingUrl` | `""` | price source URL. Empty = the project's GitHub raw `pricing.json`; non-empty must be an `https://` custom source |
 | `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |

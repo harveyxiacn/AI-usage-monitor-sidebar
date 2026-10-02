@@ -418,3 +418,73 @@ Status: missing/empty variable → `not_logged_in` (no request is made); 401/403
 
 Off by default and absent from the snapshot until the user switches it on
 (Settings → Providers, badged *Experimental*).
+
+---
+
+## 5. Multiple accounts (Claude Code and Codex)
+
+Added in v0.6. Both verified providers can be tracked for more than one login,
+for example a personal and a work account. The **primary account** of each
+provider stays implicit: the default config dir, honouring `CLAUDE_CONFIG_DIR`
+/ `CODEX_HOME` exactly as before. Extra accounts are listed in
+`settings.accounts` (at most 6):
+
+```json
+{ "accounts": [
+  { "id": "work", "provider": "claude", "label": "Work",
+    "configDir": "/home/me/.claude-work", "enabled": true } ] }
+```
+
+| Field | Rule |
+|---|---|
+| `id` | slug `[a-z0-9-]{1,24}`, unique across all accounts; it is the key of the account's history, so it is never regenerated when the entry is edited |
+| `provider` | `claude` or `codex` (others are dropped) |
+| `label` | 1-40 characters; the card reads "Claude Code · Work" |
+| `configDir` | absolute path of that login's CLI config dir |
+| `enabled` | off = not polled and absent from the bar; provider-level `enabled` / `showInSidebar` / `order` apply to every account of the provider |
+
+An invalid entry is dropped on load (never "repaired" into another path).
+
+**Signing in a second account** (the app never runs these and never reads what
+they write):
+
+* Claude Code: `CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`.
+* Codex: `CODEX_HOME=<dir> codex login`.
+
+**What an account reads.** The same credential loader as the primary account,
+with the dir passed explicitly: `<configDir>/.credentials.json` (Claude) or
+`<configDir>/auth.json` (Codex), the same endpoints, the same status mapping.
+Each account is its own provider instance: separate last-good cache
+(`cache/quota-claude@work.json`), separate backoff, `Retry-After` and
+adaptive-poll clock, and Claude's 120 s floor applies **per account**. The
+profile cache is keyed by token, so two accounts do not evict each other.
+
+**Keys.** `claude` is the primary account, `claude@work` an extra one. The same
+key is used for ring keys, the popover target, `refresh_now(provider)`,
+notification dedupe (threshold, forecast), `snapshot.json` (`id`, plus an
+`account` field that is absent for the primary account) and
+`--print --provider claude@work`. `--provider claude` still means the primary
+account only.
+
+**Storage.** `quota_samples.account` (`''` = primary). Every quota query,
+throttling check, forecast input, the weekly "limits hit" count and the
+retention thinning are per account.
+
+**Limitations.**
+
+* **Quota only.** Local session logs of extra accounts are *not* ingested
+  (`usage_events`, sessions, token/cost history and the token-based forecast
+  fallback exist for the primary account only). Ingestion roots, the sessions
+  tables and the evaluation features all key on the provider, and generalising
+  them would change rows existing users already have. Budget alerts and the
+  weekly summary therefore also describe the primary accounts.
+* **macOS and Claude Code.** On macOS the login of the *default* config dir is
+  in the Keychain item `Claude Code-credentials`. Claude Code files the login of
+  a non-default `CLAUDE_CONFIG_DIR` under a **different** Keychain service name,
+  which could not be verified, and guessing it risks reading the wrong
+  account's token. Extra Claude accounts are therefore read from
+  `<configDir>/.credentials.json` only; when that file is absent the account
+  shows `not_logged_in` with an explicit "not supported on macOS unless a
+  credentials file exists" message, and the Settings card says the same.
+  Codex accounts are file based on every platform.
+* The tray shows one usage line per account (up to 6 extra ones).

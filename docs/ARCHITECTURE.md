@@ -236,6 +236,16 @@ Key semantics:
   are merely ageing, the UI presents them as stale, and
   `ProviderQuota.nextAttemptAt` (RFC 3339 UTC, else null) says when the
   scheduler will try again.
+* `ProviderQuota.accountId` / `accountLabel` are set only for an **extra
+  account** (`settings.accounts`, see docs/PROVIDERS.md §5) and are absent (not
+  `null`) for the primary account, so a primary entry serializes exactly as it
+  did before multi-account support. `displayName` of an extra account is
+  "Claude Code · Work". The **registry key** of a quota is
+  `provider` for the primary account and `provider@accountId` otherwise
+  (`ProviderQuota::key`, `quotaKey()` in `providers.ts`); everything that was
+  keyed by provider id — poll clocks, backoff, `refresh_now(provider)`, alert
+  dedupe, ring keys, the popover target, `snapshot.json` ids, the CLI filter — is
+  keyed by it.
 * `ProviderQuota.extras` is an optional, provider-neutral list of facts that
   are not rate-limit windows (credits, a spend limit that was hit, models the
   plan cannot use right now). Each item is
@@ -298,7 +308,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_usage_history` | `query: HistoryQuery` | `HistoryResult` |
 | `get_usage_calendar` | `query: CalendarQuery` | `CalendarResult` (local-day calendar **and** weekday × hour punch card from one scan) |
 | `get_usage_sessions` | `query: SessionQuery` | `SessionsResult` (top `limit` sessions by tokens + the full-range count/totals) |
-| `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
+| `get_quota_history` | `query: QuotaHistoryQuery` (`provider`, optional `account`: absent = every account, `""` = the primary account only, `"work"` = that extra account) | `QuotaSample[]` (`account` absent for the primary account) |
 | `get_window_usage` | `query: WindowUsageQuery` (`provider`, `windows: [{from, to}]`, max 200) | `TokenTotals[]`, one per window, `[from, to)`; used to relate quota cycles to tokens |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
@@ -323,6 +333,8 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
 | `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
 | `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
+| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account; contents are never read) |
+| `pick_account_folder` | – | `string \| null` (native folder dialog) |
 | `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
 
 Alerts (`alerts/`): `on_snapshot` (called by the scheduler after each refresh)
@@ -414,7 +426,9 @@ autostart off, thresholds warn 70 / critical 90, `notifications=false` with
 fires while `notifications` is on, at most once per window per reset period and
 only for a `medium`/`high` confidence forecast), `thresholdNotifications=true`
 and `budgetNotifications=true` (both also gated by `notifications`),
-`weeklySummary=false`, `webhook` off, `onboarded=false` (a settings file that
+`weeklySummary=false`, `webhook` off, `accounts=[]` (extra Claude Code / Codex
+accounts, at most 6, each `{id, provider, label, configDir, enabled}`; replaced
+as a whole by a patch, invalid entries dropped by `settings::clamp`), `onboarded=false` (a settings file that
 already exists without the key counts as onboarded).
 
 
@@ -668,8 +682,9 @@ CREATE TABLE usage_events (
 CREATE INDEX idx_usage_ts ON usage_events(ts);
 CREATE TABLE quota_samples (
   id INTEGER PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT,
-  used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT, ts INTEGER NOT NULL);
-CREATE INDEX idx_quota_ts ON quota_samples(provider, ts);
+  used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT, ts INTEGER NOT NULL,
+  account TEXT NOT NULL DEFAULT '');   -- v3: '' = primary account
+CREATE INDEX idx_quota_account_ts ON quota_samples(provider, account, ts);
 CREATE TABLE ingest_files (
   path TEXT PRIMARY KEY, provider TEXT NOT NULL, size INTEGER NOT NULL,
   mtime INTEGER NOT NULL, byte_offset INTEGER NOT NULL, last_ingested_at INTEGER NOT NULL);
@@ -680,6 +695,18 @@ once so available logs replay to fill effort metadata without duplicate usage.
 Equal-token replays enrich metadata without replacing larger streaming totals;
 missing fields never erase a known effort for the same model. Deleted logs
 cannot supply missing metadata.
+
+Schema v3 (multi-account) adds `quota_samples.account TEXT NOT NULL DEFAULT ''`
+(`''` is the primary account, so every existing row migrates unchanged) and
+replaces `idx_quota_ts` by `idx_quota_account_ts`. The migration is idempotent
+(it checks for the column first, like v2) and runs in the same transaction as the
+version marker. Every function of `store/quota.rs` takes the registry key
+(`claude`, `claude@work`) and splits it: sample throttling, `window_samples*`
+(the forecast input), the history query, the retention thinning partition and
+the weekly "limits hit" grouping are all per account. A database written by v3
+cannot be opened by an older build (`unsupported database schema 3`).
+`usage_events` and the session tables are **not** per account (extra accounts
+are quota only).
 
 Ingestion is incremental (remember byte offset per file; if the file shrank or
 was rewritten without growth, re-parse from 0). File modification times are
@@ -704,7 +731,7 @@ without a natural bound, so a daily pass (first run 5 min after start,
 `scheduler::maintenance_loop` → `store::maintain_quota_samples`) deletes
 samples older than `quotaRetentionDays` (default 365, 0 = keep forever, max
 3650) and thins samples older than 14 days to one row per
-(provider, kind, scope, hour): the row with the highest `used_percent`, so a
+(provider, account, kind, scope, hour): the row with the highest `used_percent`, so a
 cycle's peak survives. It then runs `PRAGMA wal_checkpoint(TRUNCATE)` and
 `PRAGMA optimize`, plus `incremental_vacuum` only when the file already uses
 `auto_vacuum=INCREMENTAL` (an existing database is never switched). Recent data
