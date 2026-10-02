@@ -25,13 +25,18 @@
   default 56px ring, scaled by ringSize/56 and capped to the inner disc) so it
   always clears the innermost stroke; the size is handed to the `logo` snippet.
 
+  A status badge sits on the 1-o'clock edge and differs by *shape*, not only by
+  colour: "!" (not signed in), a padlock (login expired), a clock (rate-limited)
+  or a solid red dot (error). Past a threshold the arc's end cap also changes:
+  a dark dot at the warn level, a dark bar across the stroke at the critical one.
+
   An arc may also carry `projectedPercent`: a hairline tick across the stroke at
   the "at this pace, here at the reset" angle (see forecast.ts). It is opt-in
   per arc so a low-confidence guess never marks up a 56px ring.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { severityColor, severityOf, clampPercent, shortPercent } from '$lib/format';
+  import { severityColor, severityOf, clampPercent, shortPercent, type Severity } from '$lib/format';
   import { clampSize, settings } from '$lib/stores/settings.svelte';
   import type { PercentMode, PercentPosition, ProviderStatus, Thresholds } from '$lib/types';
 
@@ -130,13 +135,27 @@
     };
   }
 
+  /**
+   * Centre of the arc's end cap and the radial direction there, for the
+   * threshold marker. Null while the arc is empty (nothing to mark).
+   */
+  function endCap(r: number, shown: number) {
+    if (shown <= 0) return null;
+    const angle = ((shown / 100) * 360 - 90) * (Math.PI / 180);
+    const [cosA, sinA] = [Math.cos(angle), Math.sin(angle)];
+    return { x: c + r * cosA, y: c + r * sinA, dx: cosA, dy: sinA };
+  }
+
   /** Geometry + resolved colour for every arc, outer → inner. */
   const drawn = $derived.by(() =>
     arcs.map((a, i) => {
       const r = (dim - sw) / 2 - i * (sw + effectiveGap);
       const circumference = 2 * Math.PI * r;
       const shown = a.percent == null ? 0 : shownPercent(a.percent);
+      const severity: Severity = severityOf(a.percent, thresholds);
       return {
+        severity,
+        cap: severity === 'normal' ? null : endCap(r, shown),
         r,
         circumference,
         // a ring whose own usage crossed a threshold turns amber / red even
@@ -160,7 +179,15 @@
 
   const dimmed = $derived(loading || arcs.length === 0 || status === 'not_logged_in');
   const badge = $derived(
-    status === 'not_logged_in' ? 'warn' : status === 'token_expired' || status === 'error' ? 'dot' : null
+    status === 'not_logged_in'
+      ? 'warn'
+      : status === 'token_expired'
+        ? 'lock'
+        : status === 'rate_limited'
+          ? 'clock'
+          : status === 'error'
+            ? 'dot'
+            : null
   );
   const label = $derived(loading ? '' : shortPercent(labelPercent, percentMode));
   /** 100% is the widest label. Keep it inside even for a 40px, three-arc ring. */
@@ -197,6 +224,21 @@
               transform="rotate(-90 {c} {c})"
             />
           {/if}
+          <!-- non-colour severity cue on the end cap -->
+          {#if !loading && d.known && d.cap}
+            {#if d.severity === 'critical'}
+              <line
+                class="cap-mark"
+                x1={d.cap.x - d.cap.dx * sw * 0.42}
+                y1={d.cap.y - d.cap.dy * sw * 0.42}
+                x2={d.cap.x + d.cap.dx * sw * 0.42}
+                y2={d.cap.y + d.cap.dy * sw * 0.42}
+                stroke-width={Math.max(1.4, sw * 0.32)}
+              />
+            {:else}
+              <circle class="cap-dot" cx={d.cap.x} cy={d.cap.y} r={Math.max(0.9, sw * 0.17)} />
+            {/if}
+          {/if}
           <!-- forecast: where this arc lands at the reset -->
           {#if !loading && d.known && d.projected}
             <line class="tick-halo" {...d.projected} />
@@ -214,6 +256,20 @@
     </span>
     {#if badge === 'warn'}
       <span class="badge badge-warn" aria-hidden="true">!</span>
+    {:else if badge === 'lock'}
+      <span class="badge badge-warn" aria-hidden="true">
+        <svg viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2">
+          <rect x="2" y="4.6" width="6" height="4.2" rx="0.8" fill="currentColor" stroke="none" />
+          <path d="M3.2 4.6V3.4a1.8 1.8 0 0 1 3.6 0v1.2" stroke-linecap="round" />
+        </svg>
+      </span>
+    {:else if badge === 'clock'}
+      <span class="badge badge-warn" aria-hidden="true">
+        <svg viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+          <circle cx="5" cy="5" r="3.9" />
+          <path d="M5 2.8V5l1.5 1" />
+        </svg>
+      </span>
     {:else if badge === 'dot'}
       <span class="badge badge-dot" aria-hidden="true"></span>
     {/if}
@@ -240,7 +296,7 @@
     transition: transform var(--dur-ui) var(--ease-out), opacity var(--dur-ui) var(--ease-out);
   }
 
-  .ring svg {
+  .ring > svg {
     display: block;
     position: absolute;
     inset: 0;
@@ -250,12 +306,23 @@
     transform: scale(1.06);
   }
 
-  .ring.dimmed {
+  /* Dim the drawing only: a status badge on a greyed ring is the very thing the
+     user has to read, so it stays at full strength. */
+  .ring.dimmed > svg,
+  .ring.dimmed > .center {
     opacity: 0.45;
   }
 
   .ring.loading {
     animation: ring-pulse 1.4s ease-in-out infinite;
+  }
+
+  /* reduced motion: a static, dimmed ring instead of the pulse */
+  @media (prefers-reduced-motion: reduce) {
+    .ring.loading {
+      animation: none;
+      opacity: 0.4;
+    }
   }
 
   @keyframes ring-pulse {
@@ -288,6 +355,16 @@
   .tick-halo {
     stroke: rgb(var(--bar-bg-rgb) / 0.85);
     stroke-width: 2.6;
+  }
+
+  /* end-cap markers: cut out of the arc in the pill's own background colour */
+  .cap-dot {
+    fill: rgb(var(--bar-bg-rgb) / 0.9);
+  }
+
+  .cap-mark {
+    stroke: rgb(var(--bar-bg-rgb) / 0.9);
+    stroke-linecap: butt;
   }
 
   .tick {
@@ -345,10 +422,17 @@
     line-height: 1;
   }
 
+  .badge-warn svg {
+    display: block;
+    width: 0.625rem;
+    height: 0.625rem;
+  }
+
+  /* error: a solid red dot — the one badge with no glyph */
   .badge-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    background: var(--warn);
+    width: 0.625rem;
+    height: 0.625rem;
+    background: var(--critical);
   }
 
   .pct {
