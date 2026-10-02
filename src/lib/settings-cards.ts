@@ -17,6 +17,7 @@ export type CardId =
   | 'privacy'
   | 'shortcuts'
   | 'providers'
+  | 'accounts'
   | 'data'
   | 'updates'
   | 'integrations';
@@ -37,6 +38,7 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   privacy: ['hideAccountEmail'],
   shortcuts: ['shortcutToggleSidebar', 'shortcutOpenDashboard'],
   providers: ['providers', 'openrouterKeyEnv'],
+  accounts: ['accounts'],
   data: ['ingestEnabled', 'monthlyBudgetUsd', 'subscriptionUsd', 'quotaRetentionDays'],
   updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl', 'skippedVersion'],
   integrations: ['exportSnapshot', 'pollingPaused'],
@@ -66,6 +68,7 @@ export const resetAllPatch = (defaults: Settings): SettingsPatch =>
  * later) cannot make a card look modified.
  */
 function holds(expected: unknown, current: unknown): boolean {
+  if (Array.isArray(expected)) return Array.isArray(current) && JSON.stringify(expected) === JSON.stringify(current);
   if (expected !== null && typeof expected === 'object' && !Array.isArray(expected)) {
     if (current === null || typeof current !== 'object') return false;
     return Object.entries(expected).every(([k, v]) => holds(v, (current as Record<string, unknown>)[k]));

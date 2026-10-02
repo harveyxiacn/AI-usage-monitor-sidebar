@@ -143,6 +143,8 @@ pub fn run() {
             commands::alerts::get_notification_permission,
             commands::alerts::get_weekly_summary,
             commands::onboarding::get_provider_setup,
+            commands::accounts::check_account_dir,
+            commands::accounts::pick_account_folder,
             export::export_usage_csv,
             export::save_share_card,
             backup::backup_data,

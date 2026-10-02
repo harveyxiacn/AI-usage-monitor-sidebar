@@ -13,6 +13,7 @@ export const SECTIONS = [
   { id: 'notifications', title: 'settings.card.notifications' },
   { id: 'shortcuts', title: 'settings.card.shortcuts' },
   { id: 'providers', title: 'settings.providers' },
+  { id: 'accounts', title: 'settings.accounts' },
   { id: 'data', title: 'settings.data' },
   { id: 'integrations', title: 'integrations.title' },
   { id: 'updates', title: 'settings.card.updates' },

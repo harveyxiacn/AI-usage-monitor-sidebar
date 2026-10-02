@@ -82,7 +82,7 @@ pub fn compute(db: &Db, pricing: &PricingTable, monday: NaiveDate) -> Result<Wee
     })
 }
 
-/// Quota windows (one per provider, kind, scope and cycle) whose samples
+/// Quota windows (one per provider, account, kind, scope and cycle) whose samples
 /// reached 100 % inside `[from_ms, to_ms)`.
 fn limits_hit(db: &Db, from_ms: i64, to_ms: i64) -> Result<u32> {
     let conn = db.lock();
@@ -90,7 +90,7 @@ fn limits_hit(db: &Db, from_ms: i64, to_ms: i64) -> Result<u32> {
         "SELECT COUNT(*) FROM (
              SELECT 1 FROM quota_samples
              WHERE ts >= ?1 AND ts < ?2
-             GROUP BY provider, kind, COALESCE(scope, ''), COALESCE(resets_at, 0)
+             GROUP BY provider, account, kind, COALESCE(scope, ''), COALESCE(resets_at, 0)
              HAVING MAX(used_percent) >= 100
          )",
         rusqlite::params![from_ms, to_ms],

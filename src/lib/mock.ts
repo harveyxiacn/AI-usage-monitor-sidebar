@@ -5,6 +5,8 @@
 // the *semantics* of the real commands (bucketing, filtering, grouping, cost
 // estimation) so the UI code is exercised exactly as it would be in Tauri.
 import type {
+  AccountCheck,
+  AccountSettings,
   AppInfo,
   BackupInfo,
   AppSnapshot,
@@ -43,6 +45,7 @@ import type {
 } from './types';
 import { localDateInput } from './history';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
+import { quotaKey } from './providers';
 import { shortcutProblem } from './shortcuts';
 
 const now = Date.now();
@@ -143,6 +146,7 @@ export const mockSettings: Settings = {
     copilot: { enabled: false, showInSidebar: true, order: 2 },
     openrouter: { enabled: false, showInSidebar: true, order: 3 },
   },
+  accounts: [],
   ingestEnabled: true,
   pricingUrl: '',
   monthlyBudgetUsd: 0,
@@ -777,20 +781,29 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
   const to = Date.parse(q.to);
   const rnd = lcg(0xbeef);
   const out: QuotaSample[] = [];
-  for (const provider of ['claude', 'codex'] as ProviderId[]) {
+  // the primary accounts, then every extra account of the settings
+  const sources: Array<{ provider: ProviderId; account: string | null }> = [
+    { provider: 'claude', account: null },
+    { provider: 'codex', account: null },
+    ...settings.accounts.map((a) => ({ provider: a.provider as ProviderId, account: a.id })),
+  ];
+  for (const { provider, account } of sources) {
     if (q.provider && provider !== q.provider) continue;
-    const plan = provider === 'claude' ? 'max' : 'plus';
+    // null = every account, '' = the primary one, else that extra account
+    if (q.account != null && q.account !== (account ?? '')) continue;
+    const plan = account ? 'pro' : provider === 'claude' ? 'max' : 'plus';
     for (let ts = to - 14 * DAY; ts < to; ts += HOUR / 2) {
       if (ts < from) continue;
-      const base = provider === 'claude' ? 1 : 0.6;
+      const base = (provider === 'claude' ? 1 : 0.6) * (account ? 0.5 : 1);
       // 5-hour window: sawtooth that resets every 5 h
       const phase5 = ((ts % (5 * HOUR)) / (5 * HOUR)) * 100;
       const five = Math.min(100, Math.max(0, phase5 * base * (0.5 + rnd() * 0.9)));
       // weekly window: slow ramp that resets on the week boundary
       const phase7 = ((ts % (7 * DAY)) / (7 * DAY)) * 100;
       const seven = Math.min(100, Math.max(0, phase7 * base * (0.6 + rnd() * 0.4)));
-      out.push({ provider, kind: 'five_hour', scope: null, usedPercent: Math.round(five), resetsAt: iso(ts + 5 * HOUR - (ts % (5 * HOUR))), plan, ts: iso(ts) });
-      out.push({ provider, kind: 'seven_day', scope: null, usedPercent: Math.round(seven), resetsAt: iso(ts + 7 * DAY - (ts % (7 * DAY))), plan, ts: iso(ts) });
+      const tag = account ? { account } : {};
+      out.push({ provider, ...tag, kind: 'five_hour', scope: null, usedPercent: Math.round(five), resetsAt: iso(ts + 5 * HOUR - (ts % (5 * HOUR))), plan, ts: iso(ts) });
+      out.push({ provider, ...tag, kind: 'seven_day', scope: null, usedPercent: Math.round(seven), resetsAt: iso(ts + 7 * DAY - (ts % (7 * DAY))), plan, ts: iso(ts) });
     }
   }
   return out;
@@ -808,6 +821,7 @@ export function seededSettings(): Settings {
   const scenario = mockScenario();
   if (scenario === 'firstrun') base.onboarded = false;
   if (scenario === 'upgraded') base.lastSeenVersion = '';
+  if (scenario === 'accounts') base.accounts = structuredClone(mockAccounts);
   if (typeof window === 'undefined') return base;
   const raw = new URLSearchParams(window.location.search).get('settings');
   if (!raw) return base;
@@ -830,7 +844,35 @@ function mockScenario(): string {
 /** Scenarios where no provider is signed in (empty states, first-run wizard). */
 const LOGGED_OUT_SCENARIOS = ['logged-out', 'firstrun'];
 
+/** `?mock=accounts`: a personal and a work Claude account. */
+export const mockAccounts: AccountSettings[] = [
+  { id: 'work', provider: 'claude', label: 'Work', configDir: '/home/you/.claude-work', enabled: true },
+];
+
+/** The extra account's quota: same shape as the primary one, different numbers. */
+function workQuota(primary: AppSnapshot['providers'][number]): AppSnapshot['providers'][number] {
+  return {
+    ...structuredClone(primary),
+    displayName: `${primary.displayName} · Work`,
+    plan: 'pro',
+    planLabel: 'Claude Pro',
+    account: { email: 'you@work.example', name: 'You (work)' },
+    accountId: 'work',
+    accountLabel: 'Work',
+    windows: [
+      { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 12, resetsAt: iso(Date.now() + 3 * HOUR), scope: null, isPrimary: true },
+      { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 48, resetsAt: iso(Date.now() + 2 * DAY), scope: null, isPrimary: false },
+    ],
+  };
+}
+
 function applyScenario(base: AppSnapshot): AppSnapshot {
+  if (mockScenario() === 'accounts') {
+    const claudeAt = base.providers.findIndex((p) => p.provider === 'claude');
+    const providers = [...base.providers];
+    providers.splice(claudeAt + 1, 0, workQuota(base.providers[claudeAt]));
+    return { ...base, providers };
+  }
   if (LOGGED_OUT_SCENARIOS.includes(mockScenario())) {
     return {
       ...base,
@@ -891,7 +933,7 @@ function jitterSnapshot(provider?: ProviderId | null) {
   snapshot = {
     generatedAt: stamp,
     providers: snapshot.providers.map((p) => {
-      if (provider && p.provider !== provider) return p;
+      if (provider && quotaKey(p) !== provider) return p;
       // A rate-limited provider is skipped by the backend, so its numbers and
       // its timestamp stay where they were.
       if (p.status === 'rate_limited') return p;
@@ -1118,6 +1160,23 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       ];
       return setup as T;
     }
+    case 'check_account_dir': {
+      const dir = String(args?.configDir ?? '').trim();
+      const absolute = dir.startsWith('/') || /^[a-zA-Z]:[\/]/.test(dir);
+      // the preview's "disk": the seeded work folder exists and is signed in, `/missing` does not exist
+      const found = absolute && !dir.includes('missing');
+      const claude = args?.provider === 'claude';
+      const check: AccountCheck = {
+        absolute,
+        dirFound: found,
+        credentialsFound: found && !dir.includes('signedout'),
+        credentialsFile: `${dir.replace(/[\/]+$/, '')}/${claude ? '.credentials.json' : 'auth.json'}`,
+        keychainOnly: false,
+      };
+      return check as T;
+    }
+    case 'pick_account_folder':
+      return '/home/you/.claude-second' as T;
     case 'get_update_status':
       return structuredClone(updateStatus) as T;
     case 'check_for_updates': {

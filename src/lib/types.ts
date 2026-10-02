@@ -99,6 +99,34 @@ export interface ProviderQuota {
   extras: QuotaExtra[];
   /** Only for `rate_limited`: RFC 3339 UTC of the scheduler's next attempt */
   nextAttemptAt: string | null;
+  /** Extra account (`Settings.accounts`) this quota belongs to; absent for the primary account. */
+  accountId?: string | null;
+  /** User label of that extra account ("Work"); absent for the primary one. */
+  accountLabel?: string | null;
+}
+
+/** An extra account of Claude Code or Codex with its own CLI config dir. */
+export interface AccountSettings {
+  /** slug `[a-z0-9-]{1,24}`, unique across all accounts */
+  id: string;
+  provider: 'claude' | 'codex';
+  /** 1..40 characters; shown as "Claude Code · <label>" */
+  label: string;
+  /** absolute path of the account's CLI config dir (CLAUDE_CONFIG_DIR / CODEX_HOME of that login) */
+  configDir: string;
+  /** off = not polled, the entry stays in the list */
+  enabled: boolean;
+}
+
+/** From `check_account_dir`: existence checks only, no credential is read. */
+export interface AccountCheck {
+  absolute: boolean;
+  dirFound: boolean;
+  credentialsFound: boolean;
+  /** the file that was looked for */
+  credentialsFile: string;
+  /** macOS Claude without a credentials file: cannot be read (the login would be in the Keychain) */
+  keychainOnly: boolean;
 }
 
 export interface AppSnapshot {
@@ -252,6 +280,8 @@ export interface Settings {
   /** Poll a provider less often while its session logs are quiet (10 min → ×2, 30 min → ×5, capped at 10 min) */
   adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
+  /** Extra accounts (max 6) of Claude Code / Codex; the primary account stays implicit. Quota only. */
+  accounts: AccountSettings[];
   ingestEnabled: boolean;
   /** Optional https source for a user-managed pricing table; empty uses the official project source. */
   pricingUrl: string;
@@ -443,6 +473,8 @@ export interface QuotaHistoryQuery {
   from: string;
   to: string;
   provider: ProviderId | null;
+  /** null/absent = every account; '' = the primary account only; else that extra account */
+  account?: string | null;
 }
 
 /** Tokens/cost of one provider inside each `[from, to)` window (quota cycles). */
@@ -453,6 +485,8 @@ export interface WindowUsageQuery {
 
 export interface QuotaSample {
   provider: ProviderId;
+  /** extra account id; absent for the primary account */
+  account?: string | null;
   kind: WindowKind;
   scope: string | null;
   usedPercent: number;

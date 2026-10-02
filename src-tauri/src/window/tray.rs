@@ -38,6 +38,9 @@ pub struct MenuItems {
     /// Read-only usage lines, one per registered provider; only the enabled
     /// ones are inserted into the menu (above `usage_sep`).
     usage: Vec<(&'static str, MenuItem<tauri::Wry>)>,
+    /// Usage lines of extra accounts (`claude@work`): one pre-built slot per
+    /// possible account, handed out in snapshot order by `sync_usage_with`.
+    account_usage: Vec<MenuItem<tauri::Wry>>,
     usage_sep: PredefinedMenuItem<tauri::Wry>,
     focus: Submenu<tauri::Wry>,
     /// 1 hour, until tomorrow, until turned off, off (see `focus_labels`).
@@ -269,6 +272,16 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
         let item = MenuItem::with_id(app, format!("usage_{id}"), *id, false, None::<&str>)?;
         usage.push((*id, item));
     }
+    let mut account_usage = Vec::new();
+    for slot in 0..crate::commands::settings::MAX_ACCOUNTS {
+        account_usage.push(MenuItem::with_id(
+            app,
+            format!("usage_account_{slot}"),
+            "",
+            false,
+            None::<&str>,
+        )?);
+    }
     let usage_sep = PredefinedMenuItem::separator(app)?;
 
     let menu = Menu::with_items(
@@ -330,6 +343,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
         *state.tray_items.lock() = Some(MenuItems {
             menu,
             usage,
+            account_usage,
             usage_sep,
             focus,
             focus_items,
@@ -680,16 +694,31 @@ fn sync_usage_with(app: &AppHandle, settings: &Settings, snapshot: &AppSnapshot)
     // Which lines are in the menu. Membership rarely changes, so rebuild only then.
     let ids: Vec<String> = lines
         .iter()
-        .filter(|(id, _)| items.usage.iter().any(|(known, _)| known == id))
+        .filter(|(id, _)| id.contains('@') || items.usage.iter().any(|(known, _)| known == id))
         .map(|(id, _)| id.clone())
+        .take(items.usage.len() + items.account_usage.len())
         .collect();
+    // the menu item of a line: a provider's own, or the next free account slot
+    let item_of = |id: &str| -> Option<&MenuItem<tauri::Wry>> {
+        if let Some((_, item)) = items.usage.iter().find(|(known, _)| *known == id) {
+            return Some(item);
+        }
+        let slot = ids
+            .iter()
+            .filter(|i| i.contains('@'))
+            .position(|i| i == id)?;
+        items.account_usage.get(slot)
+    };
     if ids != cache.shown {
         for (_, item) in &items.usage {
             let _ = items.menu.remove(item);
         }
+        for item in &items.account_usage {
+            let _ = items.menu.remove(item);
+        }
         let _ = items.menu.remove(&items.usage_sep);
         for (pos, id) in ids.iter().enumerate() {
-            if let Some((_, item)) = items.usage.iter().find(|(known, _)| known == id) {
+            if let Some(item) = item_of(id) {
                 if let Err(e) = items.menu.insert(item, pos) {
                     log::debug!("tray usage insert failed: {e}");
                 }
@@ -707,7 +736,7 @@ fn sync_usage_with(app: &AppHandle, settings: &Settings, snapshot: &AppSnapshot)
         .collect();
     if texts != cache.texts {
         for (id, text) in ids.iter().zip(&texts) {
-            if let Some((_, item)) = items.usage.iter().find(|(known, _)| known == id) {
+            if let Some(item) = item_of(id) {
                 if let Err(e) = item.set_text(text) {
                     log::debug!("tray usage label failed: {e}");
                 }

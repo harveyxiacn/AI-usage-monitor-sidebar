@@ -48,6 +48,7 @@
   import { formatForecast, formatPercent, formatReset, severityOf, shortPercent, windowLabel } from '$lib/format';
   import { compactReset, nextTickDelay } from '$lib/countdown';
   import { forecastTickPercent } from '$lib/forecast';
+  import { quotaKey } from '$lib/providers';
   import { detectRingEvents, levelsOf, windowKey, type RingEvent, type RingEventKind, type WindowLevel } from '$lib/ring-events';
   import { handlePeak, handleSegments, labelLayout, type LabelLayout } from '$lib/sidebar-visuals';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
@@ -106,7 +107,7 @@
   const handleTitle = $derived.by(() => {
     const peak = handlePeak(snapshot.value, s);
     if (!peak) return t('app.name');
-    const name = snapshot.value?.providers.find((p) => p.provider === peak.provider)?.displayName ?? peak.provider;
+    const name = snapshot.value?.providers.find((p) => quotaKey(p) === peak.key)?.displayName ?? peak.provider;
     return t('sidebar.handleTitle', { app: t('app.name'), provider: name, percent: formatPercent(peak.used, s.percentMode) });
   });
 
@@ -208,7 +209,7 @@
   function requestPopover(item: RingItem, el: HTMLElement) {
     const anchor = anchorOf(el);
     void popoverShow({
-      provider: item.provider,
+      provider: item.quotaKey,
       ringIndex: item.index,
       // Both axes travel; the platform layer uses the one along the bar.
       anchorY: anchor.y,
@@ -267,7 +268,7 @@
   /** arcs as the ring / mini-bar draw them, with their one-shot animation */
   function arcViews(item: RingItem) {
     return item.arcs.map((a) => {
-      const e = fx[windowKey(item.provider, a.window)];
+      const e = fx[windowKey(item.quotaKey, a.window)];
       return {
         percent: a.window.usedPercent,
         accent: a.accent,
@@ -327,7 +328,7 @@
       aria-label={handleTitle}
       title={handleTitle}
     >
-      {#each segments as g (g.provider)}
+      {#each segments as g (g.key)}
         <span class="seg" style:background={g.accent}></span>
       {:else}
         <span class="seg" style:background={handleColor}></span>

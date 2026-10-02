@@ -121,8 +121,11 @@ const LEARNED_MAX_SEC: u64 = 900;
 
 /// The floor below which a provider is never polled, whatever the user
 /// configured. Only Claude needs one today.
+///
+/// `provider` is a registry key; every Claude account has the floor of its
+/// own (`claude@work` is polled independently of `claude`).
 pub fn provider_min_interval_secs(provider: &str) -> u64 {
-    match provider {
+    match crate::model::split_key(provider).0 {
         providers::CLAUDE_ID => CLAUDE_MIN_INTERVAL_SEC,
         _ => MIN_INTERVAL_SEC,
     }
@@ -237,14 +240,24 @@ fn poll_input(
     }
 }
 
-/// The enabled providers, in settings order. Disabled ones never need a poll.
+/// The enabled providers, in settings order, each followed by its enabled
+/// extra accounts (`claude@work`). Disabled ones never need a poll.
 fn pollable_providers(settings: &Settings) -> Vec<String> {
-    settings
-        .providers
-        .iter()
-        .filter(|(id, _)| providers::is_enabled(settings, id))
-        .map(|(id, _)| id.clone())
-        .collect()
+    let mut out = Vec::new();
+    for id in settings.providers.keys() {
+        if !providers::is_enabled(settings, id) {
+            continue;
+        }
+        out.push(id.clone());
+        out.extend(
+            settings
+                .accounts
+                .iter()
+                .filter(|a| a.enabled && a.provider == *id)
+                .map(|a| crate::model::provider_key(id, Some(&a.id))),
+        );
+    }
+    out
 }
 
 /// True when at least one provider's next poll time has arrived.
@@ -262,6 +275,44 @@ fn any_provider_due(app: &AppHandle, now_ms: i64) -> bool {
 }
 
 // ---------- quota refresh ----------
+
+/// Drop the quotas of extra accounts that are no longer configured, enabled or
+/// allowed by their provider's switch. Returns `true` when something went.
+pub fn retain_configured_accounts(snapshot: &mut AppSnapshot, settings: &Settings) -> bool {
+    let before = snapshot.providers.len();
+    snapshot.providers.retain(|q| match &q.account_id {
+        None => true,
+        Some(id) => {
+            providers::is_enabled(settings, &q.provider)
+                && settings
+                    .accounts
+                    .iter()
+                    .any(|a| a.enabled && a.provider == q.provider && a.id == *id)
+        }
+    });
+    snapshot.providers.len() != before
+}
+
+/// Settings changed: take a removed or switched-off extra account out of the
+/// snapshot right away instead of waiting for the next poll (a new or
+/// re-enabled one is simply polled on the next one-second tick). Runs on the
+/// async runtime because the caller still holds the settings lock.
+pub fn accounts_changed(app: &AppHandle, settings: Settings) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let pruned = {
+            let mut snapshot = state.snapshot.write();
+            retain_configured_accounts(&mut snapshot, &settings).then(|| snapshot.clone())
+        };
+        if let Some(snapshot) = pruned {
+            if let Err(e) = app.emit(events::SNAPSHOT_UPDATED, &snapshot) {
+                log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
+            }
+            crate::window::tray::sync_usage(&app, &snapshot);
+        }
+    });
+}
 
 /// Whether the timer may poll providers on its own. "Pause polling" stops
 /// only this; explicit refreshes (button, tray) and log ingestion carry on.
@@ -350,10 +401,10 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         let before = backoff.clone();
         let done = store::now_ms();
         for q in &mut snapshot.providers {
-            let fetched =
-                !skipped.contains(&q.provider) && only.as_deref().is_none_or(|id| id == q.provider);
+            let key = q.key();
+            let fetched = !skipped.contains(&key) && only.as_deref().is_none_or(|id| id == key);
             if fetched {
-                let entry = backoff.entry(q.provider.clone()).or_default();
+                let entry = backoff.entry(key.clone()).or_default();
                 match q.status {
                     ProviderStatus::RateLimited => {
                         let wait = retry_after_secs(q, done);
@@ -361,7 +412,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
                         // Once per 429, so the log can answer "how often?".
                         log::warn!(
                             "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}",
-                            q.provider,
+                            key,
                             wait,
                             entry.factor()
                         );
@@ -373,7 +424,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             }
             if q.status == ProviderStatus::RateLimited {
                 // Replace the server's answer with the time we will really try.
-                let input = poll_input(&settings, &clocks, &backoff, &q.provider, done);
+                let input = poll_input(&settings, &clocks, &backoff, &key, done);
                 q.next_attempt_at = providers::rfc3339_from_unix_ms(next_poll_due_ms(&input));
             }
         }
@@ -394,10 +445,9 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
                     continue;
                 }
                 let plan = q.plan_label.as_deref().or(q.plan.as_deref());
-                if let Err(e) =
-                    store::quota::insert_quota_samples(&db, &q.provider, plan, &q.windows)
-                {
-                    log::warn!("could not store quota samples for {}: {e:#}", q.provider);
+                let key = q.key();
+                if let Err(e) = store::quota::insert_quota_samples(&db, &key, plan, &q.windows) {
+                    log::warn!("could not store quota samples for {key}: {e:#}");
                 }
             }
             forecast::attach(&db, &mut to_store, store::now_ms());
@@ -439,8 +489,8 @@ fn should_sample(
     q.status == ProviderStatus::Ok
         && q.source == DataSource::Api
         && !q.windows.is_empty()
-        && !skipped.contains(&q.provider)
-        && only.is_none_or(|id| id == q.provider)
+        && !skipped.contains(&q.key())
+        && only.is_none_or(|id| id == q.key())
 }
 
 // ---------- log ingestion ----------
@@ -1096,5 +1146,88 @@ mod tests {
         assert!(dirty.ready(1_000 + WATCH_DEBOUNCE_MS));
         let (paths, overflow) = dirty.take();
         assert!(paths.is_empty() && overflow);
+    }
+
+    #[test]
+    fn every_enabled_account_is_polled_on_its_own_with_its_own_floor() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            pollable_providers(&settings),
+            ["claude", "codex"],
+            "no extra accounts: exactly the providers of before"
+        );
+        let abs = std::env::temp_dir().display().to_string();
+        let acct = |id: &str, provider: &str, enabled: bool| crate::model::AccountSettings {
+            id: id.into(),
+            provider: provider.into(),
+            label: id.into(),
+            config_dir: abs.clone(),
+            enabled,
+        };
+        settings.accounts = vec![
+            acct("work", "claude", true),
+            acct("off", "claude", false),
+            acct("home", "codex", true),
+        ];
+        assert_eq!(
+            pollable_providers(&settings),
+            ["claude", "claude@work", "codex", "codex@home"]
+        );
+        settings.providers.get_mut("claude").unwrap().enabled = false;
+        assert_eq!(pollable_providers(&settings), ["codex", "codex@home"]);
+
+        assert_eq!(provider_min_interval_secs("claude@work"), 120);
+        assert_eq!(provider_min_interval_secs("codex@home"), MIN_INTERVAL_SEC);
+
+        // separate backoff: an error of one account does not delay the other
+        let mut backoff = std::collections::HashMap::new();
+        backoff
+            .entry("claude@work".to_string())
+            .or_insert_with(Backoff::default)
+            .on_error(1_000);
+        let clocks = PollClocks::default();
+        let primary = poll_input(&settings, &clocks, &backoff, "claude", 2_000);
+        let work = poll_input(&settings, &clocks, &backoff, "claude@work", 2_000);
+        assert_eq!(primary.backoff_until_ms, 0);
+        assert!(work.backoff_until_ms > 2_000);
+        assert_eq!(primary.min_interval_secs, work.min_interval_secs);
+    }
+
+    #[test]
+    fn a_removed_or_disabled_account_is_pruned_from_the_snapshot() {
+        let quota = |account: Option<&str>| {
+            let mut q = providers::empty_quota("claude", "Claude Code", ProviderStatus::Ok);
+            q.account_id = account.map(str::to_string);
+            q
+        };
+        let abs = std::env::temp_dir().display().to_string();
+        let mut settings = Settings {
+            accounts: vec![crate::model::AccountSettings {
+                id: "work".into(),
+                provider: "claude".into(),
+                label: "Work".into(),
+                config_dir: abs,
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let mut snap = AppSnapshot {
+            providers: vec![quota(None), quota(Some("work")), quota(Some("gone"))],
+            ..AppSnapshot::default()
+        };
+        assert!(retain_configured_accounts(&mut snap, &settings));
+        let keys: Vec<String> = snap.providers.iter().map(|q| q.key()).collect();
+        assert_eq!(keys, ["claude", "claude@work"]);
+        assert!(
+            !retain_configured_accounts(&mut snap, &settings),
+            "nothing left to prune"
+        );
+        settings.accounts[0].enabled = false;
+        assert!(retain_configured_accounts(&mut snap, &settings));
+        assert_eq!(
+            snap.providers.len(),
+            1,
+            "the primary account is never pruned"
+        );
     }
 }

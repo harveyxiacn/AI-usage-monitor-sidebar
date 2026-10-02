@@ -177,7 +177,7 @@ pub async fn get_diagnostics(
     let providers = infos
         .iter()
         .map(|info| {
-            let quota = snapshot.providers.iter().find(|p| p.provider == info.id);
+            let quota = snapshot.providers.iter().find(|p| p.key() == info.id);
             ProviderDiagnostics {
                 id: info.id.clone(),
                 display_name: info.display_name.clone(),

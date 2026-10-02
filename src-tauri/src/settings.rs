@@ -7,7 +7,7 @@
 //! the app runs (see `watch`).
 
 use super::settings_history;
-use crate::model::{ColorSettings, ProviderSettings, Settings, SizeSettings};
+use crate::model::{AccountSettings, ColorSettings, ProviderSettings, Settings, SizeSettings};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -200,6 +200,7 @@ pub fn clamp(mut s: Settings) -> Settings {
         s.openrouter_key_env = Settings::default().openrouter_key_env;
     }
     s.custom_presets = clamp_presets(std::mem::take(&mut s.custom_presets));
+    s.accounts = clamp_accounts(std::mem::take(&mut s.accounts));
 
     // The webhook only ever speaks https; a half-typed or plain-http URL is
     // kept (so the field does not blank while editing) but cannot be enabled.
@@ -258,6 +259,60 @@ pub fn clamp(mut s: Settings) -> Settings {
             });
     }
     s
+}
+
+/// Most extra accounts a user can configure.
+pub const MAX_ACCOUNTS: usize = 6;
+const MAX_ACCOUNT_LABEL_CHARS: usize = 40;
+const MAX_ACCOUNT_ID_CHARS: usize = 24;
+
+/// Providers that can have extra accounts.
+pub fn supports_accounts(provider: &str) -> bool {
+    matches!(
+        provider,
+        crate::commands::providers::CLAUDE_ID | crate::commands::providers::CODEX_ID
+    )
+}
+
+/// `[a-z0-9-]{1,24}`
+pub fn is_valid_account_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ACCOUNT_ID_CHARS
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Keep the valid accounts: known provider, slug id (unique, first wins),
+/// absolute config dir, non-empty label of at most 40 characters. At most
+/// `MAX_ACCOUNTS` survive. An entry that is invalid is dropped, never
+/// "repaired" into pointing somewhere the user did not choose.
+fn clamp_accounts(accounts: Vec<AccountSettings>) -> Vec<AccountSettings> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for mut a in accounts {
+        a.id = a.id.trim().to_string();
+        a.label = a.label.trim().to_string();
+        a.config_dir = a.config_dir.trim().to_string();
+        let valid = supports_accounts(&a.provider)
+            && is_valid_account_id(&a.id)
+            && !a.label.is_empty()
+            && a.label.chars().count() <= MAX_ACCOUNT_LABEL_CHARS
+            && std::path::Path::new(&a.config_dir).is_absolute();
+        if !valid {
+            log::warn!("settings: dropping invalid account `{}`", a.id);
+            continue;
+        }
+        if !seen.insert(a.id.clone()) {
+            log::warn!("settings: dropping duplicate account id `{}`", a.id);
+            continue;
+        }
+        out.push(a);
+        if out.len() == MAX_ACCOUNTS {
+            break;
+        }
+    }
+    out
 }
 
 /// Most custom presets a user can keep.
@@ -449,6 +504,8 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
     // complete local table exists, reloads the matching applied cache.
     crate::commands::pricing::settings_changed(app, settings);
     crate::export_snapshot::on_settings_changed(app, settings.export_snapshot);
+    // a removed / switched-off extra account leaves the bar at once
+    crate::scheduler::accounts_changed(app, settings.clone());
     if let Err(e) = app.emit(events::SETTINGS_UPDATED, settings) {
         log::warn!("could not emit {}: {e}", events::SETTINGS_UPDATED);
     }
@@ -1349,5 +1406,66 @@ mod tests {
         let first = &merged.custom_presets["p00"];
         assert_eq!(first, &json!({"edge": "left"}), "nested keys are stripped");
         assert!(!merged.custom_presets.contains_key("not-an-object"));
+    }
+
+    fn acct(id: &str, provider: &str, dir: &str) -> serde_json::Value {
+        json!({"id": id, "provider": provider, "label": "Work", "configDir": dir})
+    }
+
+    #[test]
+    fn accounts_default_to_none_and_old_files_load_without_the_key() {
+        assert!(Settings::default().accounts.is_empty());
+        let loaded = parse(r#"{"language":"en"}"#).unwrap();
+        assert!(loaded.accounts.is_empty());
+    }
+
+    #[test]
+    fn accounts_are_validated_deduplicated_and_capped() {
+        let abs = std::env::temp_dir().display().to_string();
+        let merged = merge(
+            &Settings::default(),
+            &json!({"accounts": [
+                acct("work", "claude", &abs),
+                acct("work", "codex", &abs),            // duplicate id
+                acct("Bad_Id", "claude", &abs),         // not a slug
+                acct("", "claude", &abs),               // empty id
+                acct(&"x".repeat(25), "claude", &abs),  // too long
+                acct("rel", "claude", "relative/dir"),  // not absolute
+                acct("cop", "copilot", &abs),           // provider without accounts
+                {"id": "lbl", "provider": "claude", "label": "  ", "configDir": abs.clone()},
+                {"id": "lbl2", "provider": "claude", "label": "l".repeat(41), "configDir": abs.clone()},
+                {"id": "home", "provider": "codex", "label": " Home ", "configDir": abs.clone(), "enabled": false},
+            ]}),
+        );
+        let ids: Vec<&str> = merged.accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["work", "home"]);
+        assert!(merged.accounts[0].enabled, "enabled defaults to true");
+        assert_eq!(merged.accounts[1].label, "Home", "trimmed");
+        assert!(!merged.accounts[1].enabled);
+
+        let many: Vec<_> = (0..10)
+            .map(|i| acct(&format!("a{i}"), "claude", &abs))
+            .collect();
+        let capped = merge(&Settings::default(), &json!({ "accounts": many }));
+        assert_eq!(capped.accounts.len(), MAX_ACCOUNTS);
+        assert_eq!(capped.accounts[0].id, "a0", "the first ones survive");
+    }
+
+    #[test]
+    fn the_account_list_is_replaced_as_a_whole_and_round_trips() {
+        let abs = std::env::temp_dir().display().to_string();
+        let one = merge(
+            &Settings::default(),
+            &json!({"accounts": [acct("a", "claude", &abs)]}),
+        );
+        let two = merge(&one, &json!({"accounts": [acct("b", "codex", &abs)]}));
+        assert_eq!(two.accounts.len(), 1);
+        assert_eq!(two.accounts[0].id, "b");
+        let again: Settings = serde_json::from_value(serde_json::to_value(&two).unwrap()).unwrap();
+        assert_eq!(again.accounts, two.accounts);
+        // an unrelated patch keeps them
+        assert_eq!(merge(&two, &json!({"edge": "left"})).accounts, two.accounts);
+        let cleared = merge(&two, &json!({"accounts": []}));
+        assert!(cleared.accounts.is_empty());
     }
 }

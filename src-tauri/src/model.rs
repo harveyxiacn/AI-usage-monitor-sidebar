@@ -194,6 +194,55 @@ pub struct ProviderQuota {
     /// scheduler replaces it with the time it will actually try again.
     #[serde(default)]
     pub next_attempt_at: Option<String>,
+    /// Id of the extra account this quota belongs to (`settings.accounts`);
+    /// absent for the primary account, so a primary entry serializes exactly
+    /// as it did before multi-account support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// User label of that extra account ("Work"); absent for the primary one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
+}
+
+impl ProviderQuota {
+    /// Registry key: `"claude"` for the primary account, `"claude@work"` for
+    /// an extra one. Everything keyed per provider (poll clocks, backoff,
+    /// alert dedupe, ring keys, the CLI filter) uses this.
+    pub fn key(&self) -> String {
+        provider_key(&self.provider, self.account_id.as_deref())
+    }
+}
+
+/// `provider` or `provider@account`.
+pub fn provider_key(provider: &str, account_id: Option<&str>) -> String {
+    match account_id.filter(|a| !a.is_empty()) {
+        Some(a) => format!("{provider}@{a}"),
+        None => provider.to_string(),
+    }
+}
+
+/// Inverse of [`provider_key`]; the account part is `""` for the primary one.
+pub fn split_key(key: &str) -> (&str, &str) {
+    key.split_once('@').unwrap_or((key, ""))
+}
+
+/// One extra account of a provider (`settings.accounts`). The primary account
+/// of each provider is implicit: the default config dir.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSettings {
+    /// Slug `[a-z0-9-]{1,24}`, unique across all accounts.
+    pub id: String,
+    /// `"claude"` | `"codex"`.
+    pub provider: String,
+    /// Shown as "Claude Code · <label>"; 1..=40 characters.
+    pub label: String,
+    /// Absolute path of the account's CLI config dir (`CLAUDE_CONFIG_DIR` /
+    /// `CODEX_HOME` of that login).
+    pub config_dir: String,
+    /// Off = not polled; the entry stays in the list.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -422,6 +471,23 @@ pub struct WeeklySummary {
     pub limits_hit: u32,
 }
 
+/// Existence check of a prospective extra account's folder (Accounts card).
+/// No credential is read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCheck {
+    /// The path is absolute (a relative one is never accepted).
+    pub absolute: bool,
+    pub dir_found: bool,
+    /// The provider's credentials file exists in that folder.
+    pub credentials_found: bool,
+    /// Which file was looked for.
+    pub credentials_file: String,
+    /// macOS Claude: no credentials file, so this account cannot be read
+    /// (its login would be in the Keychain, which is not consulted).
+    pub keychain_only: bool,
+}
+
 /// Where a provider's CLI stands on this machine; no credential is read.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -545,6 +611,11 @@ pub struct Settings {
     /// quiet for a while (see `scheduler::poll_interval_secs`).
     pub adaptive_refresh: bool,
     pub providers: BTreeMap<String, ProviderSettings>,
+    /// Extra accounts (at most `MAX_ACCOUNTS`) of Claude Code / Codex, each
+    /// with its own CLI config dir. The primary account stays implicit.
+    /// Quota only: their local session logs are not ingested.
+    #[serde(default)]
+    pub accounts: Vec<AccountSettings>,
     pub ingest_enabled: bool,
     /// Optional https URL of a pricing table. Empty uses the project's
     /// published table, so people receive pricing revisions independently of
@@ -664,6 +735,7 @@ impl Default for Settings {
             refresh_interval_sec: 60,
             adaptive_refresh: true,
             providers,
+            accounts: Vec::new(),
             ingest_enabled: true,
             pricing_url: String::new(),
             monthly_budget_usd: 0.0,
@@ -909,12 +981,19 @@ pub struct QuotaHistoryQuery {
     pub to: String,
     #[serde(default)]
     pub provider: Option<String>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaSample {
     pub provider: String,
+    /// Extra account id; absent for the primary account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub kind: WindowKind,
     pub scope: Option<String>,
     pub used_percent: f64,

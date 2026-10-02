@@ -11,6 +11,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import AboutCard from './settings/AboutCard.svelte';
+  import AccountsCard from './settings/AccountsCard.svelte';
   import AppearanceCard from './settings/AppearanceCard.svelte';
   import BackupCard from './settings/BackupCard.svelte';
   import BehaviourCard from './settings/BehaviourCard.svelte';
@@ -152,6 +153,7 @@
     <NotificationsCard />
     <ShortcutsCard />
     <ProvidersCard />
+    <AccountsCard />
     <DataCard />
     <IntegrationsPanel />
     <UpdatesCard />

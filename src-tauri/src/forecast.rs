@@ -510,6 +510,7 @@ pub fn attach(db: &Db, snapshot: &mut AppSnapshot, now_ms: i64) {
     // one pass to write the forecasts back.
     let mut targets: Vec<(usize, usize, WindowSpec)> = Vec::new();
     let mut queries: Vec<WindowQuery<'_>> = Vec::new();
+    let keys: Vec<String> = snapshot.providers.iter().map(|p| p.key()).collect();
     for (pi, provider) in snapshot.providers.iter().enumerate() {
         if provider.status != ProviderStatus::Ok {
             continue;
@@ -522,7 +523,7 @@ pub fn attach(db: &Db, snapshot: &mut AppSnapshot, now_ms: i64) {
                 resets_at_ms: w.resets_at.as_deref().and_then(parse_ms),
             };
             queries.push(WindowQuery {
-                provider: &provider.provider,
+                provider: &keys[pi],
                 kind: w.kind,
                 scope: w.scope.as_deref(),
                 since: now_ms - horizon_ms(spec.kind, spec.window_seconds),
@@ -544,7 +545,9 @@ pub fn attach(db: &Db, snapshot: &mut AppSnapshot, now_ms: i64) {
                 // The percentages had nothing to say: try the token history of
                 // the current period (never for a model-scoped window — the
                 // provider's tokens are not that scope's tokens).
-                if f.is_none() && !scoped {
+                // Extra accounts have no ingested token events: the provider's
+                // own would belong to the primary account.
+                if f.is_none() && !scoped && provider.account_id.is_none() {
                     if let Some(since) = period_start_ms(&spec) {
                         match store::usage_token_events(db, &provider.provider, since) {
                             Ok(events) if !events.is_empty() => {

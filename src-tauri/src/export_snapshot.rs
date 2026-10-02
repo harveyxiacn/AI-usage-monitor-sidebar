@@ -38,7 +38,12 @@ pub struct SnapshotFile {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportProvider {
+    /// Registry key: `claude` for the primary account, `claude@work` for an
+    /// extra one (what `--print --provider` matches).
     pub id: String,
+    /// Extra account id (`work`); absent for the primary account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub name: String,
     /// `ok | not_logged_in | token_expired | rate_limited | error | disabled`
     pub status: String,
@@ -108,7 +113,8 @@ pub fn build(snapshot: &AppSnapshot, updated_at: &str) -> SnapshotFile {
             .providers
             .iter()
             .map(|q| ExportProvider {
-                id: q.provider.clone(),
+                id: q.key(),
+                account: q.account_id.clone(),
                 name: q.display_name.clone(),
                 status: status_str(q),
                 plan: q.plan_label.clone().or_else(|| q.plan.clone()),
@@ -219,6 +225,8 @@ mod tests {
                 credits: None,
                 extras: vec![],
                 next_attempt_at: None,
+                account_id: None,
+                account_label: None,
             }],
         }
     }
@@ -277,5 +285,30 @@ mod tests {
             "no temp file left"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_extra_account_is_keyed_and_labelled_while_the_primary_entry_is_unchanged() {
+        let mut snap = sample();
+        let mut work = snap.providers[0].clone();
+        work.account_id = Some("work".into());
+        work.account_label = Some("Work".into());
+        work.display_name = "Claude · Work".into();
+        snap.providers.push(work);
+        let file = build(&snap, "2026-10-02T10:00:00Z");
+        assert_eq!(file.providers[0].id, "claude");
+        assert_eq!(file.providers[0].account, None);
+        assert_eq!(file.providers[1].id, "claude@work");
+        assert_eq!(file.providers[1].account.as_deref(), Some("work"));
+        let json = serde_json::to_value(&file).unwrap();
+        assert!(
+            json["providers"][0].get("account").is_none(),
+            "primary shape unchanged"
+        );
+        assert_eq!(json["providers"][1]["account"], "work");
+        // the e-mail still never leaves
+        assert!(!serde_json::to_string(&file)
+            .unwrap()
+            .contains("example.com"));
     }
 }

@@ -3,6 +3,7 @@
 // in docs/ARCHITECTURE.md §5. [FRONTEND owns this file — keep names stable]
 
 import type {
+  AccountCheck,
   AppInfo,
   AppSnapshot,
   BackupInfo,
@@ -147,6 +148,10 @@ export const getNotificationPermission = () => invoke<'granted' | 'denied' | 'pr
 export const getWeeklySummary = () => invoke<WeeklySummary>('get_weekly_summary');
 /** Where each provider's CLI stands (existence checks only, no credential is read). */
 export const getProviderSetup = () => invoke<ProviderSetup[]>('get_provider_setup');
+/** Existence check of a prospective extra account's folder (no credential is read). */
+export const checkAccountDir = (provider: string, configDir: string) => invoke<AccountCheck>('check_account_dir', { provider, configDir });
+/** Native folder dialog; null when cancelled. */
+export const pickAccountFolder = () => invoke<string | null>('pick_account_folder');
 
 
 /** Native save dialog on desktop; a normal file download in browser previews. */
