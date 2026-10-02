@@ -16,6 +16,7 @@
   import { onMount } from 'svelte';
   import { historyViewState, initialHistoryView, rememberHistoryView, type HistoryView } from '$lib/history-view-state';
   import BudgetChart from '$lib/components/BudgetChart.svelte';
+  import CostNote from '$lib/components/CostNote.svelte';
   import UsageChart from '$lib/components/UsageChart.svelte';
   import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
   import { bucketDateRange } from '$lib/analytics';
@@ -487,7 +488,7 @@
         {:else}
           <p class="muted" role="status">{t('common.loading')}</p>
         {/if}
-        <p class="note">{t('history.costNote')}</p>
+        <p class="note"><CostNote /></p>
       </div>
 
       <ProviderCompare totals={providerTotals} {metric} costApproximate={result?.costApproximate ?? false} {providerName} />
@@ -537,7 +538,7 @@
           <p class="muted cost-note" role="status">{t('history.budget.incomplete')}</p>
         {/if}
         <BudgetChart series={budget.series} budgetUsd={monthlyBudgetUsd} subscriptionUsd={subscriptionTotal(settings.value.subscriptionUsd, provider || null)} {themeKey} />
-        <p class="note">{t('history.costNote')}</p>
+        <p class="note"><CostNote /></p>
       {:else if calendarError}
         <p class="err" role="alert">{t('common.error', { message: calendarError })}</p>
       {:else}
