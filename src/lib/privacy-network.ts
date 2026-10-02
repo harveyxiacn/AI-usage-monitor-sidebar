@@ -11,12 +11,14 @@ export type PrivacyItemId =
   | 'credentials'
   | 'sessionLogs'
   | 'ownFiles'
+  | 'snapshot'
   | 'claude'
   | 'codex'
   | 'copilot'
   | 'update'
   | 'pricing'
-  | 'assessment';
+  | 'assessment'
+  | 'webhook';
 
 export interface PrivacyItem {
   id: PrivacyItemId;
@@ -31,12 +33,14 @@ export const PRIVACY_ITEMS: readonly PrivacyItem[] = [
   { id: 'credentials', kind: 'local', setting: 'providers' },
   { id: 'sessionLogs', kind: 'local', setting: 'ingestEnabled' },
   { id: 'ownFiles', kind: 'local', setting: null },
+  { id: 'snapshot', kind: 'local', setting: 'exportSnapshot' },
   { id: 'claude', kind: 'request', setting: 'providers', provider: 'claude' },
   { id: 'codex', kind: 'request', setting: 'providers', provider: 'codex' },
   { id: 'copilot', kind: 'request', setting: 'providers', provider: 'copilot' },
   { id: 'update', kind: 'request', setting: 'autoUpdateCheck' },
   { id: 'pricing', kind: 'request', setting: 'autoPricingCheck' },
   { id: 'assessment', kind: 'request', setting: null },
+  { id: 'webhook', kind: 'request', setting: 'webhook' },
 ];
 
 /**
@@ -57,6 +61,11 @@ export function privacyItemActive(item: PrivacyItem, s: Settings): boolean | nul
       return s.autoUpdateCheck;
     case 'autoPricingCheck':
       return s.autoPricingCheck;
+    case 'exportSnapshot':
+      return s.exportSnapshot;
+    case 'webhook':
+      // alerts reach the webhook only while notifications are on
+      return s.notifications && s.webhook.enabled && s.webhook.url !== '';
     default:
       return null;
   }

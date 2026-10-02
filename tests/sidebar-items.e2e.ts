@@ -67,13 +67,13 @@ test('window kinds and providers can be hidden from the bar independently', asyn
   await openBar(page, { sidebarItems: { scoped: false } });
   await expect(page.getByRole('button', { name: /^Claude:/ })).toHaveAttribute(
     'aria-label',
-    /^Claude: Weekly \d+%, 5-hour \d+%$/
+    /^Claude: Weekly \d+% [^;]*; 5-hour \d+% [^;]*$/
   );
 
   await openBar(page, { sidebarItems: { weekly: false } });
   await expect(page.getByRole('button', { name: /^Codex:/ })).toHaveAttribute(
     'aria-label',
-    /^Codex: 5-hour \d+%$/
+    /^Codex: 5-hour \d+% [^;]*$/
   );
 
   await openBar(page, { providers: { codex: { showInSidebar: false } } });

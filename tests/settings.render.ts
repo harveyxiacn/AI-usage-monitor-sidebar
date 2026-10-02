@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 // These checks load the real settings route and observe what it renders.
 const SECTION_IDS = [
   'appearance', 'presets', 'sidebarItems', 'sizeColour', 'position', 'behaviour', 'notifications',
-  'shortcuts', 'providers', 'data', 'updates', 'privacy', 'backup', 'about',
+  'shortcuts', 'providers', 'data', 'integrations', 'updates', 'privacy', 'backup', 'about',
 ];
 
 for (const language of ['en', 'zh-CN']) {
@@ -21,7 +21,7 @@ for (const language of ['en', 'zh-CN']) {
     // a card with something to reset starts with its button disabled
     await expect(page.locator('article#position button.reset')).toBeDisabled();
     // the privacy card lists every request the app can make
-    await expect(page.locator('article#privacy li')).toHaveCount(9);
+    await expect(page.locator('article#privacy li')).toHaveCount(11);
     expect(errors).toEqual([]);
     await page.screenshot({ path: `test-results/settings-${language}.png`, fullPage: true });
   });
