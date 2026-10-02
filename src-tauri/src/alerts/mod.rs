@@ -135,11 +135,13 @@ fn snapshot_alerts(
         if q.status != ProviderStatus::Ok {
             continue;
         }
+        // `claude` or `claude@work`: each account has its own dedupe state
+        let provider_key = q.key();
         for w in &q.windows {
             if !w.used_percent.is_finite() {
                 continue;
             }
-            let key = threshold::window_key(&q.provider, w);
+            let key = threshold::window_key(&provider_key, w);
             live.insert(key.clone());
             let resets = w
                 .resets_at
@@ -153,7 +155,7 @@ fn snapshot_alerts(
                 if let Some(level) = crossed {
                     out.push(threshold::alert_for(
                         &q.display_name,
-                        &q.provider,
+                        &provider_key,
                         w,
                         level,
                         chinese,
@@ -161,13 +163,13 @@ fn snapshot_alerts(
                 }
             }
             if settings.forecast_notifications {
-                if let Some(f) = predictive::forecast_alert(&q.provider, w, now_ms) {
+                if let Some(f) = predictive::forecast_alert(&provider_key, w, now_ms) {
                     if predictive::claim_alert(&f, now_ms) {
                         let (title, body) =
                             predictive::alert_text(&q.display_name, w, f.early_by_ms, chinese);
                         out.push(
                             Alert::new(notifier::Level::Forecast, title, body)
-                                .for_window(&q.provider, &window_name(w, chinese)),
+                                .for_window(&provider_key, &window_name(w, chinese)),
                         );
                     }
                 }
@@ -398,5 +400,38 @@ mod tests {
         w.kind = WindowKind::SevenDay;
         w.scope = Some("Fable".into());
         assert_eq!(window_name(&w, false), "weekly · Fable");
+    }
+
+    #[test]
+    fn two_accounts_of_one_provider_alert_independently() {
+        // THRESHOLDS is process-wide: use an id no other test shares
+        let p = "alerts-test-acct";
+        let s = Settings {
+            notifications: true,
+            ..Settings::default()
+        };
+        let r = "2030-01-01T05:00:00Z";
+        let primary = |pct| quota(p, pct, r);
+        let work = |pct| {
+            let mut q = quota(p, pct, r);
+            q.account_id = Some("work".into());
+            q.account_label = Some("Work".into());
+            q.display_name = "Claude · Work".into();
+            q
+        };
+        let both = |a: ProviderQuota, b: ProviderQuota| AppSnapshot {
+            providers: vec![a, b],
+            ..AppSnapshot::default()
+        };
+        assert!(snapshot_alerts(&both(primary(10.0), work(10.0)), &s, 0, false).is_empty());
+        // only the work account crosses: exactly one alert, and it names it
+        let alerts = snapshot_alerts(&both(primary(10.0), work(95.0)), &s, 0, false);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].title.contains("Work"), "{}", alerts[0].title);
+        assert_eq!(alerts[0].provider.as_deref(), Some("alerts-test-acct@work"));
+        // the primary crossing later is its own event, the work one stays quiet
+        let alerts = snapshot_alerts(&both(primary(95.0), work(96.0)), &s, 0, false);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].provider.as_deref(), Some("alerts-test-acct"));
     }
 }

@@ -182,12 +182,7 @@ pub fn usage_lines(
         .collect();
     rows.sort_by_key(|q| settings.providers.get(&q.provider).map_or(0, |p| p.order));
     rows.into_iter()
-        .map(|q| {
-            (
-                q.provider.clone(),
-                provider_line(q, settings, now_ms, chinese),
-            )
-        })
+        .map(|q| (q.key(), provider_line(q, settings, now_ms, chinese)))
         .collect()
 }
 
@@ -358,6 +353,8 @@ mod tests {
             credits: None,
             extras: vec![],
             next_attempt_at: None,
+            account_id: None,
+            account_label: None,
         }
     }
 

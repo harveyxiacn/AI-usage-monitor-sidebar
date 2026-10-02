@@ -208,7 +208,7 @@ impl AppState {
                 continue;
             }
             if let Some(ms) = providers::rfc3339_to_ms(&q.fetched_at) {
-                poll_clocks.last_poll_ms.insert(q.provider.clone(), ms);
+                poll_clocks.last_poll_ms.insert(q.key(), ms);
             }
         }
 

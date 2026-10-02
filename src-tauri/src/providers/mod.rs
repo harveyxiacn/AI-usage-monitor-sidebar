@@ -9,9 +9,10 @@ pub mod codex;
 pub mod copilot;
 pub mod openrouter;
 
+pub use crate::model::{provider_key, split_key};
 use crate::model::{
-    AppSnapshot, DataSource, ProviderInfo, ProviderQuota, ProviderStatus, QuotaWindow, Settings,
-    WindowKind,
+    AccountSettings, AppSnapshot, DataSource, ProviderInfo, ProviderQuota, ProviderStatus,
+    QuotaWindow, Settings, WindowKind,
 };
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -63,6 +64,48 @@ pub struct ProviderCtx {
     /// `openrouterKeyEnv` setting; `ordered_providers` fills it in). The key
     /// itself is never part of the context.
     pub openrouter_key_env: String,
+    /// `Some` for an extra account (`settings.accounts`): its credentials come
+    /// from that account's config dir and its cache file is separate. `None`
+    /// is the primary account (default dir, `CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
+    pub account: Option<AccountRef>,
+}
+
+/// One extra account as the providers see it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountRef {
+    pub id: String,
+    pub label: String,
+    pub config_dir: PathBuf,
+}
+
+impl AccountRef {
+    pub fn from_settings(a: &AccountSettings) -> Self {
+        Self {
+            id: a.id.clone(),
+            label: a.label.clone(),
+            config_dir: PathBuf::from(&a.config_dir),
+        }
+    }
+
+    /// "Claude Code · Work"
+    pub fn display_name(&self, base: &str) -> String {
+        format!("{base} · {}", self.label)
+    }
+}
+
+/// Mark `quota` as belonging to `account` (id, label and the combined display
+/// name); a no-op for the primary account, whose output stays byte-identical
+/// to what it was before multi-account support.
+pub fn tag_account(mut quota: ProviderQuota, account: Option<&AccountRef>) -> ProviderQuota {
+    if let Some(a) = account {
+        // idempotent: a quota that is already tagged keeps its display name
+        if quota.account_id.as_deref() != Some(a.id.as_str()) {
+            quota.display_name = a.display_name(&quota.display_name);
+        }
+        quota.account_id = Some(a.id.clone());
+        quota.account_label = Some(a.label.clone());
+    }
+    quota
 }
 
 impl Default for ProviderCtx {
@@ -73,6 +116,7 @@ impl Default for ProviderCtx {
             api_base: None,
             retry_delay: RETRY_DELAY,
             openrouter_key_env: openrouter::DEFAULT_KEY_ENV.to_string(),
+            account: None,
         }
     }
 }
@@ -83,6 +127,14 @@ impl ProviderCtx {
         Self {
             cache_dir: Some(data_dir.join("cache")),
             ..Self::default()
+        }
+    }
+
+    /// Same context, bound to an extra account.
+    pub fn with_account(&self, account: AccountRef) -> Self {
+        Self {
+            account: Some(account),
+            ..self.clone()
         }
     }
 
@@ -143,6 +195,10 @@ pub trait Provider: Send + Sync {
     /// Stable id used in settings, the DB and the UI (`"claude"`, `"codex"`).
     fn id(&self) -> &'static str;
     fn display_name(&self) -> &'static str;
+    /// The extra account this instance reads, `None` for the primary one.
+    fn account(&self) -> Option<&AccountRef> {
+        None
+    }
     /// `true` when the quota source was never verified against a live account.
     /// Such a provider is left out of the snapshot entirely while it is
     /// switched off, so nobody gets a "disabled" card for a tool they do not
@@ -259,9 +315,11 @@ pub fn normalize_rfc3339(s: &str) -> Option<String> {
 // ---------- last-good cache ----------
 
 fn cache_path(ctx: &ProviderCtx, provider: &str) -> Option<PathBuf> {
-    ctx.cache_dir
-        .as_ref()
-        .map(|d| d.join(format!("quota-{provider}.json")))
+    ctx.cache_dir.as_ref().map(|d| match &ctx.account {
+        // an extra account caches next to the primary one, never over it
+        Some(a) => d.join(format!("quota-{provider}@{}.json", a.id)),
+        None => d.join(format!("quota-{provider}.json")),
+    })
 }
 
 /// Last successfully fetched quota for `provider`, if any.
@@ -302,6 +360,8 @@ pub fn empty_quota(provider: &str, display_name: &str, status: ProviderStatus) -
         credits: None,
         extras: Vec::new(),
         next_attempt_at: None,
+        account_id: None,
+        account_label: None,
     }
 }
 
@@ -420,7 +480,7 @@ pub fn is_enabled(settings: &Settings, id: &str) -> bool {
         .unwrap_or_else(|| enabled_by_default(id))
 }
 
-/// Providers in the user's configured display order.
+/// Providers in the user's configured display order (primary accounts only).
 pub fn ordered_providers(ctx: &ProviderCtx, settings: &Settings) -> Vec<Box<dyn Provider>> {
     let mut ctx = ctx.clone();
     ctx.openrouter_key_env = settings.openrouter_key_env.clone();
@@ -435,22 +495,72 @@ pub fn ordered_providers(ctx: &ProviderCtx, settings: &Settings) -> Vec<Box<dyn 
     list
 }
 
+/// A provider instance for one extra account; `None` for a provider that has
+/// no multi-account support.
+fn account_provider(ctx: &ProviderCtx, a: &AccountSettings) -> Option<Box<dyn Provider>> {
+    let ctx = ctx.with_account(AccountRef::from_settings(a));
+    match a.provider.as_str() {
+        CLAUDE_ID => Some(Box::new(claude::ClaudeProvider::new(ctx))),
+        CODEX_ID => Some(Box::new(codex::CodexProvider::new(ctx))),
+        _ => None,
+    }
+}
+
+/// Every instance the scheduler polls, in display order: each provider's
+/// primary account followed by its enabled extra accounts (in the order of
+/// `settings.accounts`). Extra accounts follow their provider's switch: a
+/// provider that is off takes its accounts with it.
+pub fn ordered_instances(ctx: &ProviderCtx, settings: &Settings) -> Vec<Box<dyn Provider>> {
+    let mut out = Vec::new();
+    for p in ordered_providers(ctx, settings) {
+        let id = p.id();
+        let on = is_enabled(settings, id);
+        out.push(p);
+        if !on {
+            continue;
+        }
+        for a in settings
+            .accounts
+            .iter()
+            .filter(|a| a.enabled && a.provider == id)
+        {
+            out.extend(account_provider(ctx, a));
+        }
+    }
+    out
+}
+
+/// Registry key of a provider instance (`claude`, `claude@work`).
+pub fn instance_key(p: &dyn Provider) -> String {
+    provider_key(p.id(), p.account().map(|a| a.id.as_str()))
+}
+
+/// `empty_quota` for an instance, tagged with its account.
+fn instance_empty(p: &dyn Provider, status: ProviderStatus) -> ProviderQuota {
+    tag_account(empty_quota(p.id(), p.display_name(), status), p.account())
+}
+
 /// Offline snapshot built purely from the on-disk `cache/quota-*.json` files,
 /// so the UI has something to render before the first network round trip.
 pub fn snapshot_from_cache(ctx: &ProviderCtx, settings: &Settings) -> AppSnapshot {
-    let providers = ordered_providers(ctx, settings)
+    let providers = ordered_instances(ctx, settings)
         .iter()
         .filter(|p| !p.experimental() || is_enabled(settings, p.id()))
         .map(|p| {
             if !is_enabled(settings, p.id()) {
                 return disabled_quota(p.id(), p.display_name());
             }
-            match read_cache(ctx, p.id()) {
-                Some(mut q) => {
+            let cache_ctx = match p.account() {
+                Some(a) => ctx.with_account(a.clone()),
+                None => ctx.clone(),
+            };
+            match read_cache(&cache_ctx, p.id()) {
+                Some(q) => {
+                    let mut q = tag_account(q, p.account());
                     q.source = DataSource::Cache;
                     q
                 }
-                None => empty_quota(p.id(), p.display_name(), ProviderStatus::Error),
+                None => instance_empty(p.as_ref(), ProviderStatus::Error),
             }
         })
         .collect();
@@ -476,33 +586,28 @@ pub async fn fetch_snapshot(
     mut skip: impl FnMut(&str) -> bool,
 ) -> AppSnapshot {
     let mut out = Vec::new();
-    for p in ordered_providers(ctx, settings) {
+    for p in ordered_instances(ctx, settings) {
         let id = p.id();
+        let key = instance_key(p.as_ref());
         // An experimental provider the user has not opted into is absent from
         // the snapshot, not present-but-disabled: no ring, no "disabled" card.
         if p.experimental() && !is_enabled(settings, id) {
             continue;
         }
-        let prev = previous
-            .providers
-            .iter()
-            .find(|q| q.provider == id)
-            .cloned();
+        let prev = previous.providers.iter().find(|q| q.key() == key).cloned();
         if !is_enabled(settings, id) {
             out.push(disabled_quota(id, p.display_name()));
             continue;
         }
-        let wanted = only.map(|o| o == id).unwrap_or(true);
-        if !wanted || skip(id) {
-            out.push(
-                prev.unwrap_or_else(|| empty_quota(id, p.display_name(), ProviderStatus::Error)),
-            );
+        let wanted = only.map(|o| o == key).unwrap_or(true);
+        if !wanted || skip(&key) {
+            out.push(prev.unwrap_or_else(|| instance_empty(p.as_ref(), ProviderStatus::Error)));
             continue;
         }
         let quota = p.fetch(http).await;
         log::debug!(
             "{} refresh -> {:?} ({} windows)",
-            id,
+            key,
             quota.status,
             quota.windows.len()
         );
@@ -713,5 +818,159 @@ mod tests {
             "2026-09-15T06:20:00Z"
         );
         assert!(normalize_rfc3339("not a time").is_none());
+    }
+
+    fn account(id: &str, provider: &str, dir: &str, enabled: bool) -> AccountSettings {
+        AccountSettings {
+            id: id.into(),
+            provider: provider.into(),
+            label: id[..1].to_uppercase() + &id[1..],
+            config_dir: dir.into(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn keys_join_and_split_and_the_primary_key_is_the_bare_provider() {
+        assert_eq!(provider_key("claude", None), "claude");
+        assert_eq!(provider_key("claude", Some("")), "claude");
+        assert_eq!(provider_key("claude", Some("work")), "claude@work");
+        assert_eq!(split_key("claude"), ("claude", ""));
+        assert_eq!(split_key("claude@work"), ("claude", "work"));
+    }
+
+    #[test]
+    fn a_primary_quota_serializes_without_any_account_field() {
+        let q = empty_quota("claude", "Claude Code", ProviderStatus::Ok);
+        let json = serde_json::to_value(&q).unwrap();
+        assert!(json.get("accountId").is_none() && json.get("accountLabel").is_none());
+        assert_eq!(q.key(), "claude");
+        let tagged = tag_account(
+            q.clone(),
+            Some(&AccountRef {
+                id: "work".into(),
+                label: "Work".into(),
+                config_dir: PathBuf::from("/x"),
+            }),
+        );
+        let json = serde_json::to_value(&tagged).unwrap();
+        assert_eq!(json["accountId"], "work");
+        assert_eq!(json["accountLabel"], "Work");
+        assert_eq!(json["displayName"], "Claude Code · Work");
+        assert_eq!(tagged.key(), "claude@work");
+        // a cache file or an older payload without the fields still loads
+        let back: ProviderQuota =
+            serde_json::from_value(serde_json::to_value(&q).unwrap()).unwrap();
+        assert_eq!(back, q);
+        assert_eq!(tag_account(q.clone(), None), q);
+    }
+
+    #[test]
+    fn without_extra_accounts_the_instances_are_exactly_the_providers() {
+        let ctx = ProviderCtx::default();
+        let settings = Settings::default();
+        let a: Vec<String> = ordered_instances(&ctx, &settings)
+            .iter()
+            .map(|p| instance_key(p.as_ref()))
+            .collect();
+        let b: Vec<String> = ordered_providers(&ctx, &settings)
+            .iter()
+            .map(|p| p.id().to_string())
+            .collect();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn extra_accounts_follow_their_provider_and_respect_the_switches() {
+        let ctx = ProviderCtx::default();
+        let mut settings = Settings {
+            accounts: vec![
+                account("work", "claude", "/w", true),
+                account("off", "claude", "/o", false),
+                account("home", "codex", "/h", true),
+                account("odd", "copilot", "/c", true),
+            ],
+            ..Settings::default()
+        };
+        let keys = |s: &Settings| -> Vec<String> {
+            ordered_instances(&ctx, s)
+                .iter()
+                .map(|p| instance_key(p.as_ref()))
+                .collect()
+        };
+        let k = keys(&settings);
+        let pos = |key: &str| k.iter().position(|x| x == key).unwrap();
+        assert_eq!(
+            pos("claude@work"),
+            pos("claude") + 1,
+            "right after its provider"
+        );
+        assert_eq!(pos("codex@home"), pos("codex") + 1);
+        assert!(!k.contains(&"claude@off".to_string()), "disabled account");
+        assert!(
+            !k.iter().any(|x| x.starts_with("copilot@")),
+            "no multi-account support"
+        );
+
+        // a provider that is off takes its accounts with it
+        settings.providers.get_mut("claude").unwrap().enabled = false;
+        assert!(!keys(&settings).contains(&"claude@work".to_string()));
+    }
+
+    #[test]
+    fn an_account_has_its_own_cache_file_and_never_reads_the_primary_one() {
+        let dir = crate::commands::test_support::tempdir();
+        let ctx = ProviderCtx::with_data_dir(&dir);
+        let work = ctx.with_account(AccountRef {
+            id: "work".into(),
+            label: "Work".into(),
+            config_dir: dir.join("work-home"),
+        });
+        let mut primary_q = empty_quota("claude", "Claude Code", ProviderStatus::Ok);
+        primary_q.plan_label = Some("primary plan".into());
+        write_cache(&ctx, &primary_q);
+        assert!(
+            read_cache(&work, "claude").is_none(),
+            "not the primary cache"
+        );
+
+        let mut work_q = tag_account(
+            empty_quota("claude", "Claude Code", ProviderStatus::Ok),
+            work.account.as_ref(),
+        );
+        work_q.plan_label = Some("work plan".into());
+        write_cache(&work, &work_q);
+        assert!(dir.join("cache").join("quota-claude@work.json").is_file());
+        assert_eq!(
+            read_cache(&ctx, "claude").unwrap().plan_label.as_deref(),
+            Some("primary plan"),
+            "the primary cache is untouched"
+        );
+        assert_eq!(
+            read_cache(&work, "claude").unwrap().plan_label.as_deref(),
+            Some("work plan")
+        );
+
+        // offline snapshot: both accounts show up, each with its own numbers
+        let settings = Settings {
+            accounts: vec![account(
+                "work",
+                "claude",
+                &dir.join("work-home").display().to_string(),
+                true,
+            )],
+            ..Settings::default()
+        };
+        let snap = snapshot_from_cache(&ctx, &settings);
+        let primary = snap.providers.iter().find(|q| q.key() == "claude").unwrap();
+        let extra = snap
+            .providers
+            .iter()
+            .find(|q| q.key() == "claude@work")
+            .unwrap();
+        assert_eq!(primary.plan_label.as_deref(), Some("primary plan"));
+        assert_eq!(extra.plan_label.as_deref(), Some("work plan"));
+        assert_eq!(extra.display_name, "Claude Code · Work");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

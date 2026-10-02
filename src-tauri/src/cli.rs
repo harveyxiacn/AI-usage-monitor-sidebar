@@ -115,11 +115,17 @@ fn status_text(status: &str) -> &'static str {
 }
 
 fn short_name(p: &ExportProvider) -> String {
-    match p.id.as_str() {
+    let base = p.id.split('@').next().unwrap_or(&p.id);
+    let short: String = match base {
         "claude" => "CC".into(),
         "codex" => "CX".into(),
         "copilot" => "GH".into(),
         other => other.chars().take(2).collect::<String>().to_uppercase(),
+    };
+    // an extra account: `CC@work`
+    match &p.account {
+        Some(account) => format!("{short}@{account}"),
+        None => short,
     }
 }
 
@@ -390,6 +396,7 @@ mod tests {
     fn provider(id: &str, name: &str, status: &str, windows: Vec<ExportWindow>) -> ExportProvider {
         ExportProvider {
             id: id.into(),
+            account: id.split_once('@').map(|(_, a)| a.to_string()),
             name: name.into(),
             status: status.into(),
             plan: None,
@@ -584,5 +591,33 @@ mod tests {
         assert_eq!(code, 2);
         assert!(err.contains("schema 2"), "{err}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_account_is_selected_with_provider_at_account() {
+        let mut f = file();
+        f.providers.push(provider(
+            "claude@work",
+            "Claude Code · Work",
+            "ok",
+            vec![window("five_hour", 12.0, None)],
+        ));
+        let args = |p: &str| PrintArgs {
+            format: Format::Statusline,
+            provider: Some(p.into()),
+        };
+        assert_eq!(
+            render(&f, &args("claude@work"), now_ms()).unwrap(),
+            "CC@work 5h 12%"
+        );
+        let primary = render(&f, &args("claude"), now_ms()).unwrap();
+        assert!(
+            primary.starts_with("CC ") && !primary.contains("work"),
+            "{primary}"
+        );
+        let parsed = parse_args(&["--print".into(), "--provider".into(), "Claude@Work".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.provider.as_deref(), Some("claude@work"));
     }
 }

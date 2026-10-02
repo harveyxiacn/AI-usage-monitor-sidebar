@@ -1,7 +1,7 @@
 //! `quota_samples` writes and reads. [BACKEND]
 
 use super::{now_ms, Db};
-use crate::model::{QuotaHistoryQuery, QuotaSample, QuotaWindow, WindowKind};
+use crate::model::{split_key, QuotaHistoryQuery, QuotaSample, QuotaWindow, WindowKind};
 use anyhow::Result;
 use chrono::TimeZone;
 use rusqlite::OptionalExtension;
@@ -12,6 +12,11 @@ const MIN_SAMPLE_GAP_MS: i64 = 5 * 60 * 1000;
 /// Store percentage and cycle/plan changes immediately, plus one unchanged
 /// heartbeat at least every 5 minutes for each provider/kind/scope.
 /// Returns `true` when a row was written.
+///
+/// `provider` is a registry key: `"claude"` is the primary account (stored
+/// with `account = ''`), `"claude@work"` the extra account `work`. Every
+/// function in this module takes the key and splits it, so the account is
+/// part of each series' identity (throttling, forecasts, thinning).
 pub fn insert_quota_sample(
     db: &Db,
     provider: &str,
@@ -19,6 +24,7 @@ pub fn insert_quota_sample(
     window: &QuotaWindow,
     now: i64,
 ) -> Result<bool> {
+    let (provider, account) = split_key(provider);
     let conn = db.lock();
     let scope = window.scope.clone();
     let kind = window.kind.as_str();
@@ -29,11 +35,12 @@ pub fn insert_quota_sample(
         .map(|d| d.timestamp_millis());
     let mut stmt = conn.prepare(
         "SELECT used_percent, ts, resets_at, plan FROM quota_samples
-         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+         WHERE provider = ?1 AND account = ?4 AND kind = ?2
+           AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
          ORDER BY ts DESC, id DESC LIMIT 1",
     )?;
     let last: Option<(f64, i64, Option<i64>, Option<String>)> = stmt
-        .query_row(rusqlite::params![provider, kind, scope], |r| {
+        .query_row(rusqlite::params![provider, kind, scope, account], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .optional()?;
@@ -47,8 +54,8 @@ pub fn insert_quota_sample(
     }
     drop(stmt);
     conn.execute(
-        "INSERT INTO quota_samples(provider, kind, scope, used_percent, resets_at, plan, ts)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO quota_samples(provider, account, kind, scope, used_percent, resets_at, plan, ts)
+         VALUES (?1,?8,?2,?3,?4,?5,?6,?7)",
         rusqlite::params![
             provider,
             kind,
@@ -56,7 +63,8 @@ pub fn insert_quota_sample(
             window.used_percent,
             resets_at,
             plan,
-            now
+            now,
+            account
         ],
     )?;
     Ok(true)
@@ -88,15 +96,17 @@ pub fn window_samples(
     scope: Option<&str>,
     since: i64,
 ) -> Result<Vec<crate::commands::forecast::Sample>> {
+    let (provider, account) = split_key(provider);
     let conn = db.lock();
     let mut stmt = conn.prepare(
         "SELECT ts, used_percent, resets_at FROM quota_samples
-         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+         WHERE provider = ?1 AND account = ?5 AND kind = ?2
+           AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
            AND ts >= ?4
          ORDER BY ts, id",
     )?;
     let rows = stmt.query_map(
-        rusqlite::params![provider, kind.as_str(), scope, since],
+        rusqlite::params![provider, kind.as_str(), scope, since, account],
         |r| {
             Ok(crate::commands::forecast::Sample {
                 ts_ms: r.get(0)?,
@@ -114,6 +124,7 @@ pub fn window_samples(
 
 /// One window whose samples `window_samples_many` should load.
 pub struct WindowQuery<'a> {
+    /// registry key (`claude`, `claude@work`)
     pub provider: &'a str,
     pub kind: WindowKind,
     pub scope: Option<&'a str>,
@@ -129,14 +140,16 @@ pub fn window_samples_many(
     let conn = db.lock();
     let mut stmt = conn.prepare_cached(
         "SELECT ts, used_percent, resets_at FROM quota_samples
-         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+         WHERE provider = ?1 AND account = ?5 AND kind = ?2
+           AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
            AND ts >= ?4
          ORDER BY ts, id",
     )?;
     let mut out = Vec::with_capacity(queries.len());
     for q in queries {
+        let (provider, account) = split_key(q.provider);
         let rows = stmt.query_map(
-            rusqlite::params![q.provider, q.kind.as_str(), q.scope, q.since],
+            rusqlite::params![provider, q.kind.as_str(), q.scope, q.since, account],
             |r| {
                 Ok(crate::commands::forecast::Sample {
                     ts_ms: r.get(0)?,
@@ -154,16 +167,20 @@ pub fn window_samples_many(
 pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSample>> {
     let (from, to) = super::usage::query_range(&q.from, &q.to)?;
     let conn = db.lock();
-    let sql = "SELECT provider, kind, scope, used_percent, resets_at, plan, ts
+    // `account`: NULL = every account, '' = the primary one, else that account.
+    let sql = "SELECT provider, kind, scope, used_percent, resets_at, plan, ts, account
                FROM quota_samples
                WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
+                 AND (?4 IS NULL OR account = ?4)
                ORDER BY ts, id";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(rusqlite::params![from, to, q.provider], |r| {
+    let rows = stmt.query_map(rusqlite::params![from, to, q.provider, q.account], |r| {
         let kind: String = r.get(1)?;
         let resets_at: Option<i64> = r.get(4)?;
+        let account: String = r.get(7)?;
         Ok(QuotaSample {
             provider: r.get(0)?,
+            account: Some(account).filter(|a| !a.is_empty()),
             kind: WindowKind::parse(&kind),
             scope: r.get(2)?,
             used_percent: r.get(3)?,
@@ -192,7 +209,7 @@ pub struct MaintenanceStats {
 
 /// Daily housekeeping of `quota_samples`: delete rows older than
 /// `retention_days` (0 = keep forever), thin everything older than 14 days to
-/// the highest-`used_percent` row per (provider, kind, scope, hour) so cycle
+/// the highest-`used_percent` row per (provider, account, kind, scope, hour) so cycle
 /// peaks survive, then checkpoint the WAL and let SQLite refresh its planner
 /// statistics. `usage_events` are never touched. The database's auto_vacuum
 /// mode is not changed; only an already-incremental database is vacuumed.
@@ -207,7 +224,7 @@ pub fn maintain_quota_samples(db: &Db, now: i64, retention_days: u32) -> Result<
         "DELETE FROM quota_samples WHERE ts < ?1 AND id NOT IN (
            SELECT id FROM (
              SELECT id, ROW_NUMBER() OVER (
-                      PARTITION BY provider, kind, scope, ts / ?2
+                      PARTITION BY provider, account, kind, scope, ts / ?2
                       ORDER BY used_percent DESC, id DESC) AS rn
              FROM quota_samples WHERE ts < ?1)
            WHERE rn = 1)",
@@ -288,6 +305,7 @@ mod tests {
                 from: "2026-09-01T00:00:00Z".into(),
                 to: "2026-09-30T00:00:00Z".into(),
                 provider: None,
+                account: None,
             },
         )
         .unwrap();
@@ -304,6 +322,7 @@ mod tests {
                 from: "2026-09-01T00:00:00Z".into(),
                 to: "2026-09-30T00:00:00Z".into(),
                 provider: Some("claude".into()),
+                account: None,
             },
         )
         .unwrap();
@@ -390,6 +409,7 @@ mod tests {
                 from: "2026-09-15T00:00:00Z".into(),
                 to: "2026-09-16T00:00:00Z".into(),
                 provider: Some("codex".into()),
+                account: None,
             },
         )
         .unwrap();
@@ -405,6 +425,7 @@ mod tests {
                 from: "2026-09-01T00:00:00Z".into(),
                 to: "2026-09-30T00:00:00Z".into(),
                 provider: None,
+                account: None,
             },
         )
         .unwrap()
@@ -657,5 +678,92 @@ mod tests {
         assert_eq!(many[0][0].used_percent, 10.0);
         assert_eq!(many[1][0].used_percent, 20.0);
         assert!(many[2].is_empty(), "`since` still filters");
+    }
+
+    #[test]
+    fn each_account_is_its_own_series_for_throttling_forecast_input_and_history() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000i64;
+        let w = window(WindowKind::FiveHour, 10.0, None);
+        assert!(insert_quota_sample(&db, "claude", None, &w, t0).unwrap());
+        // identical value one minute later would be throttled for the same
+        // series, but the other account is a different one
+        assert!(insert_quota_sample(&db, "claude@work", None, &w, t0 + 60_000).unwrap());
+        assert!(!insert_quota_sample(&db, "claude@work", None, &w, t0 + 90_000).unwrap());
+        assert!(!insert_quota_sample(&db, "claude", None, &w, t0 + 90_000).unwrap());
+        // another extra account of the same provider
+        assert!(insert_quota_sample(&db, "claude@side", None, &w, t0 + 90_000).unwrap());
+
+        let primary = window_samples(&db, "claude", WindowKind::FiveHour, None, 0).unwrap();
+        let work = window_samples(&db, "claude@work", WindowKind::FiveHour, None, 0).unwrap();
+        assert_eq!((primary.len(), work.len()), (1, 1));
+        assert_eq!(primary[0].ts_ms, t0);
+        assert_eq!(work[0].ts_ms, t0 + 60_000);
+        let many = window_samples_many(
+            &db,
+            &[
+                WindowQuery {
+                    provider: "claude@work",
+                    kind: WindowKind::FiveHour,
+                    scope: None,
+                    since: 0,
+                },
+                WindowQuery {
+                    provider: "claude",
+                    kind: WindowKind::FiveHour,
+                    scope: None,
+                    since: 0,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(many[0][0].ts_ms, t0 + 60_000);
+        assert_eq!(many[1][0].ts_ms, t0);
+
+        let q = |provider: Option<&str>, account: Option<&str>| {
+            query_quota_history(
+                &db,
+                &QuotaHistoryQuery {
+                    from: "2026-09-01T00:00:00Z".into(),
+                    to: "2026-09-30T00:00:00Z".into(),
+                    provider: provider.map(str::to_string),
+                    account: account.map(str::to_string),
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(q(None, None).len(), 3, "no account filter = every account");
+        let only_primary = q(Some("claude"), Some(""));
+        assert_eq!(only_primary.len(), 1);
+        assert_eq!(only_primary[0].account, None);
+        let only_work = q(Some("claude"), Some("work"));
+        assert_eq!(only_work.len(), 1);
+        assert_eq!(only_work[0].account.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn thinning_keeps_one_peak_per_account_and_hour() {
+        let db = Db::open_in_memory().unwrap();
+        let old = 1_789_430_400_000i64;
+        let now = old + 60 * 24 * 3_600_000; // the samples are > 14 days old
+        for key in ["claude", "claude@work"] {
+            for (i, pct) in [10.0, 30.0, 20.0].into_iter().enumerate() {
+                insert_quota_sample(
+                    &db,
+                    key,
+                    None,
+                    &window(WindowKind::FiveHour, pct, None),
+                    old + i as i64 * 60_000,
+                )
+                .unwrap();
+            }
+        }
+        let stats = maintain_quota_samples(&db, now, 0).unwrap();
+        assert_eq!(stats.thinned, 4, "two of three rows go, per account");
+        for key in ["claude", "claude@work"] {
+            let left = window_samples(&db, key, WindowKind::FiveHour, None, 0).unwrap();
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].used_percent, 30.0, "the peak survives for {key}");
+        }
     }
 }

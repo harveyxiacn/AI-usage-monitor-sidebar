@@ -20,7 +20,7 @@ pub use usage::{insert_usage_events, query_calendar, query_history, query_sessio
 pub use windows::{query_window_usage, usage_token_events};
 
 /// Bumped whenever the schema changes; migrations live in [`migrate`].
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// One row of the `ingest_files` bookkeeping table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,7 +125,6 @@ impl Db {
               resets_at INTEGER,
               plan TEXT,
               ts INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS idx_quota_ts ON quota_samples(provider, ts);
             CREATE TABLE IF NOT EXISTS ingest_files (
               path TEXT PRIMARY KEY,
               provider TEXT NOT NULL,
@@ -170,6 +169,25 @@ impl Db {
             // enriches their metadata through the normal request-id upsert.
             // Existing usage and quota rows remain intact, even if logs expired.
             tx.execute("DELETE FROM ingest_files", [])?;
+        }
+        if current < 3 {
+            // v3 (multi-account): every quota sample belongs to an account;
+            // '' is the primary one, so all existing rows migrate unchanged.
+            // Checked first because an older binary can rewrite the version
+            // marker while leaving this additive column in place.
+            let has_account: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('quota_samples') WHERE name='account')",
+                [], |row| row.get(0),
+            )?;
+            if !has_account {
+                tx.execute_batch(
+                    "ALTER TABLE quota_samples ADD COLUMN account TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+            tx.execute_batch(
+                "DROP INDEX IF EXISTS idx_quota_ts;
+                 CREATE INDEX IF NOT EXISTS idx_quota_account_ts ON quota_samples(provider, account, ts);",
+            )?;
         }
         if current < SCHEMA_VERSION {
             tx.execute(
@@ -406,7 +424,7 @@ mod tests {
                     |r| r.get::<_, String>(0)
                 )
                 .unwrap(),
-            "2"
+            "3"
         );
         let offset = IngestFile {
             path: "retained.jsonl".into(),
@@ -487,5 +505,145 @@ mod tests {
         drop(conn);
         assert!(Db::open(&path).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The database exactly as schema v2 (before multi-account) left it.
+    fn write_v2_database(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO meta VALUES('schema_version','2');
+            CREATE TABLE usage_events (
+              id INTEGER PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+              ts INTEGER NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+              output_tokens INTEGER NOT NULL DEFAULT 0,
+              reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+              total_tokens INTEGER NOT NULL DEFAULT 0, session_id TEXT,
+              request_id TEXT NOT NULL, cwd TEXT, source_file TEXT, reasoning_effort TEXT,
+              UNIQUE(provider, request_id));
+            CREATE INDEX idx_usage_ts ON usage_events(ts);
+            CREATE TABLE quota_samples (
+              id INTEGER PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL,
+              scope TEXT, used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT,
+              ts INTEGER NOT NULL);
+            CREATE INDEX idx_quota_ts ON quota_samples(provider, ts);
+            INSERT INTO quota_samples(provider,kind,scope,used_percent,resets_at,plan,ts) VALUES
+              ('claude','five_hour',NULL,41.5,1789450000000,'Claude Max 5x',1789430400000),
+              ('claude','seven_day','Fable',12.0,NULL,NULL,1789430460000),
+              ('codex','seven_day',NULL,37.5,1789450000000,'Pro',1789430400000);
+            INSERT INTO usage_events(provider,model,ts,total_tokens,request_id)
+              VALUES('claude','m',1000,77,'kept');
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn v3_migration_moves_every_existing_quota_sample_to_the_primary_account() {
+        let dir = crate::commands::test_support::tempdir();
+        let path = dir.join("usage.db");
+        write_v2_database(&path);
+        let db = Db::open(&path).unwrap();
+
+        // every old row is the primary account ('') and nothing was lost
+        let rows: Vec<(String, String, f64)> = {
+            let conn = db.lock();
+            let mut stmt = conn
+                .prepare("SELECT provider, account, used_percent FROM quota_samples ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(
+            rows,
+            vec![
+                ("claude".to_string(), String::new(), 41.5),
+                ("claude".to_string(), String::new(), 12.0),
+                ("codex".to_string(), String::new(), 37.5),
+            ]
+        );
+        assert_eq!(usage::count_events(&db).unwrap(), 1, "usage rows untouched");
+        let version: String = db
+            .lock()
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "3");
+        let (old_index, new_index): (bool, bool) = db
+            .lock()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='idx_quota_ts'),
+                        EXISTS(SELECT 1 FROM sqlite_master WHERE name='idx_quota_account_ts')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!old_index && new_index);
+
+        // the old rows answer the primary-account queries exactly as before
+        let series =
+            quota::window_samples(&db, "claude", crate::model::WindowKind::FiveHour, None, 0)
+                .unwrap();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].used_percent, 41.5);
+        assert!(quota::window_samples(
+            &db,
+            "claude@work",
+            crate::model::WindowKind::FiveHour,
+            None,
+            0
+        )
+        .unwrap()
+        .is_empty());
+        let history = quota::query_quota_history(
+            &db,
+            &crate::model::QuotaHistoryQuery {
+                from: "2026-09-01T00:00:00Z".into(),
+                to: "2026-09-30T00:00:00Z".into(),
+                provider: None,
+                account: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(history.len(), 3);
+        assert!(history.iter().all(|s| s.account.is_none()));
+
+        // reopening is a no-op (idempotent), rows are not duplicated
+        drop(db);
+        let again = Db::open(&path).unwrap();
+        let n: i64 = again
+            .lock()
+            .query_row("SELECT COUNT(*) FROM quota_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+        drop(again);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reapplying_v3_keeps_an_existing_account_column_and_its_values() {
+        let db = Db::open_in_memory().unwrap();
+        db.lock()
+            .execute_batch(
+                "UPDATE meta SET value='2' WHERE key='schema_version';
+                 INSERT INTO quota_samples(provider,account,kind,used_percent,ts)
+                   VALUES('claude','work','five_hour',5.0,1000);",
+            )
+            .unwrap();
+        db.migrate().unwrap();
+        db.migrate().unwrap();
+        let account: String = db
+            .lock()
+            .query_row("SELECT account FROM quota_samples", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(account, "work");
     }
 }

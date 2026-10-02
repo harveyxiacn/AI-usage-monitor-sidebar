@@ -76,6 +76,26 @@ pub fn load_auth() -> Option<AuthFile> {
     serde_json::from_str(&text).ok()
 }
 
+/// The Codex home of the account `ctx` is bound to: the extra account's own
+/// dir, else `$CODEX_HOME` / `~/.codex`.
+fn home_of(ctx: &ProviderCtx) -> Option<PathBuf> {
+    match &ctx.account {
+        Some(a) => Some(a.config_dir.clone()),
+        None => codex_home(),
+    }
+}
+
+/// `auth.json` of an extra account's Codex home.
+pub fn auth_path_in(dir: &Path) -> PathBuf {
+    dir.join("auth.json")
+}
+
+/// Login of an extra account (`<dir>/auth.json`).
+pub fn load_auth_from(dir: &Path) -> Option<AuthFile> {
+    let text = std::fs::read_to_string(auth_path_in(dir)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 // ---------- JWT claims (no signature verification) ----------
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -618,11 +638,15 @@ pub fn rate_limits_in_file(path: &Path) -> Option<LogRateLimits> {
 /// Build a degraded quota out of the local session logs, falling back to the
 /// on-disk cache when the logs have nothing either.
 fn from_local_logs(ctx: &ProviderCtx, status: ProviderStatus, message: &str) -> ProviderQuota {
-    let from_log = [log_root(), archived_log_root()]
-        .into_iter()
-        .flatten()
-        .filter_map(|root| rate_limits_from_logs(&root))
-        .max_by_key(|limits| observed_ms(limits.observed_at.as_deref()));
+    let home = home_of(ctx);
+    let from_log = [
+        home.as_ref().map(|h| h.join("sessions")),
+        home.as_ref().map(|h| h.join("archived_sessions")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|root| rate_limits_from_logs(&root))
+    .max_by_key(|limits| observed_ms(limits.observed_at.as_deref()));
     let Some(rl) = from_log else {
         return degraded(ctx, CODEX_ID, DISPLAY_NAME, status, message);
     };
@@ -688,8 +712,12 @@ impl Provider for CodexProvider {
         DISPLAY_NAME
     }
 
+    fn account(&self) -> Option<&super::AccountRef> {
+        self.ctx.account.as_ref()
+    }
+
     fn info(&self) -> ProviderInfo {
-        let auth = load_auth();
+        let auth = self.load();
         let claims = auth
             .as_ref()
             .and_then(|a| a.tokens.as_ref())
@@ -711,32 +739,49 @@ impl Provider for CodexProvider {
             id: CODEX_ID.into(),
             display_name: DISPLAY_NAME.into(),
             logged_in,
-            credential_path: credentials_path().map(|p| p.display().to_string()),
-            log_path: log_root().map(|p| p.display().to_string()),
+            credential_path: match &self.ctx.account {
+                Some(a) => Some(auth_path_in(&a.config_dir).display().to_string()),
+                None => credentials_path().map(|p| p.display().to_string()),
+            },
+            log_path: home_of(&self.ctx).map(|h| h.join("sessions").display().to_string()),
             plan_label: claims.and_then(|c| plan_label(c.plan_type.as_deref())),
             experimental: false,
         }
     }
 
     async fn fetch(&self, http: &reqwest::Client) -> ProviderQuota {
-        let Some(first) = load_auth() else {
+        let Some(first) = self.load() else {
             let mut q = empty_quota(CODEX_ID, DISPLAY_NAME, ProviderStatus::NotLoggedIn);
-            q.error = Some("Not logged in — run `codex login` to sign in".into());
-            return q;
+            q.error = Some(match &self.ctx.account {
+                Some(a) => format!(
+                    "Not logged in — run `CODEX_HOME={} codex login` to sign in",
+                    a.config_dir.display()
+                ),
+                None => "Not logged in — run `codex login` to sign in".into(),
+            });
+            return super::tag_account(q, self.account());
         };
         // The Codex CLI refreshes auth.json itself: an expired-looking token
         // gets one fresh read of the file before it is reported as expired.
         let now = chrono::Utc::now().timestamp();
         let auth = if auth_needs_refresh(&first, now) {
-            load_auth().unwrap_or(first)
+            self.load().unwrap_or(first)
         } else {
             first
         };
-        self.fetch_with(http, auth).await
+        super::tag_account(self.fetch_with(http, auth).await, self.account())
     }
 }
 
 impl CodexProvider {
+    /// Login of this instance's account.
+    fn load(&self) -> Option<AuthFile> {
+        match &self.ctx.account {
+            Some(a) => load_auth_from(&a.config_dir),
+            None => load_auth(),
+        }
+    }
+
     /// Everything after the credentials have been read.
     async fn fetch_with(&self, http: &reqwest::Client, auth: AuthFile) -> ProviderQuota {
         let token = auth
