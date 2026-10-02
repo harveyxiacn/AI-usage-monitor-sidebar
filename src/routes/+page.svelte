@@ -29,7 +29,8 @@
   its two corners there, and the "⋯" button moves next to the rings.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import MiniBar from '$lib/components/MiniBar.svelte';
   import Ring from '$lib/components/Ring.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import { dragHandle, HEARTBEAT_MS, observeSize, throttle, type DragPhase, type SizeReport } from '$lib/actions';
@@ -44,8 +45,11 @@
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
-  import { formatPercent, formatReset, severityOf, windowLabel } from '$lib/format';
+  import { formatForecast, formatPercent, formatReset, severityOf, shortPercent, windowLabel } from '$lib/format';
+  import { compactReset, nextTickDelay } from '$lib/countdown';
   import { forecastTickPercent } from '$lib/forecast';
+  import { detectRingEvents, levelsOf, windowKey, type RingEvent, type RingEventKind, type WindowLevel } from '$lib/ring-events';
+  import { handlePeak, handleSegments, labelLayout, type LabelLayout } from '$lib/sidebar-visuals';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { handleColorOf, rings, type RingItem } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
@@ -78,6 +82,8 @@
   let pinnedKey = $state<string | null>(null);
 
   const collapsed = $derived(s.autoHide && !expanded);
+  /** compact mode: slim progress bars instead of rings */
+  const compact = $derived(s.ringStyle === 'bar');
   /** top/bottom edges: the bar is a horizontal strip, rings laid out in a row */
   const horizontal = $derived(s.edge === 'top' || s.edge === 'bottom');
 
@@ -94,6 +100,64 @@
    * the user removed from the bar must still be able to raise the alarm.
    */
   const handleColor = $derived(handleColorOf(snapshot.value, s));
+  /** one segment per polled provider, each in its own severity colour */
+  const segments = $derived(handleSegments(snapshot.value, s));
+  /** the handle's tooltip / accessible name: the app and the busiest provider */
+  const handleTitle = $derived.by(() => {
+    const peak = handlePeak(snapshot.value, s);
+    if (!peak) return t('app.name');
+    const name = snapshot.value?.providers.find((p) => p.provider === peak.provider)?.displayName ?? peak.provider;
+    return t('sidebar.handleTitle', { app: t('app.name'), provider: name, percent: formatPercent(peak.used, s.percentMode) });
+  });
+
+  /**
+   * Wall clock for the countdown labels and the aria text. Re-armed after every
+   * tick for the next minute boundary of any reset moment on screen (the same
+   * rule the popover uses), so nothing repaints more often than it changes.
+   */
+  let now = $state(Date.now());
+  $effect(() => {
+    const anchors = (snapshot.value?.providers ?? []).flatMap((p) => p.windows.map((w) => Date.parse(w.resetsAt ?? '')));
+    let timer: ReturnType<typeof setTimeout>;
+    const arm = () => {
+      timer = setTimeout(() => {
+        now = Date.now();
+        arm();
+      }, nextTickDelay(Date.now(), anchors));
+    };
+    now = Date.now();
+    arm();
+    return () => clearTimeout(timer);
+  });
+
+  /**
+   * One-shot micro-animations. `fx` maps a window to the event that just hit it;
+   * `fxSeq` is bumped per event so a repeat replays the CSS animation. The very
+   * first snapshot, and the first one after the thresholds changed (a settings
+   * edit is not a quota event), only seed the baseline.
+   */
+  let fx = $state<Record<string, { kind: RingEventKind; id: number }>>({});
+  let fxSeq = 0;
+  let fxTimer: ReturnType<typeof setTimeout> | undefined;
+  let prevLevels: Map<string, WindowLevel> | null = null;
+  let prevThresholds = '';
+  $effect(() => {
+    const snap = snapshot.value;
+    const th = s.thresholds;
+    const animate = s.sidebarAnimations;
+    if (snap === null) return;
+    untrack(() => {
+      const thKey = `${th.warn}/${th.critical}`;
+      const next = levelsOf(snap, th);
+      const events: RingEvent[] = animate && thKey === prevThresholds ? detectRingEvents(prevLevels, next) : [];
+      prevLevels = next;
+      prevThresholds = thKey;
+      if (events.length === 0) return;
+      for (const e of events) fx[e.key] = { kind: e.kind, id: ++fxSeq };
+      clearTimeout(fxTimer);
+      fxTimer = setTimeout(() => (fx = {}), 1000);
+    });
+  });
 
   onMount(() => {
     const disposers: Array<() => void> = [settings.init(), snapshot.init()];
@@ -106,6 +170,7 @@
     return () => {
       disposed = true;
       un?.();
+      clearTimeout(fxTimer);
       disposers.forEach((d) => d());
     };
   });
@@ -134,7 +199,9 @@
   const heartbeat = throttle(() => void hoverReport('bar', true), HEARTBEAT_MS);
 
   function anchorOf(el: HTMLElement): { x: number; y: number } {
-    const r = el.getBoundingClientRect();
+    // aim at the ring itself, not at the text that may sit beside it
+    const target = el.querySelector<HTMLElement>('.ring, .mini') ?? el;
+    const r = target.getBoundingClientRect();
     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   }
 
@@ -185,14 +252,43 @@
   function ringLabel(item: RingItem): string {
     const head = [item.quota.displayName];
     if (item.quota.status !== 'ok') head.push(tDyn(`status.${item.quota.status}`));
-    const now = Date.now();
     const parts = item.arcs.map((a) => {
       const sev = severityOf(a.window.usedPercent, s.thresholds);
       const level = sev === 'normal' ? '' : ` (${t(`a11y.severity.${sev}`)})`;
-      return `${windowLabel(a.window, 'bar')} ${formatPercent(a.window.usedPercent, s.percentMode)}${level}, ${formatReset(a.window.resetsAt, now)}`;
+      // the forecast is only spoken when the ring draws it (same trust rule)
+      const fc = forecastTickPercent(a.window) == null ? null : formatForecast(a.window, s.percentMode, now);
+      const outlook = fc ? `, ${t('a11y.forecast', { text: fc.text })}` : '';
+      return `${windowLabel(a.window, 'bar')} ${formatPercent(a.window.usedPercent, s.percentMode)}${level}, ${formatReset(a.window.resetsAt, now)}${outlook}`;
     });
     const name = head.join(' · ');
     return parts.length === 0 ? name : `${name}: ${parts.join('; ')}`;
+  }
+
+  /** arcs as the ring / mini-bar draw them, with their one-shot animation */
+  function arcViews(item: RingItem) {
+    return item.arcs.map((a) => {
+      const e = fx[windowKey(item.provider, a.window)];
+      return {
+        percent: a.window.usedPercent,
+        accent: a.accent,
+        projectedPercent: forecastTickPercent(a.window),
+        fx: e?.kind ?? null,
+        fxId: e?.id ?? 0,
+      };
+    });
+  }
+
+  /** what the label says and where, see `labelLayout` */
+  function layoutOf(item: RingItem): LabelLayout {
+    if (!s.sidebarItems.percentLabel) return { center: null, main: null, sub: null };
+    const w = item.labelWindow;
+    return labelLayout({
+      content: s.labelContent,
+      position: s.percentPosition,
+      horizontal,
+      percent: shortPercent(w?.usedPercent ?? null, s.percentMode),
+      reset: compactReset(w?.resetsAt, now),
+    });
   }
 
   /** polite live region: only changes when a provider's status does */
@@ -223,19 +319,30 @@
          edge, its height on a top/bottom one -->
     <div
       class="handle"
+      class:horizontal
       style:width={horizontal ? `${expandedSize.width}px` : `${Math.max(2, s.collapsedWidth)}px`}
       style:height={horizontal ? `${Math.max(2, s.collapsedWidth)}px` : `${expandedSize.height}px`}
-      style:background={handleColor}
       onmouseenter={() => void hoverReport('bar', true)}
-      role="presentation"
-      title={t('app.name')}
-    ></div>
+      role="img"
+      aria-label={handleTitle}
+      title={handleTitle}
+    >
+      {#each segments as g (g.provider)}
+        <span class="seg" style:background={g.accent}></span>
+      {:else}
+        <span class="seg" style:background={handleColor}></span>
+      {/each}
+    </div>
   {:else}
-    <div class="pill surface" use:dragHandle={onDrag} ondblclick={() => void openDashboard('overview')} role="presentation">
+    <div class="pill surface" class:compact use:dragHandle={onDrag} ondblclick={() => void openDashboard('overview')} role="presentation">
       {#if loading}
         {#each placeholders as i (i)}
           <div class="slot">
-            <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} percentPosition={s.percentPosition} />
+            {#if compact}
+              <MiniBar segments={[]} thresholds={s.thresholds} {horizontal} loading />
+            {:else}
+              <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} percentPosition={s.percentPosition} />
+            {/if}
           </div>
         {/each}
       {:else if items.length === 0}
@@ -264,24 +371,37 @@
               }
             }}
           >
-            <Ring
-              arcs={item.arcs.map((a) => ({
-                percent: a.window.usedPercent,
-                accent: a.accent,
-                projectedPercent: forecastTickPercent(a.window),
-              }))}
-              labelPercent={item.labelWindow?.usedPercent ?? null}
-              thresholds={s.thresholds}
-              showPercentLabel={s.sidebarItems.percentLabel}
-              percentMode={s.percentMode}
-              percentPosition={s.percentPosition}
-              status={item.quota.status}
-              interactive
-            >
-              {#snippet logo(logoSize)}
-                {#if s.sidebarItems.logo}<ProviderLogo provider={item.provider} size={logoSize} />{/if}
-              {/snippet}
-            </Ring>
+            {#if compact}
+              <MiniBar
+                segments={arcViews(item)}
+                thresholds={s.thresholds}
+                percentMode={s.percentMode}
+                layout={layoutOf(item)}
+                {horizontal}
+                status={item.quota.status}
+              >
+                {#snippet logo(logoSize)}
+                  {#if s.sidebarItems.logo}<ProviderLogo provider={item.provider} size={logoSize} />{/if}
+                {/snippet}
+              </MiniBar>
+            {:else}
+              <Ring
+                arcs={arcViews(item)}
+                labelPercent={item.labelWindow?.usedPercent ?? null}
+                thresholds={s.thresholds}
+                showPercentLabel={s.sidebarItems.percentLabel}
+                percentMode={s.percentMode}
+                percentPosition={s.percentPosition}
+                layout={layoutOf(item)}
+                inline={horizontal}
+                status={item.quota.status}
+                interactive
+              >
+                {#snippet logo(logoSize)}
+                  {#if s.sidebarItems.logo}<ProviderLogo provider={item.provider} size={logoSize} />{/if}
+                {/snippet}
+              </Ring>
+            {/if}
           </div>
         {/each}
         {#if s.sidebarItems.moreButton}
@@ -332,6 +452,21 @@
     min-width: 0;
     min-height: calc(var(--ring-size) + 2 * var(--bar-padding));
     padding: var(--bar-padding) calc(var(--bar-padding) + 0.25rem);
+  }
+
+  /* Compact bars: the footprint is the bars', not a ring's. Declared after the
+     edge rules above so it wins at equal specificity. */
+  .stage .pill.compact {
+    min-width: 0;
+    min-height: 0;
+    gap: 0.75rem;
+    padding: 0.625rem 0.5rem;
+  }
+
+  .stage[data-edge='top'] .pill.compact,
+  .stage[data-edge='bottom'] .pill.compact {
+    gap: 1rem;
+    padding: 0.5rem 0.75rem;
   }
 
   /* The docked side is flush with the screen: no rounding, no border there. */
@@ -431,8 +566,23 @@
 
   .handle {
     height: 8.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    overflow: hidden;
     border-radius: 999px;
     opacity: 0.85;
+  }
+
+  .handle.horizontal {
+    flex-direction: row;
+  }
+
+  /* one equal segment per provider, in that provider's severity colour */
+  .handle .seg {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
     transition: background var(--dur-ring) var(--ease-out);
   }
 
