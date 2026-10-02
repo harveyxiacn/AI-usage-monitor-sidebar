@@ -36,6 +36,9 @@ const test = base.extend<{ historyRequests: PendingHistory[] }>({
           // The project ranking asks for month buckets; it is a separate panel
           // and must not count as (or hold up) the table's own query.
           if (args.query!.bucket === 'month') return { rows: [], totals: emptyTotals(), byProvider: {}, projects: [], costApproximate: false };
+          // Overview's "today" summary (no groupByProject) is a separate panel too; it
+          // re-reads on every snapshot, so it must neither be counted nor settle.
+          if (args.query!.groupByProject === undefined) return { rows: [], totals: emptyTotals(), byProvider: {}, projects: [], costApproximate: false };
           return new Promise<HistoryResult>((resolve, reject) => {
             requests.push({ provider: args.query!.provider, resolve, reject });
           });
@@ -68,7 +71,7 @@ const test = base.extend<{ historyRequests: PendingHistory[] }>({
           }
           try { return await invoke(command, args); }
           finally {
-            if (command === 'get_usage_history' && (args as { query?: { bucket?: string } }).query?.bucket !== 'month') {
+            if (command === 'get_usage_history' && (args as { query?: { bucket?: string; groupByProject?: boolean } }).query?.bucket !== 'month' && (args as { query?: { groupByProject?: boolean } }).query?.groupByProject !== undefined) {
               // A test-owned acknowledgement lets assertions wait for the
               // delayed response instead of relying on a wall-clock timeout.
               document.documentElement.dataset.settledHistory = String(++settledHistory);
@@ -153,12 +156,14 @@ test('changing the provider recovers after a history request fails', async ({ pa
 });
 
 test('a background time refresh preserves the chart and rows while fetching', async ({ page, historyRequests }) => {
-  await page.clock.install();
+  // The minute tick only re-queries across local midnight (a different window,
+  // which rightly clears the rows). Coming back to the window re-reads the same
+  // window in place: that is the refresh that must keep the old content.
   await openHistory(page, historyRequests);
   const canvas = page.locator('canvas').last();
   await expect(canvas).toBeVisible();
   await canvas.evaluate((node) => node.setAttribute('data-original-chart', 'yes'));
-  await page.clock.fastForward(60_000);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => historyRequests.length).toBe(2);
   await expect(page.locator('.table-wrap tbody .strong')).toHaveText('111');
   await expect(page.locator('canvas[data-original-chart="yes"]')).toBeVisible();
