@@ -265,9 +265,16 @@ fn any_provider_due(app: &AppHandle, now_ms: i64) -> bool {
 
 // ---------- quota refresh ----------
 
+/// Whether the timer may poll providers on its own. "Pause polling" stops
+/// only this; explicit refreshes (button, tray) and log ingestion carry on.
+pub fn auto_polling_allowed(settings: &Settings) -> bool {
+    !settings.polling_paused
+}
+
 async fn refresh_loop(app: AppHandle) {
     loop {
-        if any_provider_due(&app, store::now_ms()) {
+        let paused = !auto_polling_allowed(&app.state::<AppState>().settings.read());
+        if !paused && any_provider_due(&app, store::now_ms()) {
             refresh(&app, None, true).await;
         }
         tokio::time::sleep(TICK).await;
@@ -406,6 +413,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         notify_forecasts(app, &snapshot);
     }
 
+    crate::export_snapshot::write_if_enabled(app, &snapshot);
     if let Err(e) = app.emit(events::SNAPSHOT_UPDATED, &snapshot) {
         log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
     }
@@ -1073,6 +1081,16 @@ mod tests {
             idle_secs: idle,
             ..input(idle, 0)
         })
+    }
+
+    #[test]
+    fn paused_polling_stops_only_the_timer() {
+        let mut settings = Settings::default();
+        assert!(auto_polling_allowed(&settings));
+        settings.polling_paused = true;
+        assert!(!auto_polling_allowed(&settings));
+        // ingestion has no such switch: it keys off `ingest_enabled` only
+        assert!(settings.ingest_enabled);
     }
 
     #[test]

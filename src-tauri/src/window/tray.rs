@@ -42,6 +42,8 @@ pub struct MenuItems {
     toggle: MenuItem<tauri::Wry>,
     always_show: CheckMenuItem<tauri::Wry>,
     refresh: MenuItem<tauri::Wry>,
+    /// Checked while `pollingPaused` is on.
+    pause: CheckMenuItem<tauri::Wry>,
     dashboard: MenuItem<tauri::Wry>,
     settings: MenuItem<tauri::Wry>,
     /// "Check for updates" until one is found, then "Update x.y.z available…".
@@ -55,6 +57,7 @@ mod ids {
     pub const TOGGLE: &str = "toggle_sidebar";
     pub const ALWAYS_SHOW: &str = "always_show";
     pub const REFRESH: &str = "refresh_now";
+    pub const PAUSE: &str = "pause_polling";
     pub const DASHBOARD: &str = "open_dashboard";
     pub const SETTINGS: &str = "open_settings";
     pub const UPDATE: &str = "update";
@@ -71,6 +74,7 @@ struct Labels {
     toggle: &'static str,
     always_show: &'static str,
     refresh: &'static str,
+    pause_polling: &'static str,
     dashboard: &'static str,
     settings: &'static str,
     update_check: &'static str,
@@ -104,6 +108,7 @@ fn labels(settings: &Settings) -> Labels {
             toggle: "显示 / 隐藏侧边栏",
             always_show: "始终显示侧边栏",
             refresh: "立即刷新",
+            pause_polling: "暂停轮询",
             dashboard: "打开仪表盘",
             settings: "设置…",
             update_check: "检查程序更新",
@@ -121,6 +126,7 @@ fn labels(settings: &Settings) -> Labels {
             toggle: "Show/Hide sidebar",
             always_show: "Always show sidebar",
             refresh: "Refresh now",
+            pause_polling: "Pause polling",
             dashboard: "Open dashboard",
             settings: "Settings…",
             update_check: "Check program updates",
@@ -185,6 +191,14 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
         None::<&str>,
     )?;
     let refresh = MenuItem::with_id(app, ids::REFRESH, l.refresh, true, None::<&str>)?;
+    let pause = CheckMenuItem::with_id(
+        app,
+        ids::PAUSE,
+        l.pause_polling,
+        true,
+        settings.polling_paused,
+        None::<&str>,
+    )?;
     let open_dashboard = MenuItem::with_id(app, ids::DASHBOARD, l.dashboard, true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, ids::SETTINGS, l.settings, true, None::<&str>)?;
     let update = MenuItem::with_id(
@@ -251,6 +265,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             &toggle,
             &always_show,
             &refresh,
+            &pause,
             &open_dashboard,
             &open_settings,
             &update,
@@ -309,6 +324,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             toggle,
             always_show,
             refresh,
+            pause,
             dashboard: open_dashboard,
             settings: open_settings,
             update,
@@ -335,6 +351,18 @@ fn on_menu(app: &AppHandle, id: &str) {
             if let Err(e) = app.emit(window::REFRESH_REQUESTED, ()) {
                 log::warn!("emitting {} failed: {e}", window::REFRESH_REQUESTED);
             }
+        }
+        ids::PAUSE => {
+            // The check mark flips on click; the setting is the truth, so
+            // persist the opposite of what it says now (`sync` re-checks).
+            let paused = !window::settings_of(app).polling_paused;
+            if let Err(e) = crate::commands::settings::update(
+                app,
+                &serde_json::json!({"pollingPaused": paused}),
+            ) {
+                log::error!("could not persist pause polling: {e:#}");
+            }
+            sync(app, &window::settings_of(app));
         }
         ids::DASHBOARD => dashboard::open(app, None),
         ids::SETTINGS => dashboard::open(app, Some("settings".into())),
@@ -461,6 +489,12 @@ pub fn sync(app: &AppHandle, settings: &Settings) {
         }
         if let Err(e) = items.always_show.set_text(l.always_show) {
             log::debug!("tray check label update failed: {e}");
+        }
+        if let Err(e) = items.pause.set_checked(settings.polling_paused) {
+            log::debug!("tray pause check failed: {e}");
+        }
+        if let Err(e) = items.pause.set_text(l.pause_polling) {
+            log::debug!("tray pause label failed: {e}");
         }
         if let Err(e) = items
             .update
