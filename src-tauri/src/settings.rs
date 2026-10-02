@@ -63,7 +63,7 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         let mut candidate = current.clone();
         if matches!(
             key.as_str(),
-            "providers" | "colors" | "sizes" | "thresholds" | "sidebarItems"
+            "providers" | "colors" | "sizes" | "thresholds" | "sidebarItems" | "subscriptionUsd"
         ) {
             // per-key merge so a patch can toggle one provider / one colour only
             let mut merged = match current.get(key.as_str()) {
@@ -167,6 +167,10 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.popover_timeout_sec = s.popover_timeout_sec.min(600);
     // 0 = budget line off; the cap keeps a typo out of the chart's y-axis.
     s.monthly_budget_usd = clamp_f64(s.monthly_budget_usd, 0.0, 1_000_000.0, 0.0);
+    // 0 = unknown subscription price; a typo cannot make the ratio absurd.
+    for v in s.subscription_usd.values_mut() {
+        *v = clamp_f64(*v, 0.0, 10_000.0, 0.0);
+    }
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);
@@ -714,6 +718,22 @@ mod tests {
         assert_eq!(old.edge, Edge::Left);
         assert_eq!(old.monthly_budget_usd, 0.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn subscription_prices_are_per_provider_and_clamped() {
+        let base = Settings::default();
+        assert_eq!(base.subscription_usd.get("claude"), Some(&0.0));
+        let m = merge(
+            &base,
+            &json!({"subscriptionUsd": {"claude": 100, "codex": -3}}),
+        );
+        assert_eq!(m.subscription_usd["claude"], 100.0);
+        assert_eq!(m.subscription_usd["codex"], 0.0);
+        let big = merge(&base, &json!({"subscriptionUsd": {"claude": 1e9}}));
+        assert_eq!(big.subscription_usd["claude"], 10_000.0);
+        // a partial patch keeps the other provider's entry
+        assert!(big.subscription_usd.contains_key("codex"));
     }
 
     #[test]

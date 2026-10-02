@@ -453,6 +453,9 @@ pub struct Settings {
     pub pricing_url: String,
     /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
     pub monthly_budget_usd: f64,
+    /// What the user pays per month for each provider's subscription, in USD;
+    /// 0 = unknown. Only used to compare the API-equivalent estimate with it.
+    pub subscription_usd: BTreeMap<String, f64>,
     pub autostart: bool,
     /// Ask GitHub once a day whether a newer release exists. Never installs
     /// anything on its own — the user always confirms (docs/RELEASING.md).
@@ -521,6 +524,10 @@ impl Default for Settings {
             ingest_enabled: true,
             pricing_url: String::new(),
             monthly_budget_usd: 0.0,
+            subscription_usd: [("claude", 0.0), ("codex", 0.0)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
             autostart: false,
             auto_update_check: true,
             auto_pricing_check: true,
@@ -568,6 +575,22 @@ pub struct HistoryQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub group_by_project: bool,
+}
+
+/// Token usage of one provider inside each of several time windows (quota
+/// cycles). Windows are `[from, to)` RFC 3339 instants.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowUsageQuery {
+    pub provider: String,
+    pub windows: Vec<TimeWindow>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeWindow {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
