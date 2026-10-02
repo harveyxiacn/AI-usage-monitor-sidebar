@@ -276,6 +276,44 @@ fn any_provider_due(app: &AppHandle, now_ms: i64) -> bool {
 
 // ---------- quota refresh ----------
 
+/// Drop the quotas of extra accounts that are no longer configured, enabled or
+/// allowed by their provider's switch. Returns `true` when something went.
+pub fn retain_configured_accounts(snapshot: &mut AppSnapshot, settings: &Settings) -> bool {
+    let before = snapshot.providers.len();
+    snapshot.providers.retain(|q| match &q.account_id {
+        None => true,
+        Some(id) => {
+            providers::is_enabled(settings, &q.provider)
+                && settings
+                    .accounts
+                    .iter()
+                    .any(|a| a.enabled && a.provider == q.provider && a.id == *id)
+        }
+    });
+    snapshot.providers.len() != before
+}
+
+/// Settings changed: take a removed or switched-off extra account out of the
+/// snapshot right away instead of waiting for the next poll (a new or
+/// re-enabled one is simply polled on the next one-second tick). Runs on the
+/// async runtime because the caller still holds the settings lock.
+pub fn accounts_changed(app: &AppHandle, settings: Settings) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let pruned = {
+            let mut snapshot = state.snapshot.write();
+            retain_configured_accounts(&mut snapshot, &settings).then(|| snapshot.clone())
+        };
+        if let Some(snapshot) = pruned {
+            if let Err(e) = app.emit(events::SNAPSHOT_UPDATED, &snapshot) {
+                log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
+            }
+            crate::window::tray::sync_usage(&app, &snapshot);
+        }
+    });
+}
+
 /// Whether the timer may poll providers on its own. "Pause polling" stops
 /// only this; explicit refreshes (button, tray) and log ingestion carry on.
 pub fn auto_polling_allowed(settings: &Settings) -> bool {
@@ -1153,5 +1191,43 @@ mod tests {
         assert_eq!(primary.backoff_until_ms, 0);
         assert!(work.backoff_until_ms > 2_000);
         assert_eq!(primary.min_interval_secs, work.min_interval_secs);
+    }
+
+    #[test]
+    fn a_removed_or_disabled_account_is_pruned_from_the_snapshot() {
+        let quota = |account: Option<&str>| {
+            let mut q = providers::empty_quota("claude", "Claude Code", ProviderStatus::Ok);
+            q.account_id = account.map(str::to_string);
+            q
+        };
+        let abs = std::env::temp_dir().display().to_string();
+        let mut settings = Settings {
+            accounts: vec![crate::model::AccountSettings {
+                id: "work".into(),
+                provider: "claude".into(),
+                label: "Work".into(),
+                config_dir: abs,
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let mut snap = AppSnapshot {
+            providers: vec![quota(None), quota(Some("work")), quota(Some("gone"))],
+            ..AppSnapshot::default()
+        };
+        assert!(retain_configured_accounts(&mut snap, &settings));
+        let keys: Vec<String> = snap.providers.iter().map(|q| q.key()).collect();
+        assert_eq!(keys, ["claude", "claude@work"]);
+        assert!(
+            !retain_configured_accounts(&mut snap, &settings),
+            "nothing left to prune"
+        );
+        settings.accounts[0].enabled = false;
+        assert!(retain_configured_accounts(&mut snap, &settings));
+        assert_eq!(
+            snap.providers.len(),
+            1,
+            "the primary account is never pruned"
+        );
     }
 }

@@ -504,6 +504,8 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
     // complete local table exists, reloads the matching applied cache.
     crate::commands::pricing::settings_changed(app, settings);
     crate::export_snapshot::on_settings_changed(app, settings.export_snapshot);
+    // a removed / switched-off extra account leaves the bar at once
+    crate::scheduler::accounts_changed(app, settings.clone());
     if let Err(e) = app.emit(events::SETTINGS_UPDATED, settings) {
         log::warn!("could not emit {}: {e}", events::SETTINGS_UPDATED);
     }
