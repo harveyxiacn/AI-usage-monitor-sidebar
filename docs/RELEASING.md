@@ -262,6 +262,30 @@ Run it locally with `scripts/smoke-linux.sh` after `pnpm tauri build`
 (it needs the `xvfb` and `dbus-x11` packages; without `xvfb-run` it refuses
 to start rather than opening a window on your desktop).
 
+### Windows / macOS start-up smoke tests and upgrade smoke tests
+
+`ci.yml` has a start-up smoke job per OS (`smoke`, `smoke-windows`,
+`smoke-macos`), each consuming the binary its build job uploaded (`linux-binary`,
+`windows-exe`, `macos-app`; one-day retention). Details of what they assert
+are in `docs/VALIDATION.md`.
+
+The `upgrade` matrix (3 OS x `v0.5.0` / latest release) runs only on pull
+requests and `workflow_dispatch`, not on pushes to `main`, and, like everything
+in `ci.yml`, not for docs-only changes. It downloads the previous release with
+`gh release download` (default `GITHUB_TOKEN`, public assets), so:
+
+* **Before a release PR**, expect the `latest` legs to test the *previous*
+  version; after you publish, the next PR automatically tests the new one.
+* If an asset naming scheme changes (`*_amd64.AppImage`, `*_aarch64.dmg` /
+  `*_x64.dmg`, `*_x64-setup.exe`), update the patterns in `ci.yml`.
+* When `SCHEMA_VERSION` changes again, add a matrix leg for the newest release
+  that still holds the old schema and set `SMOKE_EXPECT_MIGRATION` for it.
+* A failed leg uploads `upgrade-logs-<os>-<tag>`; the Windows/macOS scripts also
+  print the whole log in the job output.
+
+These jobs add roughly 3-6 minutes of wall time on the slowest runner, run in
+parallel with each other and only after `build`.
+
 ### `native-smoke`
 
 The `native-smoke` cargo feature dlopens `libgtk-layer-shell.so.0` and checks

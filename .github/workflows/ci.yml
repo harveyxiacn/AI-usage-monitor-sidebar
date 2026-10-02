@@ -171,6 +171,29 @@ jobs:
           retention-days: 1
           path: src-tauri/target/release/ai-usage-sidebar
 
+      - name: Upload the Windows exe for the smoke tests
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          if-no-files-found: error
+          retention-days: 1
+          path: src-tauri/target/release/ai-usage-sidebar.exe
+
+      # upload-artifact drops the executable bit, so ship the bundle as a tar.
+      - name: Pack the macOS app for the smoke tests
+        if: matrix.platform == 'macos-latest'
+        run: tar -C src-tauri/target/release/bundle/macos -cf "$RUNNER_TEMP/macos-app.tar" "AI Usage Sidebar.app"
+
+      - name: Upload the macOS app for the smoke tests
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ runner.temp }}/macos-app.tar
+
       - name: Upload bundles
         uses: actions/upload-artifact@v4
         with:
@@ -216,3 +239,170 @@ jobs:
         run: |
           chmod +x bin/ai-usage-sidebar
           scripts/smoke-linux.sh "$PWD/bin/ai-usage-sidebar"
+        env:
+          SMOKE_LOG_COPY: ${{ runner.temp }}/smoke-logs
+
+      - name: Upload the logs of a failed smoke test
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-linux
+          path: ${{ runner.temp }}/smoke-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  smoke-windows:
+    name: Windows start-up smoke test
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the exe built above
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: bin
+
+      - name: Launch it and wait for `sidebar revealed`
+        shell: pwsh
+        run: scripts/smoke-windows.ps1 -Exe bin/ai-usage-sidebar.exe -LogCopy "$env:RUNNER_TEMP/smoke-logs"
+
+      - name: Upload the logs of a failed smoke test
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-windows
+          path: ${{ runner.temp }}/smoke-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  smoke-macos:
+    name: macOS start-up smoke test
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the app built above
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-app
+          path: bin
+
+      - name: Unpack it, launch it and wait for `sidebar revealed`
+        run: |
+          tar -C bin -xf bin/macos-app.tar
+          scripts/smoke-macos.sh "$PWD/bin/AI Usage Sidebar.app"
+        env:
+          SMOKE_LOG_COPY: ${{ runner.temp }}/smoke-logs
+
+      - name: Upload the logs of a failed smoke test
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-macos
+          path: ${{ runner.temp }}/smoke-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Installs a PREVIOUS published release, runs it, then starts this build on
+  # the same profile with a hand-written BOM settings.json. Catches what a
+  # fresh-profile smoke test cannot: database migrations and settings files
+  # written by older versions. Slower and downloads from GitHub, so it runs on
+  # pull requests and manual runs only, not on every push to main.
+  upgrade:
+    name: Upgrade from ${{ matrix.from }} (${{ matrix.os }})
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+        # v0.5.0 holds usage.db schema 2, so the 2 -> 3 migration must run.
+        # `latest` is whatever is published newest (no migration required).
+        from: [v0.5.0, latest]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the release to upgrade from
+        shell: bash
+        run: |
+          tag="${{ matrix.from }}"
+          if [[ "$tag" == latest ]]; then
+            tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "SMOKE_LOG_COPY=$RUNNER_TEMP/smoke-logs" >> "$GITHUB_ENV"
+          if [[ "${{ matrix.from }}" == v0.5.0 ]]; then echo "SMOKE_EXPECT_MIGRATION=2" >> "$GITHUB_ENV"; fi
+          echo "Upgrading from $tag"
+
+      # ---- Linux
+      - name: Install the runtime libraries and a virtual display
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-2 xvfb dbus-x11
+
+      - name: Download the new build (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: bin
+
+      - name: Upgrade smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*_amd64.AppImage' --dir old
+          chmod +x bin/ai-usage-sidebar old/*.AppImage
+          SMOKE_UPGRADE_FROM="$(ls "$PWD"/old/*.AppImage)" scripts/smoke-linux.sh "$PWD/bin/ai-usage-sidebar"
+
+      # ---- macOS
+      - name: Download the new build (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-app
+          path: bin
+
+      - name: Upgrade smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          tar -C bin -xf bin/macos-app.tar
+          # macos-latest is Apple Silicon; fall back to the Intel dmg otherwise.
+          if [[ "$(uname -m)" == arm64 ]]; then pat='*_aarch64.dmg'; else pat='*_x64.dmg'; fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$pat" --dir old
+          SMOKE_UPGRADE_FROM="$(ls "$PWD"/old/*.dmg)" scripts/smoke-macos.sh "$PWD/bin/AI Usage Sidebar.app"
+
+      # ---- Windows
+      - name: Download the new build (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: bin
+
+      - name: Upgrade smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          gh release download $env:TAG --repo $env:GITHUB_REPOSITORY --pattern '*_x64-setup.exe' --dir old
+          $installer = (Get-ChildItem old -Filter *.exe | Select-Object -First 1).FullName
+          scripts/smoke-windows.ps1 -Exe bin/ai-usage-sidebar.exe -UpgradeFrom $installer -ExpectMigration $env:SMOKE_EXPECT_MIGRATION -LogCopy $env:SMOKE_LOG_COPY
+
+      - name: Upload the logs of a failed upgrade test
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-logs-${{ matrix.os }}-${{ matrix.from }}
+          path: ${{ runner.temp }}/smoke-logs
+          if-no-files-found: ignore
+          retention-days: 7
