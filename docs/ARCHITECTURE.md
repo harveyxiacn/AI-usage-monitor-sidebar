@@ -472,8 +472,25 @@ tested:
 
 The learned multiplier and both gates are persisted in
 `<data_dir>/cache/poll-state.json`, and the cached snapshot's `fetchedAt`
-counts as the last poll, so restarting the app does not produce a burst of
-requests.
+counts as the last poll, so restarting the app does not produce a burst of requests.
+
+### Resilience (`scheduler.rs`, `providers/`)
+
+* The log-watcher thread re-checks the log roots every 60 s. A root that
+  appears later, vanishes, or is deleted and recreated (creation time changes)
+  is re-watched, and any such change as well as any `notify` error queues a
+  full reconciliation, so events lost while a root was unwatched are recovered.
+  Watcher errors are logged at most once per 5 min.
+* A provider request is retried once after ~1.5 s on a connection error,
+  timeout, or HTTP 502/503/504 (`providers::send_with_retry`); 401/403/429 and
+  other statuses are final, and the retry happens inside the same fetch so the
+  Claude 120 s floor is unaffected.
+* Token expiry uses a 60 s margin. An expired-looking Claude or Codex token
+  triggers one fresh read of the credentials (the CLI may have refreshed them)
+  before `token_expired` is reported.
+* Forecasts load all window samples of a refresh with one lock and one prepared
+  statement (`store::quota::window_samples_many`).
+
 ### Updates
 
 `autoUpdateCheck` only governs the *automatic* check (30 s after start-up,
@@ -581,6 +598,18 @@ webview. Bucketing stays in Rust (not in SQL `localtime`) so all three views
 agree on the same DST-aware local calendar. No extra index is warranted: the
 `(?N IS NULL OR col = ?N)` filters cannot be used as index prefixes, and the
 cost of these queries is reading the rows in range, which no index removes.
+
+**Retention and maintenance.** `quota_samples` is the only table that grows
+without a natural bound, so a daily pass (first run 5 min after start,
+`scheduler::maintenance_loop` → `store::maintain_quota_samples`) deletes
+samples older than `quotaRetentionDays` (default 365, 0 = keep forever, max
+3650) and thins samples older than 14 days to one row per
+(provider, kind, scope, hour): the row with the highest `used_percent`, so a
+cycle's peak survives. It then runs `PRAGMA wal_checkpoint(TRUNCATE)` and
+`PRAGMA optimize`, plus `incremental_vacuum` only when the file already uses
+`auto_vacuum=INCREMENTAL` (an existing database is never switched). Recent data
+(the forecast reads at most the last 24 h–7 d) is untouched, and `usage_events`
+are never deleted.
 
 Quota history shares the time/provider filters and keeps provider/kind/scope
 windows separate. Its curve and change list show used/remaining percentages,
