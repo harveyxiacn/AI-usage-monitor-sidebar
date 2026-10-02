@@ -22,8 +22,8 @@ pub fn settings_path(config_dir: &Path) -> PathBuf {
 /// may have put in it. Always returns clamped, usable settings.
 pub fn load(config_dir: &Path) -> Settings {
     let path = settings_path(config_dir);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             log::info!("no settings file at {}, using defaults", path.display());
             return Settings::default();
@@ -32,6 +32,14 @@ pub fn load(config_dir: &Path) -> Settings {
             log::warn!("cannot read {}: {}", path.display(), e);
             return Settings::default();
         }
+    };
+    // The unusable file stays on disk; `save` keeps a copy before replacing it.
+    let Some(text) = decode_text(&bytes) else {
+        log::warn!(
+            "{} is not UTF-8 or UTF-16 text, using defaults",
+            path.display()
+        );
+        return Settings::default();
     };
     let Some(mut settings) = parse(&text) else {
         log::warn!("{} is not valid JSON, using defaults", path.display());
@@ -51,7 +59,38 @@ pub fn load(config_dir: &Path) -> Settings {
 /// field-by-field, so a single bad field cannot poison the rest.
 pub fn parse(text: &str) -> Option<Settings> {
     let value: Value = serde_json::from_str(without_bom(text)).ok()?;
+    // `null`, `[]` or `"x"` parse as JSON but are not a settings file. Treating
+    // them as "all defaults" would reset live settings on a hot reload.
+    if !value.is_object() {
+        return None;
+    }
     Some(merge(&Settings::default(), &value))
+}
+
+/// File bytes as text: UTF-8 (a BOM is handled by `without_bom`) or UTF-16
+/// with a byte-order mark, which is what Windows PowerShell 5 writes for a
+/// plain `> settings.json` redirect. Anything else is not text we can trust.
+pub fn decode_text(bytes: &[u8]) -> Option<String> {
+    let utf16 = |rest: &[u8], le: bool| -> Option<String> {
+        if rest.len() & 1 == 1 {
+            return None;
+        }
+        let units = rest.chunks(2).map(|c| {
+            if le {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        });
+        char::decode_utf16(units)
+            .collect::<Result<String, _>>()
+            .ok()
+    };
+    match bytes {
+        [0xff, 0xfe, rest @ ..] => utf16(rest, true),
+        [0xfe, 0xff, rest @ ..] => utf16(rest, false),
+        _ => String::from_utf8(bytes.to_vec()).ok(),
+    }
 }
 
 /// Windows PowerShell 5 (`Out-File -Encoding utf8`) and some editors save
@@ -62,11 +101,15 @@ fn without_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
-/// `true` for a valid settings object that has no `onboarded` key.
+/// `true` for a valid settings object that has no usable `onboarded` flag
+/// (absent, or not a boolean, which `merge` would ignore anyway).
 fn lacks_onboarded_key(text: &str) -> bool {
     serde_json::from_str::<Value>(without_bom(text))
         .ok()
-        .and_then(|v| v.as_object().map(|o| !o.contains_key("onboarded")))
+        .and_then(|v| {
+            v.as_object()
+                .map(|o| !o.get("onboarded").is_some_and(Value::is_boolean))
+        })
         .unwrap_or(false)
 }
 ///
@@ -365,9 +408,56 @@ static LAST_WRITTEN: parking_lot::Mutex<Option<Vec<u8>>> = parking_lot::Mutex::n
 pub fn save(config_dir: &Path, settings: &Settings) -> Result<()> {
     std::fs::create_dir_all(config_dir).ok();
     let bytes = serde_json::to_vec_pretty(settings).context("serialize settings")?;
-    write_atomic(&settings_path(config_dir), &bytes)?;
+    let path = settings_path(config_dir);
+    preserve_unusable(&path);
+    write_atomic(&path, &bytes)?;
     *LAST_WRITTEN.lock() = Some(bytes);
     Ok(())
+}
+
+const BAD_PREFIX: &str = "settings.json.bad-";
+const KEEP_BAD_COPIES: usize = 3;
+
+/// Before `settings.json` is replaced, keep a copy of it when it holds
+/// something this app cannot read (garbage, a half-written edit, an
+/// unsupported encoding): the user's text is never silently destroyed.
+/// Blank files and readable ones need no copy. Best effort.
+fn preserve_unusable(path: &Path) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return;
+    }
+    if decode_text(&bytes).and_then(|t| parse(&t)).is_some() {
+        return;
+    }
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let bad = dir.join(format!("{BAD_PREFIX}{}", now_ms()));
+    match std::fs::write(&bad, &bytes) {
+        Ok(()) => log::warn!(
+            "{} was unreadable; kept a copy as {}",
+            path.display(),
+            bad.display()
+        ),
+        Err(e) => log::warn!("could not keep a copy of the unreadable settings file: {e}"),
+    }
+    let mut copies: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(BAD_PREFIX))
+        })
+        .collect();
+    copies.sort();
+    let excess = copies.len().saturating_sub(KEEP_BAD_COPIES);
+    for old in copies.into_iter().take(excess) {
+        std::fs::remove_file(old).ok();
+    }
 }
 
 /// Write `bytes` to `path` via a sibling temp file + rename, so a crash can
@@ -556,9 +646,10 @@ pub fn reload_action(
     if own_write == Some(bytes) {
         return ReloadAction::Ignore;
     }
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    let Some(text) = decode_text(bytes) else {
         return ReloadAction::Wait;
     };
+    let text = text.as_str();
     match parse(text).map(|next| keep_bookkeeping(next, text, in_memory)) {
         None => ReloadAction::Wait,
         Some(next) if next == *in_memory => ReloadAction::Ignore,
@@ -575,13 +666,15 @@ fn keep_bookkeeping(mut next: Settings, text: &str, live: &Settings) -> Settings
     let Ok(Value::Object(file)) = serde_json::from_str::<Value>(without_bom(text)) else {
         return next;
     };
-    if !file.contains_key("onboarded") {
+    // "Mentions" means a value of the right type: `"onboarded": "yes"` is
+    // ignored by `merge` and would otherwise reset the live flag.
+    if !file.get("onboarded").is_some_and(Value::is_boolean) {
         next.onboarded = live.onboarded;
     }
-    if !file.contains_key("lastSeenVersion") {
+    if !file.get("lastSeenVersion").is_some_and(Value::is_string) {
         next.last_seen_version = live.last_seen_version.clone();
     }
-    if !file.contains_key("skippedVersion") {
+    if !file.get("skippedVersion").is_some_and(Value::is_string) {
         next.skipped_version = live.skipped_version.clone();
     }
     next
