@@ -58,6 +58,8 @@ test('overview refreshes and history filters and exports the visible rows', asyn
   await page.locator('#provider').selectOption('codex');
   await page.locator('#group').selectOption('model');
   await expect(page.locator('.table-wrap tbody tr').first()).toBeVisible();
+  // the previous rows stay on screen until the filtered query lands: wait it out
+  await expect(page.locator('.table-wrap tbody tr td:nth-child(2)').filter({ hasNotText: /^Codex$/ })).toHaveCount(0);
   for (const text of await page.locator('.table-wrap tbody tr td:nth-child(2)').allTextContents()) expect(text).toBe('Codex');
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
@@ -88,6 +90,7 @@ test('the project filter narrows the table and exports complete paths', async ({
   await expect(page.getByRole('columnheader', { name: /Project/ })).toBeVisible();
   const cells = page.locator('.table-wrap tbody td.project-name');
   await expect(cells.first()).toBeVisible();
+  await expect(cells.filter({ hasNotText: /^website — \/home\/demo\/work\/client$/ })).toHaveCount(0);
   // the shortened label disambiguates the two "website" projects…
   for (const text of await cells.allTextContents()) expect(text).toBe('website — /home/demo/work/client');
   // …while the exact path stays available for selection and export
