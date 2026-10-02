@@ -86,17 +86,14 @@ test('the sessions view sorts server-capped rows and exports them as CSV', async
   expect(csv).not.toMatch(/prompt|message|content/i);
 });
 
-test('a monthly budget draws the burn-up against the budget when showing cost', async ({ page }) => {
-  const seeded = `?settings=${encodeURIComponent(JSON.stringify({ monthlyBudgetUsd: 250 }))}`;
-  await openHistory(page, seeded);
+test('a monthly budget draws the burn-up in the Cost & budget view, reached by deep link', async ({ page }) => {
+  const seeded = `?tab=history&view=cost&settings=${encodeURIComponent(JSON.stringify({ monthlyBudgetUsd: 250 }))}`;
+  await page.goto(`/dashboard${seeded}`);
 
   const budget = page.getByRole('heading', { name: 'Monthly budget', exact: true });
   await expect(budget).toBeVisible();
-  // tokens are not money: the panel says what to switch to instead of guessing
-  await expect(page.getByText('Switch “Show” to Est. cost to see the budget.')).toBeVisible();
-
-  await page.getByRole('group', { name: 'Show', exact: true })
-    .getByRole('button', { name: 'Est. cost', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'History view', exact: true }).getByRole('button', { name: 'Cost & budget', exact: true }))
+    .toHaveAttribute('aria-pressed', 'true');
   const stat = page.getByRole('status').filter({ hasText: 'of the monthly budget used' });
   await expect(stat).toBeVisible();
   await expect(stat).toContainText(/on pace for \$[\d,]+\.\d\d of \$250\.00/);
@@ -106,7 +103,10 @@ test('a monthly budget draws the burn-up against the budget when showing cost', 
   await page.screenshot({ path: test.info().outputPath('budget.png') });
 });
 
-test('no budget setting means no budget panel', async ({ page }) => {
+test('no budget setting means no budget chart, and the Cost view says how to set one', async ({ page }) => {
   await openHistory(page);
   await expect(page.getByRole('heading', { name: 'Monthly budget', exact: true })).toHaveCount(0);
+  await page.getByRole('group', { name: 'History view', exact: true }).getByRole('button', { name: 'Cost & budget', exact: true }).click();
+  await expect(page.getByText('No monthly budget is set.')).toBeVisible();
+  await expect(page.locator('canvas[aria-label*="monthly budget"]')).toHaveCount(0);
 });
