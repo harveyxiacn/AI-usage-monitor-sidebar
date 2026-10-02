@@ -110,6 +110,9 @@ jobs:
       - name: Check the translations
         run: pnpm check:i18n
 
+      - name: Check the AGENTS.md settings table
+        run: pnpm check:agents
+
       - name: Test frontend logic
         run: pnpm test
 
