@@ -9,12 +9,12 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'About', exact: true })).toBeVisible();
 });
 
-test('a manual check surfaces the offer in the About card and in the banner', async ({ page }) => {
+test('a manual check surfaces the offer in the Updates card and in the banner', async ({ page }) => {
   await expect(page.getByText('Not checked yet')).toBeVisible();
   // nothing may appear before the user asks
   await expect(page.getByText(/Update 9\.9\.9 available/)).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Check program updates', exact: true }).click();
+  await page.getByRole('button', { name: 'Check for app updates', exact: true }).click();
 
   await expect(page.getByText('Update 9.9.9 available', { exact: true })).toBeVisible();
   // the preview is not a bundle we may replace, so no install button
@@ -28,21 +28,24 @@ test('a manual check surfaces the offer in the About card and in the banner', as
   await expect(banner).toHaveCount(0);
 });
 
-test('a global shortcut is validated before it is saved', async ({ page }) => {
-  const field = page.getByLabel('Shortcut: show/hide bar', { exact: true });
-  await expect(field).toHaveValue('');
+test('the shortcut recorder only accepts a modifier plus a key', async ({ page }) => {
+  const recorder = page.getByRole('button', { name: 'Shortcut: show/hide bar', exact: true });
+  await expect(recorder).toContainText('Not set');
 
-  await field.fill('U');
-  await field.blur();
-  await expect(page.getByText('Not a usable shortcut. Use modifiers and one key, e.g. Ctrl+Alt+U.')).toBeVisible();
+  // a bare key is refused and the recorder keeps listening
+  await recorder.click();
+  await page.keyboard.press('KeyU');
+  await expect(page.getByText('Hold Ctrl, Alt, Shift or Super as well.')).toBeVisible();
 
-  await field.fill('Ctrl+Alt+U');
-  await field.blur();
-  await expect(page.getByText('Not a usable shortcut. Use modifiers and one key, e.g. Ctrl+Alt+U.')).toHaveCount(0);
-  await expect(field).toHaveValue('Ctrl+Alt+U');
+  await page.keyboard.press('Control+Alt+KeyU');
+  await expect(recorder).toContainText('Ctrl+Alt+U');
+  await expect(page.getByText('Registered', { exact: true }).first()).toBeVisible();
 
-  // empty is a valid value again: it simply turns the shortcut off
-  await field.fill('');
-  await field.blur();
-  await expect(page.getByText('Empty = off. Example: Ctrl+Alt+U')).toBeVisible();
+  // Escape cancels without changing anything, Backspace clears
+  await recorder.click();
+  await page.keyboard.press('Escape');
+  await expect(recorder).toContainText('Ctrl+Alt+U');
+  await recorder.click();
+  await page.keyboard.press('Backspace');
+  await expect(recorder).toContainText('Not set');
 });

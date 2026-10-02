@@ -28,7 +28,7 @@ test('search works on Chinese labels too', () => {
 
 test('every privacy row has texts in both languages and a real controlling setting', () => {
   for (const item of PRIVACY_ITEMS) {
-    for (const part of ['title', 'detail']) {
+    for (const part of ['title', 'detail', 'control']) {
       const key = `privacy.item.${item.id}.${part}`;
       expect(en[key], key).toBeTruthy();
       expect(zh[key], key).toBeTruthy();

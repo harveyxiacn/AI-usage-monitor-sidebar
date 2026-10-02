@@ -304,6 +304,12 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
+| `get_diagnostics` | – | `Diagnostics` — version, OS/arch, display backend, provider status (e-mails always masked), effective settings (`pricingUrl` stripped of credentials/query), log/config/data folders and the last 80 lines of the newest log, run through `evaluation::redact`. Never contains a token. |
+| `open_folder` | `which: "log" | "config" | "data"` | opens that folder in the file manager (a name, never a path) |
+| `export_settings` | – | `string | null` (native save dialog, writes the effective `settings.json`; null on cancel) |
+| `import_settings` | – | `ImportResult | null` (native open dialog, ≤ 1 MiB; goes through the normal `update_settings` merge so unknown/invalid values are ignored; `focusUntil` and `version` are never imported; `ignored` lists keys that were unknown, invalid or clamped) |
+| `get_settings_history` | – | `SettingsVersion[]` — the undo ring, newest first (see below) |
+| `restore_settings_version` | `index: number` | `Settings` — makes ring entry `index` live; the version it replaces is pushed into the ring, so a restore can be undone |
 | `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
 
 ### Updater commands — `src-tauri/src/updater.rs`
@@ -328,6 +334,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `apply_window_settings` | – | re-read settings (edge, monitor, vertical position, opacity, autoHide, always-on-top) and reposition windows |
 | `get_monitors` | – | `MonitorInfo[]` |
 | `get_shortcut_status` | – | `ShortcutStatus` — why a configured global shortcut is not active (`null` = registered, or disabled because the setting is empty) |
+| `get_shortcut_registrations` | – | `ShortcutRegistrations` — per shortcut `{state: "off" | "registered" | "failed" | "unsupported", message}`; `unsupported` = native Wayland session |
 | `quit_app` | – | exit |
 
 ### Events (Rust → JS, `listen()`)
@@ -380,6 +387,20 @@ autostart off, thresholds warn 70 / critical 90, `notifications=false` with
 `forecastNotifications=true` (the predictive warning is on by default but only
 fires while `notifications` is on, at most once per window per reset period and
 only for a `medium`/`high` confidence forecast).
+
+### Undo ring (`settings.history.json`)
+
+Before every settings write that changes something, the version it replaces is
+pushed into `settings.history.json` next to `settings.json` (newest first, at
+most 5; `settings_history.rs`). Edits less than 3 s apart are one *burst* and
+record only the version the burst started from, so dragging a slider does not
+fill the ring. A restore (`restore_settings_version`) always records. The file
+is best effort: if it cannot be read or written the settings save still
+succeeds. External edits of `settings.json` are recorded too.
+
+`customPresets` is a name → partial-patch map (at most 10 names of ≤ 40
+characters; patches may not carry `customPresets` or `focusUntil`). Presets are
+applied through `update_settings`, so every value is validated on use.
 
 ### Sidebar items (what the bar shows)
 

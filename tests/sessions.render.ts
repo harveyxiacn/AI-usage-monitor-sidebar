@@ -1,9 +1,5 @@
 import { test, expect } from '@playwright/test';
 
-test.afterAll(async () => {
-  await fetch(`http://127.0.0.1:${Number(process.env.RENDER_PORT ?? 14897)}/__render_shutdown`).catch(() => {});
-});
-
 // Deliberately no pointer, keyboard, dispatchEvent, or element.click calls.
 // These checks load real routes, observe rendered output, and capture screenshots.
 for (const theme of ['dark', 'light']) {

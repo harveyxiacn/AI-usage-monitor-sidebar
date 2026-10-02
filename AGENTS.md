@@ -171,6 +171,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `focusUntil` | `0` (off), `-1` (until turned off) or an epoch-ms deadline | focus / do-not-disturb: native notifications are silenced until then; a timed value expires by itself. Also set from the tray's "Focus mode" submenu |
 | `focusHidesSidebar` | `false`, `true` | hide the bar while focus mode is on, show it again when it ends |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
+| `customPresets` | `{}` | the user's own presets, name → partial settings patch (max 10; created in the dashboard, rarely hand-written) |
 | `autostart` | `false`, `true` | start at login |
 | `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |
 | `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS) |
