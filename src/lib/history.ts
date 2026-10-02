@@ -272,10 +272,12 @@ export function csvCell(value: string | number): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-export function historyCsv(rows: readonly HistoryRow[]): string {
+export function historyCsv(rows: readonly HistoryRow[], withAccount = false): string {
   const columns: Array<[string, (row: HistoryRow) => string | number]> = [
     ['bucket_start', (r) => r.bucketStart],
     ['provider', (r) => r.provider],
+    // only once an extra account exists; '' = the primary account
+    ...(withAccount ? [['account', (r: HistoryRow) => r.account ?? ''] as [string, (row: HistoryRow) => string | number]] : []),
     ['model', (r) => r.model ?? ''],
     ['reasoning_effort', (r) => r.reasoningEffort ?? ''],
     ['project', (r) => r.project ?? ''],
@@ -294,10 +296,11 @@ export function historyCsv(rows: readonly HistoryRow[]): string {
 }
 
 /** Session drill-down export: counters and identifiers, never any text. */
-export function sessionsCsv(rows: readonly SessionRow[]): string {
+export function sessionsCsv(rows: readonly SessionRow[], withAccount = false): string {
   const columns: Array<[string, (row: SessionRow) => string | number]> = [
     ['session_id', (r) => r.sessionId],
     ['provider', (r) => r.provider],
+    ...(withAccount ? [['account', (r: SessionRow) => r.account ?? ''] as [string, (row: SessionRow) => string | number]] : []),
     ['project', (r) => r.project],
     ['first_activity', (r) => r.firstTs],
     ['last_activity', (r) => r.lastTs],

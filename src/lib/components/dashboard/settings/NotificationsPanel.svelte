@@ -11,8 +11,10 @@
   import { onMount } from 'svelte';
   import Field from '../Field.svelte';
   import Toggle from '../Toggle.svelte';
+  import SettingsBlock from './SettingsBlock.svelte';
   import { getNotificationPermission, sendTestNotification } from '$lib/api';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { focusStatus, moveThreshold, thresholdZones, webhookUrlProblem } from '$lib/notifications';
   import { settings } from '$lib/stores/settings.svelte';
   import type { Thresholds, WebhookKind } from '$lib/types';
@@ -116,7 +118,7 @@
     />
   </Field>
 
-  <Field label={t('notif.budget')} hint={t('notif.budget.hint')}>
+  <Field advanced={isAdvanced('budgetNotifications')} label={t('notif.budget')} hint={t('notif.budget.hint')}>
     <Toggle
       checked={s.budgetNotifications}
       disabled={!s.notifications}
@@ -125,7 +127,7 @@
     />
   </Field>
 
-  <Field label={t('notif.weekly')} hint={t('notif.weekly.hint')}>
+  <Field advanced={isAdvanced('weeklySummary')} label={t('notif.weekly')} hint={t('notif.weekly.hint')}>
     <Toggle
       checked={s.weeklySummary}
       disabled={!s.notifications}
@@ -134,7 +136,7 @@
     />
   </Field>
 
-  <Field label={t('notif.levels')} wide>
+  <Field advanced={isAdvanced('thresholds')} label={t('notif.levels')} wide>
     <div class="levels">
       <div class="dual">
         <div class="zones" role="img" aria-label={t('notif.levels.preview')}>
@@ -172,7 +174,7 @@
     </div>
   </Field>
 
-  <Field label={t('notif.webhook.enable')} hint={t('notif.webhook.hint')}>
+  <Field advanced={isAdvanced('webhook')} label={t('notif.webhook.enable')} hint={t('notif.webhook.hint')}>
     <Toggle
       checked={s.webhook.enabled}
       disabled={!s.notifications || !!urlProblem}
@@ -181,7 +183,7 @@
     />
   </Field>
 
-  <Field label={t('notif.webhook.url')} wide>
+  <Field advanced={isAdvanced('webhook')} label={t('notif.webhook.url')} wide>
     <input
       class="field url"
       type="url"
@@ -199,7 +201,7 @@
     {#if urlMessage}<p class="problem" role="alert">{tDyn(`notif.webhook.problem.${urlMessage}`)}</p>{/if}
   </Field>
 
-  <Field label={t('notif.webhook.kind')}>
+  <Field advanced={isAdvanced('webhook')} label={t('notif.webhook.kind')}>
     <select
       class="field"
       aria-label={t('notif.webhook.kind')}
@@ -210,6 +212,7 @@
     </select>
   </Field>
 
+  <SettingsBlock advanced text={`${t('notif.test.native')} ${t('notif.test.webhook')}`}>
   <div class="tests">
     <button class="btn" disabled={test?.status === 'sending'} onclick={() => void sendTest('native')}>
       {test?.channel === 'native' && test.status === 'sending' ? t('notif.test.sending') : t('notif.test.native')}
@@ -223,6 +226,7 @@
   {:else if test?.status === 'error'}
     <p class="result bad" role="alert">{t('notif.test.failed', { message: test.message })}</p>
   {/if}
+  </SettingsBlock>
 
   <p class="focus-line" class:on={focus.kind !== 'off'} role="status">{focusLine}</p>
 </div>

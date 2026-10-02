@@ -20,10 +20,21 @@ export function planPriceHint(provider: string, plan: string | null | undefined)
   return null;
 }
 
-/** Sum of the configured prices of one provider, or of all when `provider` is null. */
-export function subscriptionTotal(prices: Readonly<Record<string, number>>, provider: string | null): number {
-  const values = provider ? [prices[provider]] : Object.values(prices);
-  return values.reduce<number>((sum, v) => sum + (Number.isFinite(v) && v > 0 ? v : 0), 0);
+/**
+ * Sum of the configured prices of one provider, or of all when `provider` is
+ * null. Each login is its own subscription, so the price of an extra account
+ * is filed under its provider key (`claude@work`) next to the primary one
+ * (`claude`). `account`: null = every account, '' = the primary account only,
+ * an id = that extra account.
+ */
+export function subscriptionTotal(prices: Readonly<Record<string, number>>, provider: string | null, account: string | null = null): number {
+  return Object.entries(prices).reduce<number>((sum, [key, v]) => {
+    const at = key.indexOf('@');
+    const [p, a] = at > 0 ? [key.slice(0, at), key.slice(at + 1)] : [key, ''];
+    if (provider && p !== provider) return sum;
+    if (account !== null && a !== account) return sum;
+    return sum + (Number.isFinite(v) && v > 0 ? v : 0);
+  }, 0);
 }
 
 export function daysInMonthOf(ms: number): number {

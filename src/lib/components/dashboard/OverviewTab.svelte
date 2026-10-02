@@ -9,6 +9,7 @@
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import QuotaExtras from '$lib/components/QuotaExtras.svelte';
   import GettingStarted from './GettingStarted.svelte';
+  import RoutingAdviceCard from './RoutingAdviceCard.svelte';
   import WeeklySummaryCard from './WeeklySummaryCard.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
@@ -16,6 +17,7 @@
   import { formatAgo, formatEstimatedCost, formatTokens, staleHint, windowLabel } from '$lib/format';
   import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
   import { accountEmail } from '$lib/privacy';
+  import { providerKey } from '$lib/accounts';
   import { quotaKey, sampleKey } from '$lib/providers';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
@@ -146,6 +148,8 @@
 
   <GettingStarted />
 
+  <RoutingAdviceCard />
+
   {#if snapshot.loading}
     <p class="muted">{t('common.loading')}</p>
   {:else if providers.length === 0}
@@ -156,8 +160,8 @@
         {@const accent = accentFor(q.provider, 0)}
         {@const hint = statusHint(q)}
         {@const credits = creditsLine(q)}
-        <!-- an extra account has no ingested token log: its card has no usage line -->
-        {@const day = q.accountId ? undefined : today.get(q.provider)}
+        <!-- each account's card shows its own usage (extra accounts are ingested from their own logs) -->
+        {@const day = today.get(providerKey(q.provider, q.accountId))}
         {@const email = accountEmail(q.account?.email, s.hideAccountEmail)}
         <article class="card provider">
           <header class="head">

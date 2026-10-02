@@ -36,6 +36,8 @@
     bucket: Bucket;
     provider: ProviderId | '';
     project: string | null;
+    /** null = every account, '' = the primary account, else an extra account id */
+    account?: string | null;
     /** rows of the page's own query when they already are per model (not per project) */
     mainRows: HistoryRow[] | null;
     dataVersion: number;
@@ -43,7 +45,7 @@
     height?: number;
   }
 
-  let { range, bucket, provider, project, mainRows, dataVersion, themeKey, height = 240 }: Props = $props();
+  let { range, bucket, provider, project, account = null, mainRows, dataVersion, themeKey, height = 240 }: Props = $props();
 
   const MAX_MODELS = 6;
 
@@ -62,7 +64,7 @@
     const id = ++requestId;
     const active = range;
     if (!active || !needsFetch) return;
-    const key = JSON.stringify([active.from, bucket, provider, project]);
+    const key = JSON.stringify([active.from, bucket, provider, project, account]);
     if (key !== filterKey) fetched = null;
     filterKey = key;
     error = null;
@@ -75,6 +77,7 @@
         groupByProject: false,
         project,
         provider: provider === '' ? null : provider,
+        account,
       });
       if (id === requestId && !disposed) fetched = result.rows;
     } catch (e) {
@@ -83,7 +86,7 @@
   }
 
   $effect(() => {
-    void [range, bucket, provider, project, dataVersion, needsFetch];
+    void [range, bucket, provider, project, account, dataVersion, needsFetch];
     requestId++;
     if (!needsFetch) return;
     const timer = setTimeout(() => void load(), 80);

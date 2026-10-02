@@ -21,6 +21,12 @@
     range: HistoryRange | null;
     provider: ProviderId | '';
     project: string | null;
+    /** null = every account, '' = the primary account, else an extra account id */
+    account?: string | null;
+    /** an extra account exists: the table, the CSV and the session summary name the account */
+    showAccount?: boolean;
+    /** display name of an extra account id */
+    accountLabel?: (id: string) => string;
     rows: HistoryRow[];
     /** the bucket query has no result yet */
     loading: boolean;
@@ -36,7 +42,7 @@
     onclearproject: () => void;
   }
 
-  let { range, provider, project, rows, loading, hasResult, bucket, groupByModel, showProject, tableView = $bindable(), providerName, projectLabel, onclearproject }: Props = $props();
+  let { range, provider, project, account = null, showAccount = false, accountLabel = (id: string) => id, rows, loading, hasResult, bucket, groupByModel, showProject, tableView = $bindable(), providerName, projectLabel, onclearproject }: Props = $props();
 
   let tablePage = $state(0);
   const TABLE_PAGE_SIZE = 100;
@@ -77,7 +83,7 @@
       sessionsLoading = false;
       return;
     }
-    const filterKey = JSON.stringify([activeRange.from, provider, project]);
+    const filterKey = JSON.stringify([activeRange.from, provider, project, account]);
     if (filterKey !== sessionsFilterKey) sessions = null;
     sessionsFilterKey = filterKey;
     sessionsLoading = true;
@@ -88,6 +94,7 @@
         to: new Date(activeRange.to).toISOString(),
         provider: provider === '' ? null : provider,
         project,
+        account,
       });
       if (id === sessionsId && !disposed) sessions = next;
     } catch (e) {
@@ -101,7 +108,7 @@
   }
 
   $effect(() => {
-    void [range, provider, project, tableView];
+    void [range, provider, project, account, tableView];
     sessionsId++;
     const timer = setTimeout(() => void loadSessions(), 80);
     return () => clearTimeout(timer);
@@ -152,14 +159,14 @@
 
   /** Hand the current History filters to the Sessions tab, optionally opening one session. */
   function openSessions(view: 'browse' | 'insights', target?: SessionRow) {
-    sessionViewState.query = sessionFilters(range, provider, project);
+    sessionViewState.query = sessionFilters(range, provider, project, account);
     sessionViewState.view = view;
     if (target && target.sessionId) sessionViewState.selected = { provider: target.provider, sessionId: target.sessionId };
     requestDashboardTab('sessions');
   }
 
   /** The active table view decides what "copy" and "export" produce. */
-  const csvText = () => (tableView === 'sessions' ? sessionsCsv(sessions?.rows ?? []) : historyCsv(sortedRows));
+  const csvText = () => (tableView === 'sessions' ? sessionsCsv(sessions?.rows ?? [], showAccount) : historyCsv(sortedRows, showAccount));
   const csvEmpty = $derived(tableView === 'sessions' ? (sessions?.rows.length ?? 0) === 0 : sortedRows.length === 0);
   const csvBusy = $derived(tableView === 'sessions' ? sessionsLoading : loading);
 
@@ -257,7 +264,7 @@
           <li>
             <button class="link" disabled={!s.sessionId} onclick={() => openSessions('browse', s)}>
               <span class="session-id" title={s.sessionId}>{sessionLabel(s)}</span>
-              <span class="muted">{providerName(s.provider)} · {projectLabel(s.project)}</span>
+              <span class="muted">{providerName(s.provider)}{#if s.account} · {accountLabel(s.account)}{/if} · {projectLabel(s.project)}</span>
               <span class="mono num">{formatTokens(s.totalTokens)} · {formatEstimatedCost(s)}</span>
             </button>
           </li>
@@ -293,10 +300,10 @@
           </tr>
         </thead>
         <tbody>
-          {#each sortedRows.slice(tablePage * TABLE_PAGE_SIZE, (tablePage + 1) * TABLE_PAGE_SIZE) as r (JSON.stringify([r.bucketStart, r.provider, r.model, r.reasoningEffort, r.project]))}
+          {#each sortedRows.slice(tablePage * TABLE_PAGE_SIZE, (tablePage + 1) * TABLE_PAGE_SIZE) as r (JSON.stringify([r.bucketStart, r.provider, r.account ?? '', r.model, r.reasoningEffort, r.project]))}
             <tr>
               <td>{formatBucket(r.bucketStart, bucket)}</td>
-              <td>{providerName(r.provider)}</td>
+              <td>{providerName(r.provider)}{#if showAccount && r.account} <span class="account-chip">{accountLabel(r.account)}</span>{/if}</td>
               {#if groupByModel}<td class="model" title={modelLabel(r.model, r.reasoningEffort)}>{modelLabel(r.model, r.reasoningEffort)}</td>{/if}
               {#if showProject}<td class="project-name" title={r.project || t('history.project.unassigned')}>{projectLabel(r.project ?? '')}</td>{/if}
               <td class="num mono">{formatTokens(r.inputTokens)}</td>

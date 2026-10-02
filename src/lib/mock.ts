@@ -7,14 +7,20 @@
 import type {
   AccountCheck,
   AccountSettings,
+  AdvisorWindow,
   AppInfo,
   BackupInfo,
+  DbStatus,
+  PreUpgradeBackup,
   AppSnapshot,
   Bucket,
   CalendarDay,
   CalendarQuery,
   CalendarResult,
   CalendarSlot,
+  CommitRow,
+  CommitsQuery,
+  CommitsResult,
   HistoryQuery,
   HistoryResult,
   HistoryRow,
@@ -28,6 +34,7 @@ import type {
   ProviderInfo,
   QuotaHistoryQuery,
   QuotaSample,
+  RoutingAdvice,
   SessionQuery,
   SessionRow,
   SessionsResult,
@@ -128,13 +135,11 @@ export const mockSettings: Settings = {
   popoverTimeoutSec: 10,
   collapsedWidth: 6,
   ringMode: 'concentric',
-  showScopedRing: true,
   percentMode: 'used',
   percentPosition: 'below',
   labelContent: 'percent',
   ringStyle: 'ring',
   sidebarAnimations: true,
-  showPercentLabel: true,
   sidebarItems: { fiveHour: true, weekly: true, scoped: true, other: true, logo: true, percentLabel: true, moreButton: true },
   refreshIntervalSec: 60,
   adaptiveRefresh: true,
@@ -165,6 +170,7 @@ export const mockSettings: Settings = {
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
+  advisorNotifications: false,
   thresholdNotifications: true,
   budgetNotifications: true,
   weeklySummary: false,
@@ -178,6 +184,7 @@ export const mockSettings: Settings = {
   focusUntil: 0,
   focusHidesSidebar: false,
   hideAccountEmail: false,
+  gitAttribution: false,
   exportSnapshot: false,
   pollingPaused: false,
   trayDisplay: 'icon',
@@ -334,6 +341,8 @@ let priceUpdateStatus: PriceUpdateStatus = {
 interface MockEvent {
   ts: number;
   provider: ProviderId;
+  /** extra account id; "" = the primary account */
+  account: string;
   model: string;
   reasoningEffort: string | null;
   project: string | null;
@@ -405,6 +414,7 @@ const events: MockEvent[] = (() => {
           out.push({
             ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
             provider,
+            account: '',
             model: models[m],
             reasoningEffort: provider === 'codex'
               ? ['medium', 'ultra', 'xhigh', null][(dayBack + hour + m) % 4]
@@ -428,11 +438,71 @@ const events: MockEvent[] = (() => {
   // independently of weekday weights and probabilistic activity generation.
   for (const [index, effort] of ['medium', 'ultra', 'xhigh', null].entries()) {
     for (const model of MODELS.codex) out.push({ ts: startOfToday.getTime() - DAY + index * HOUR,
-      provider: 'codex', model, reasoningEffort: effort, project: PROJECTS[0], session: 'codex-preview-variants',
+      provider: 'codex', account: '', model, reasoningEffort: effort, project: PROJECTS[0], session: 'codex-preview-variants',
       inputTokens: 900, cacheWriteTokens: 0, cacheReadTokens: 600, outputTokens: 150, reasoningTokens: 50, requests: 1 });
   }
   return out.sort((a, b) => a.ts - b.ts);
 })();
+
+/**
+ * Token history of one extra account: lighter than the primary's (a "work"
+ * login used mostly on weekdays), deterministic per account id, only for the
+ * flagship model plus the small one. Separate from `events`, so the primary
+ * dataset is exactly what it was without any extra account.
+ */
+function accountEvents(account: AccountSettings): MockEvent[] {
+  let seed = 0x9e3779b9;
+  for (const ch of account.id) seed = (Math.imul(seed, 31) + ch.charCodeAt(0)) >>> 0;
+  const rnd = lcg(seed);
+  const provider = account.provider as ProviderId;
+  const models = MODELS[provider].slice(0, 2);
+  const out: MockEvent[] = [];
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  for (let dayBack = 59; dayBack >= 0; dayBack -= 1) {
+    const dayStart = startOfToday.getTime() - dayBack * DAY;
+    const weekday = new Date(dayStart).getDay();
+    const dayWeight = weekday === 0 || weekday === 6 ? 0.05 : 0.8;
+    for (let m = 0; m < models.length; m += 1) {
+      for (let hour = 9; hour <= 18; hour += 1) {
+        if (rnd() > 0.45 * dayWeight * (m === 0 ? 1 : 0.4)) continue;
+        const requests = 1 + Math.floor(rnd() * 8);
+        const scale = 700 + rnd() * 3000;
+        const output = Math.round(requests * scale * (0.1 + rnd() * 0.3));
+        out.push({
+          ts: dayStart + hour * HOUR + Math.floor(rnd() * HOUR),
+          provider,
+          account: account.id,
+          model: models[m],
+          reasoningEffort: null,
+          project: PROJECTS[(dayBack + hour) % 2] || null,
+          session: `${provider}-${account.id}-${59 - dayBack}-${hour < 13 ? 'am' : 'pm'}`,
+          inputTokens: Math.round(requests * scale * (0.25 + rnd() * 0.3)),
+          cacheWriteTokens: Math.round(requests * scale * 0.2),
+          cacheReadTokens: Math.round(requests * scale * (1.5 + rnd() * 3)),
+          outputTokens: output,
+          reasoningTokens: Math.round(output * rnd() * 0.2),
+          requests,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+const accountEventCache = new Map<string, MockEvent[]>();
+
+/** The primary account's events plus those of every enabled extra account. */
+function allEvents(): MockEvent[] {
+  const extra = settings.accounts
+    .filter((a) => a.enabled)
+    .flatMap((a) => {
+      const key = `${a.provider}:${a.id}`;
+      if (!accountEventCache.has(key)) accountEventCache.set(key, accountEvents(a));
+      return accountEventCache.get(key)!;
+    });
+  return extra.length === 0 ? events : [...events, ...extra].sort((a, b) => a.ts - b.ts);
+}
 
 // ---------------------------------------------------------------- helpers ---
 
@@ -543,6 +613,9 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const rows = new Map<string, HistoryRow>();
   const totals = emptyTotals();
   const byProvider: Record<string, TokenTotals> = {};
+  const byAccount: Record<string, TokenTotals> = {};
+  const accountCost: Record<string, number | null> = {};
+  let hasExtraAccount = false;
   const projects = new Set<string>();
   let costApproximate = false;
   // cost is accumulated per model then summed, because the price list is
@@ -551,16 +624,17 @@ function runHistory(q: HistoryQuery): HistoryResult {
   const providerCost: Record<string, number | null> = {};
   let totalCost: number | null = 0;
 
-  for (const e of events) {
+  for (const e of allEvents()) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    if (q.account != null && e.account !== q.account) continue;
     const project = e.project ?? '';
     projects.add(project);
     if (q.project != null && project !== q.project) continue;
 
     const bs = bucketStart(e.ts, q.bucket);
     const rowProject = q.groupByProject ? project : q.project ?? null;
-    const key = JSON.stringify([bs, e.provider, q.groupByModel ? e.model : null, q.groupByModel ? e.reasoningEffort : null, rowProject]);
+    const key = JSON.stringify([bs, e.provider, e.account, q.groupByModel ? e.model : null, q.groupByModel ? e.reasoningEffort : null, rowProject]);
     let row = rows.get(key);
     if (!row) {
       row = {
@@ -570,6 +644,7 @@ function runHistory(q: HistoryQuery): HistoryResult {
         model: q.groupByModel ? e.model : null,
         reasoningEffort: q.groupByModel ? e.reasoningEffort : null,
         project: rowProject,
+        ...(e.account ? { account: e.account } : {}),
       };
       rows.set(key, row);
       rowCost.set(key, 0);
@@ -578,6 +653,10 @@ function runHistory(q: HistoryQuery): HistoryResult {
     addInto(totals, e);
     byProvider[e.provider] ??= emptyTotals();
     addInto(byProvider[e.provider], e);
+    const accountKey = e.account ? `${e.provider}@${e.account}` : e.provider;
+    hasExtraAccount ||= e.account !== '';
+    byAccount[accountKey] ??= emptyTotals();
+    addInto(byAccount[accountKey], e);
 
     costApproximate ||= costIsApproximate(e.model);
     const c = costOf(e.model, {
@@ -592,17 +671,20 @@ function runHistory(q: HistoryQuery): HistoryResult {
     if (!(e.provider in providerCost)) providerCost[e.provider] = 0;
     const pc = providerCost[e.provider];
     providerCost[e.provider] = pc == null || c == null ? null : pc + c;
+    accountCost[accountKey] = addCost(accountKey in accountCost ? accountCost[accountKey] : 0, c);
     totalCost = totalCost == null || c == null ? null : totalCost + c;
   }
 
   for (const [key, row] of rows) row.estimatedCostUsd = rowCost.get(key) ?? null;
   for (const p of Object.keys(byProvider)) byProvider[p].estimatedCostUsd = providerCost[p] ?? null;
+  for (const k of Object.keys(byAccount)) byAccount[k].estimatedCostUsd = accountCost[k] ?? null;
   totals.estimatedCostUsd = totalCost;
 
   const list = [...rows.values()].sort(
     (a, b) =>
       Date.parse(a.bucketStart) - Date.parse(b.bucketStart) ||
       a.provider.localeCompare(b.provider) ||
+      (a.account ?? '').localeCompare(b.account ?? '') ||
       (a.model ?? '').localeCompare(b.model ?? '') ||
       (a.reasoningEffort ?? '').localeCompare(b.reasoningEffort ?? '') ||
       (a.project ?? '').localeCompare(b.project ?? '')
@@ -611,6 +693,8 @@ function runHistory(q: HistoryQuery): HistoryResult {
     rows: list,
     totals,
     byProvider,
+    // like the backend: only once an extra account has events in range
+    ...(hasExtraAccount ? { byAccount } : {}),
     projects: [...projects].sort((a, b) => a.localeCompare(b)),
     costApproximate,
   };
@@ -643,9 +727,10 @@ function runCalendar(q: CalendarQuery): CalendarResult {
   const totals = emptyTotals();
   let totalCost: number | null = 0;
 
-  for (const e of events) {
+  for (const e of allEvents()) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    if (q.account != null && e.account !== q.account) continue;
     if (q.project != null && (e.project ?? '') !== q.project) continue;
 
     const cost = eventCost(e);
@@ -699,19 +784,21 @@ function runSessions(q: SessionQuery): SessionsResult {
   const totals = emptyTotals();
   let totalCost: number | null = 0;
 
-  for (const e of [...events].sort((a, b) => a.ts - b.ts)) {
+  for (const e of allEvents()) {
     if (e.ts < from || e.ts >= to) continue;
     if (q.provider && e.provider !== q.provider) continue;
+    if (q.account != null && e.account !== q.account) continue;
     const project = e.project ?? '';
     if (q.project != null && project !== q.project) continue;
 
-    const key = `${e.provider}\u0000${e.session}`;
+    const key = `${e.provider}\u0000${e.account}\u0000${e.session}`;
     let row = rows.get(key);
     if (!row) {
       row = {
         ...emptyTotals(),
         sessionId: e.session,
         provider: e.provider,
+        ...(e.account ? { account: e.account } : {}),
         project,
         firstTs: iso(e.ts),
         lastTs: iso(e.ts),
@@ -765,8 +852,9 @@ function runWindowUsage(q: WindowUsageQuery): TokenTotals[] {
     const to = Date.parse(w.to);
     const totals = emptyTotals();
     let cost: number | null = 0;
-    for (const e of events) {
+    for (const e of allEvents()) {
       if (e.provider !== q.provider || e.ts < from || e.ts >= to) continue;
+      if (q.account != null && e.account !== q.account) continue;
       addInto(totals, e);
       const c = eventCost(e);
       cost = cost == null || c == null ? null : cost + c;
@@ -950,6 +1038,124 @@ function jitterSnapshot(provider?: ProviderId | null) {
   return structuredClone(snapshot);
 }
 
+// ------------------------------------------------- decision support (mock) ---
+// Simplified mirrors of src-tauri/src/advisor/{routing,git}.rs: same rules and
+// thresholds, enough to exercise the UI in the browser preview.
+
+/** Routing advice from the live mock snapshot (see `advisor::routing` for the rules). */
+function mockRoutingAdvice(): RoutingAdvice | null {
+  const t0 = Date.now();
+  const evaluated = snapshot.providers
+    .filter((q) => q.status === 'ok')
+    .map((q) => ({
+      q,
+      wins: q.windows
+        .filter((w) => w.scope == null && w.resetsAt && Date.parse(w.resetsAt) > t0)
+        .map((w): AdvisorWindow & { runOutMin: number | null } => {
+          const resetsInMin = Math.floor((Date.parse(w.resetsAt!) - t0) / 60_000);
+          const exhausts = w.forecast?.exhaustsAt ? Math.floor((Date.parse(w.forecast.exhaustsAt) - t0) / 60_000) : null;
+          const runOutMin = w.usedPercent >= 100 ? 0 : exhausts !== null && exhausts > 0 && exhausts < resetsInMin ? exhausts : null;
+          return {
+            key: quotaKey(q), provider: q.provider, displayName: q.displayName, kind: w.kind, label: w.label,
+            usedPercent: w.usedPercent, remainingPercent: 100 - w.usedPercent, resetsInMin, resetsAtMs: Date.parse(w.resetsAt!),
+            safeMinutes: w.usedPercent >= 100 ? 0 : w.forecast ? (runOutMin ?? resetsInMin) : null,
+            projectedPercentAtReset: w.forecast?.projectedPercentAtReset ?? null,
+            confidence: w.usedPercent >= 100 ? 'high' : w.forecast?.confidence ?? null,
+            runOutMin,
+          };
+        }),
+    }))
+    .filter((c) => c.wins.length > 0);
+  const strip = ({ runOutMin: _drop, ...w }: AdvisorWindow & { runOutMin: number | null }): AdvisorWindow => w;
+  const binding = (wins: Array<AdvisorWindow & { runOutMin: number | null }>) =>
+    wins.reduce((a, b) => (b.remainingPercent < a.remainingPercent ? b : a));
+  const basis = evaluated.map((c) => strip(binding(c.wins)));
+  const rank = { low: 0, medium: 1, high: 2 } as const;
+  const sources = evaluated
+    .map((c) => ({ c, w: c.wins.filter((w) => w.runOutMin !== null && w.confidence !== null &&
+      (w.usedPercent >= 100 || (rank[w.confidence] >= 1 && w.runOutMin <= 180))).sort((a, b) => a.runOutMin! - b.runOutMin!)[0] }))
+    .filter((s) => s.w)
+    .sort((a, b) => a.w.runOutMin! - b.w.runOutMin!);
+  if (sources.length === 0) {
+    if (evaluated.length < 2) return null;
+    const confs = evaluated.flatMap((c) => c.wins.map((w) => w.confidence)).filter((c): c is 'low' | 'medium' | 'high' => c !== null);
+    const lowest = confs.length ? confs.reduce((a, b) => (rank[b] < rank[a] ? b : a)) : 'medium';
+    return { kind: 'no_switch', from: null, to: null, useTargetMinutes: null, confidence: lowest, basis };
+  }
+  const src = sources[0];
+  const target = evaluated
+    .filter((c) => c.q !== src.c.q && (c.q.provider === 'claude' || c.q.provider === 'codex') &&
+      !sources.some((s) => s.c === c) && c.wins.every((w) => w.remainingPercent >= 30))
+    .sort((a, b) => binding(b.wins).remainingPercent - binding(a.wins).remainingPercent)[0];
+  if (!target) return null;
+  const tw = binding(target.wins);
+  const confs = [src.w.confidence!, ...target.wins.map((w) => w.confidence).filter((c): c is 'low' | 'medium' | 'high' => c !== null)];
+  const confidence = confs.reduce((a, b) => (rank[b] < rank[a] ? b : a));
+  if (confidence === 'low') return null;
+  const targetRunOut = Math.min(...target.wins.map((w) => w.runOutMin ?? Infinity));
+  return {
+    kind: 'switch', from: strip(src.w), to: strip(tw),
+    useTargetMinutes: Math.min(src.w.resetsInMin, targetRunOut, 1440), confidence, basis,
+  };
+}
+
+const MOCK_COMMIT_SUBJECTS = [
+  'feat: add usage export', 'fix: race in the session loader', 'refactor: split the pricing table', 'docs: explain the quota windows',
+  'test: cover the reset detection', 'chore: bump dependencies', 'feat: per-project budget line', 'fix: off-by-one in the heatmap',
+];
+
+/** Synthetic commits (11:40 and 18:20 every day) with usage attributed like `advisor::git::attribute`. */
+function mockCommits(q: CommitsQuery): CommitsResult {
+  const bare = (status: CommitsResult['status'], message: string | null = null): CommitsResult => ({
+    status, message, commits: [], unattributed: emptyTotals(), truncated: false, cached: false,
+  });
+  if (!settings.gitAttribution) return bare('disabled');
+  if (!q.project || !events.some((e) => (e.project ?? '') === q.project)) return bare('unknown_project');
+  if (q.project.startsWith('C:\\')) return bare('not_a_repo');
+  const from = Date.parse(q.from);
+  const to = Date.parse(q.to);
+  const gap = 6 * HOUR;
+  const stamps: number[] = [];
+  const day = new Date(from - gap);
+  day.setHours(0, 0, 0, 0);
+  for (; day.getTime() <= to; day.setDate(day.getDate() + 1)) {
+    for (const [h, m] of [[11, 40], [18, 20]]) {
+      const ts = new Date(day).setHours(h, m, 0, 0);
+      if (ts >= from - gap && ts <= to) stamps.push(ts);
+    }
+  }
+  const commits = stamps.map((ts, i) => ({ ts, subject: MOCK_COMMIT_SUBJECTS[i % MOCK_COMMIT_SUBJECTS.length], hash: (0x1000000 + i * 7919).toString(16).padStart(8, '0').repeat(5).slice(0, 40) }));
+  const sums = commits.map(() => ({ totals: emptyTotals(), cost: 0 as number | null, sessions: new Set<string>() }));
+  const loose = { totals: emptyTotals(), cost: 0 as number | null };
+  for (const e of events) {
+    if (e.ts < from - gap || e.ts >= to + 1 || (e.project ?? '') !== q.project || (q.provider && e.provider !== q.provider)) continue;
+    const idx = commits.findIndex((c) => c.ts >= e.ts);
+    const claimed = idx >= 0 && e.ts > (idx === 0 ? -Infinity : commits[idx - 1].ts) && e.ts > commits[idx].ts - gap;
+    if (claimed) {
+      addInto(sums[idx].totals, e);
+      sums[idx].cost = addCost(sums[idx].cost, eventCost(e));
+      if (e.session) sums[idx].sessions.add(e.session);
+    } else if (e.ts >= from) {
+      addInto(loose.totals, e);
+      loose.cost = addCost(loose.cost, eventCost(e));
+    }
+  }
+  const finish = (totals: TokenTotals, cost: number | null): TokenTotals => ({
+    ...totals, estimatedCostUsd: totals.requests > 0 ? cost : null,
+    knownCostUsd: totals.requests > 0 ? (totals.knownCostUsd ?? 0) : null,
+  });
+  const rows: CommitRow[] = [];
+  commits.forEach((c, i) => {
+    if (c.ts < from || c.ts > to) return;
+    const start = Math.max(i === 0 ? -Infinity : commits[i - 1].ts, c.ts - gap);
+    rows.push({
+      ...finish(sums[i].totals, sums[i].cost), hash: c.hash, shortHash: c.hash.slice(0, 8), ts: new Date(c.ts).toISOString(),
+      subject: c.subject, windowStart: new Date(Number.isFinite(start) ? start : c.ts - gap).toISOString(), sessions: sums[i].sessions.size,
+    });
+  });
+  return { status: 'ok', message: null, commits: rows.reverse(), unattributed: finish(loose.totals, loose.cost), truncated: false, cached: false };
+}
+
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (['list_sessions', 'get_session_insights', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
     return (await import('./session-mock')).sessionMockInvoke(cmd, args) as Promise<T>;
@@ -1027,6 +1233,26 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
           error: null,
           fetchedAt: snapshot.generatedAt,
         })),
+        ...(settings.accounts.length > 0
+          ? {
+              accounts: settings.accounts.map((a) => ({
+                id: `${a.provider}@${a.id}`,
+                provider: a.provider as ProviderId,
+                label: a.label,
+                enabled: a.enabled,
+                configDir: a.configDir,
+                configDirFound: true,
+                credentialsFileFound: true,
+                logDir: `${a.configDir}/${a.provider === 'claude' ? 'projects' : 'sessions'}`,
+                logDirFound: true,
+                status: snapshot.providers.find((q) => q.accountId === a.id)?.status ?? null,
+                planLabel: 'Claude Pro',
+                account: 'y•••@w•••.example',
+                error: null,
+                fetchedAt: snapshot.generatedAt,
+              })),
+            }
+          : {}),
         settings: structuredClone(settings) as unknown as Record<string, unknown>,
         logDir: '~/.local/share/ai-usage-sidebar/logs',
         configDir: mockAppInfo.configDir,
@@ -1044,6 +1270,10 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return runCalendar(args?.query as CalendarQuery) as T;
     case 'get_usage_sessions':
       return runSessions(args?.query as SessionQuery) as T;
+    case 'get_routing_advice':
+      return mockRoutingAdvice() as T;
+    case 'get_project_commits':
+      return mockCommits(args?.query as CommitsQuery) as T;
     case 'get_window_usage':
       return runWindowUsage(args?.query as WindowUsageQuery) as T;
     case 'get_quota_history':
@@ -1150,8 +1380,17 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     }
     case 'get_notification_permission':
       return (mockScenario() === 'notif-denied' ? 'denied' : 'granted') as T;
-    case 'get_weekly_summary':
-      return structuredClone(mockWeeklySummary) as T;
+    case 'get_weekly_summary': {
+      const week = structuredClone(mockWeeklySummary);
+      if (settings.accounts.some((a) => a.enabled)) {
+        // per-account split, like the backend once an extra account had usage
+        week.accounts = [
+          { key: 'claude', totalTokens: 31_100_000, requests: 640, estimatedCostUsd: 26.1 },
+          ...settings.accounts.filter((a) => a.enabled).map((a, i) => ({ key: `${a.provider}@${a.id}`, totalTokens: 17_200_000 / (i + 1), requests: 272, estimatedCostUsd: 11.32 })),
+        ];
+      }
+      return week as T;
+    }
     case 'get_provider_setup': {
       const loggedOut = LOGGED_OUT_SCENARIOS.includes(mockScenario());
       const setup: ProviderSetup[] = [
@@ -1173,6 +1412,13 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
         credentialsFile: `${dir.replace(/[\/]+$/, '')}/${claude ? '.credentials.json' : 'auth.json'}`,
         keychainOnly: false,
       };
+      // macOS preview: `?mock=macos-keychain` shows the Keychain lookup of an extra Claude account
+      if (mockScenario() === 'macos-keychain' && claude && found) {
+        check.credentialsFound = false;
+        check.keychainOnly = true;
+        check.keychainService = 'Claude Code-credentials-1a2b3c4d';
+        check.keychainFound = !dir.includes('signedout');
+      }
       return check as T;
     }
     case 'pick_account_folder':
@@ -1227,6 +1473,22 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       };
       return info as T;
     }
+    case 'get_db_status': {
+      // `?mock=db-too-new` shows the banner for a database from a newer app.
+      const tooNew = mockScenario() === 'db-too-new';
+      const status: DbStatus = tooNew
+        ? { state: 'schemaTooNew', message: 'usage.db uses schema 5 and needs an app that understands schema 4 or newer', found: 5, minReader: 4, supported: 3 }
+        : { state: 'ok', message: '', found: null, minReader: null, supported: 3 };
+      return status as T;
+    }
+    case 'list_pre_upgrade_backups': {
+      const list: PreUpgradeBackup[] = [
+        { name: 'usage-pre-v2-to-v3-20261002-101500.db', path: '~/.local/share/ai-usage-sidebar/backups/usage-pre-v2-to-v3-20261002-101500.db', settingsPath: '~/.local/share/ai-usage-sidebar/backups/usage-pre-v2-to-v3-20261002-101500.settings.json', fromVersion: 2, toVersion: 3, stamp: '20261002-101500', sizeBytes: 482304 },
+      ];
+      return list as T;
+    }
+    case 'reveal_pre_upgrade_backup':
+      return undefined as T;
     case 'restart_app':
       return undefined as T;
     case 'get_monitors':

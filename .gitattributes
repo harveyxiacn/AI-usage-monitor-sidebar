@@ -1,0 +1,6 @@
+# Shell scripts and Arch/Homebrew/winget packaging files must stay LF on every
+# checkout: a CRLF PKGBUILD or .sh breaks on Linux/macOS. PowerShell scripts
+# stay CRLF for Windows PowerShell 5.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+packaging/** text eol=lf

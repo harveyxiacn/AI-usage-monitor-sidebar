@@ -8,6 +8,8 @@ pub struct SessionListQuery {
     pub to: Option<String>,
     pub provider: Option<String>,
     pub project: Option<String>,
+    /// `None` = every account; `Some("")` = the primary one; `Some("work")`.
+    pub account: Option<String>,
     pub search: Option<String>,
     pub sort: Option<String>,
     pub offset: Option<u32>,

@@ -5,6 +5,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ChangeList from './ChangeList.svelte';
+  import PreUpgradeBackups from './PreUpgradeBackups.svelte';
   import SettingsBlock from './SettingsBlock.svelte';
   import SettingsCard from './SettingsCard.svelte';
   import { exportSettings, getSettingsHistory, importSettings, restoreSettingsVersion } from '$lib/api';
@@ -126,6 +127,7 @@
       </ul>
     {/if}
   </SettingsBlock>
+  <PreUpgradeBackups />
 </SettingsCard>
 
 <style>

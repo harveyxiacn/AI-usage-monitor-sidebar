@@ -1,9 +1,9 @@
 import type { Bucket, ProviderId } from './types';
 import type { HeatMetric, HistoryPreset } from './history';
 
-/** The three History sub-views. */
-export type HistoryView = 'usage' | 'quota' | 'cost';
-export const HISTORY_VIEWS: readonly HistoryView[] = ['usage', 'quota', 'cost'];
+/** The History sub-views. */
+export type HistoryView = 'usage' | 'quota' | 'cost' | 'commits';
+export const HISTORY_VIEWS: readonly HistoryView[] = ['usage', 'quota', 'cost', 'commits'];
 
 const VIEW_STORAGE_KEY = 'ai-usage-sidebar.history.view';
 
@@ -11,6 +11,8 @@ export const historyViewState = {
   view: 'usage' as HistoryView,
   preset: '7d' as HistoryPreset, customFrom: '', customTo: '', bucket: 'day' as Bucket,
   provider: '' as ProviderId | '', groupByModel: true, groupByProject: false, project: null as string | null,
+  /** account selector: `all`, `primary` or an extra account id */
+  account: 'all',
   metric: 'tokens' as 'tokens' | 'cost', chartLayout: 'grouped' as 'grouped' | 'stacked',
   tableView: 'buckets' as 'buckets' | 'sessions', heatView: 'calendar' as 'calendar' | 'punchcard',
   heatMetric: 'tokens' as HeatMetric,
@@ -33,6 +35,9 @@ export function initialHistoryView(): HistoryView {
     try {
       const params = new URLSearchParams(window.location.search);
       const linked = params.get('view');
+      // `&project=<exact cwd>` preselects the project filter (the Commits view needs one)
+      const project = params.get('project');
+      if (params.get('tab') === 'history' && project) historyViewState.project = project;
       if (params.get('tab') === 'history' && isHistoryView(linked)) {
         historyViewState.view = linked;
         return linked;

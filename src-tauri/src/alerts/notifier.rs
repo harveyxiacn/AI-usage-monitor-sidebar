@@ -51,6 +51,8 @@ pub enum Level {
     Warn,
     Critical,
     Forecast,
+    /// "consider another provider" (`advisor::routing`)
+    Advice,
     Budget,
     Summary,
     Test,

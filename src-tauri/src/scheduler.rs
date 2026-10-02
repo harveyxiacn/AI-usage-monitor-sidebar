@@ -44,6 +44,8 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 pub fn start(app: AppHandle) {
     let dirty = Arc::new(Mutex::new(DirtyFiles::default()));
     let clocks = app.state::<AppState>().poll_clocks.clone();
+    // Extra accounts contribute their own log roots to ingestion.
+    ingest::set_accounts(&app.state::<AppState>().settings.read().accounts);
     spawn_log_watcher(dirty.clone(), clocks);
     // Budget alerts and the weekly summary run on their own slow timer.
     crate::commands::alerts::start(app.clone());
@@ -214,10 +216,17 @@ pub fn should_poll(input: &PollInput, now_ms: i64) -> bool {
 }
 
 /// An explicit refresh (tray, dashboard button, `refresh_now`) ignores the
-/// schedule and the error backoff, but not a `Retry-After`: the server told us
-/// in so many words to stop asking.
+/// schedule, the adaptive and learned stretches and the error backoff, but not
+/// a `Retry-After` (the server told us in so many words to stop asking) and not
+/// the provider's hard floor since the last request: clicking Refresh twice
+/// within two minutes must not cost a Claude `429`. The cached value stays.
 pub fn should_force_poll(input: &PollInput, now_ms: i64) -> bool {
-    now_ms >= input.retry_after_ms
+    let floor_ok = input.last_poll_ms == 0
+        || now_ms
+            >= input
+                .last_poll_ms
+                .saturating_add((input.min_interval_secs as i64).saturating_mul(1_000));
+    floor_ok && now_ms >= input.retry_after_ms
 }
 
 fn poll_input(
@@ -298,6 +307,10 @@ pub fn retain_configured_accounts(snapshot: &mut AppSnapshot, settings: &Setting
 /// re-enabled one is simply polled on the next one-second tick). Runs on the
 /// async runtime because the caller still holds the settings lock.
 pub fn accounts_changed(app: &AppHandle, settings: Settings) {
+    // The log watcher notices the new set within a couple of seconds and
+    // schedules a reconciliation of the new roots; removed accounts keep the
+    // history already stored.
+    ingest::set_accounts(&settings.accounts);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
@@ -384,6 +397,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             if skipped.contains(&id) || only.as_deref().is_some_and(|wanted| wanted != id) {
                 continue;
             }
+            clocks.record_attempt(&id, now);
             clocks.last_poll_ms.insert(id, now);
         }
     }
@@ -405,16 +419,21 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             let fetched = !skipped.contains(&key) && only.as_deref().is_none_or(|id| id == key);
             if fetched {
                 let entry = backoff.entry(key.clone()).or_default();
+                // persisted, so a restart keeps the floor even without a cache
+                entry.last_attempt_ms = now;
                 match q.status {
                     ProviderStatus::RateLimited => {
                         let wait = retry_after_secs(q, done);
                         entry.on_rate_limited(done, wait);
-                        // Once per 429, so the log can answer "how often?".
+                        // Once per 429, so the log can answer "how often?" —
+                        // and whether it was us: a handful of requests in ten
+                        // minutes means another client shares the account.
                         log::warn!(
-                            "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}",
+                            "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}; this app sent {} request(s) in the last 10 min",
                             key,
                             wait,
-                            entry.factor()
+                            entry.factor(),
+                            clocks.attempts_in_window(&key, done)
                         );
                     }
                     ProviderStatus::Error => entry.on_error(done),
@@ -645,6 +664,8 @@ fn emit_progress(app: &AppHandle, stats: &IngestStats) {
 
 /// How often the watcher thread re-checks which roots exist.
 const WATCH_RETRY: Duration = Duration::from_secs(60);
+/// How often the watcher thread looks for a changed account set.
+const ACCOUNT_POLL: Duration = Duration::from_secs(2);
 /// Minimum gap between two logged watcher errors.
 const WATCH_ERROR_LOG_MS: i64 = 300_000;
 
@@ -695,6 +716,7 @@ fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks
         use notify::{RecursiveMode, Watcher};
         use std::sync::mpsc::RecvTimeoutError;
         let mut roots = ingest::roots();
+        let mut seen_generation = ingest::accounts_generation();
         seed_activity(&roots, &clocks);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = match notify::recommended_watcher(move |res| {
@@ -740,7 +762,15 @@ fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks
                     dirty.lock().mark_overflow(store::now_ms());
                 }
             }
-            let wait = next_check.saturating_duration_since(std::time::Instant::now());
+            if ingest::accounts_generation() != seen_generation {
+                // An account was added, removed or switched: re-plan the watches now.
+                seen_generation = ingest::accounts_generation();
+                next_check = std::time::Instant::now();
+                continue;
+            }
+            let wait = next_check
+                .saturating_duration_since(std::time::Instant::now())
+                .min(ACCOUNT_POLL);
             let event = match rx.recv_timeout(wait) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout) => continue,
@@ -753,9 +783,9 @@ fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks
                         let mut guard = clocks.lock();
                         for path in &ev.paths {
                             if let Some(provider) = provider_for_path(&roots, path) {
-                                guard.last_activity_ms.insert(provider.to_string(), now);
+                                guard.last_activity_ms.insert(provider.clone(), now);
                                 if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                                    dirty.lock().enqueue(provider, path.clone(), now);
+                                    dirty.lock().enqueue(&provider, path.clone(), now);
                                 }
                             }
                         }
@@ -777,14 +807,15 @@ fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks
     });
 }
 
-/// The provider a changed file belongs to: the deepest watched root that is a
-/// prefix of `path` (Codex has both a live and an archived session root).
-fn provider_for_path<'a>(roots: &'a [ingest::Root], path: &Path) -> Option<&'a str> {
+/// The provider key (`codex`, `codex@work`) a changed file belongs to: the
+/// deepest watched root that is a prefix of `path` (Codex has both a live and
+/// an archived session root).
+fn provider_for_path(roots: &[ingest::Root], path: &Path) -> Option<String> {
     roots
         .iter()
         .filter(|root| path.starts_with(&root.path))
         .max_by_key(|root| root.path.as_os_str().len())
-        .map(|root| root.provider)
+        .map(ingest::Root::key)
 }
 
 /// Seed the activity clock from the newest session log on disk, so a cold
@@ -797,10 +828,7 @@ fn seed_activity(roots: &[ingest::Root], clocks: &Mutex<PollClocks>) {
             .max();
         if let Some(ms) = newest {
             let mut guard = clocks.lock();
-            let entry = guard
-                .last_activity_ms
-                .entry(root.provider.to_string())
-                .or_insert(ms);
+            let entry = guard.last_activity_ms.entry(root.key()).or_insert(ms);
             *entry = (*entry).max(ms);
         }
     }
@@ -991,7 +1019,7 @@ mod tests {
         let now = 1_700_000_000_000i64;
         let backed_off = PollInput {
             backoff_until_ms: now + 60_000,
-            ..input(Some(0), now)
+            ..input(Some(0), now - 600_000)
         };
         assert!(!should_poll(&backed_off, now));
         assert!(should_force_poll(&backed_off, now), "the user asked");
@@ -1007,6 +1035,29 @@ mod tests {
         );
         assert_eq!(next_poll_due_ms(&told_to_wait), now + 60_000);
         assert!(should_force_poll(&told_to_wait, now + 60_000));
+    }
+
+    #[test]
+    fn an_explicit_refresh_keeps_the_provider_floor() {
+        let now = 1_700_000_000_000i64;
+        let claude = |last| PollInput {
+            min_interval_secs: CLAUDE_MIN_INTERVAL_SEC,
+            ..input(Some(0), last)
+        };
+        assert!(
+            !should_force_poll(&claude(now - 30_000), now),
+            "30 s after the last request"
+        );
+        assert!(!should_force_poll(&claude(now - 119_000), now));
+        assert!(should_force_poll(&claude(now - 120_000), now));
+        assert!(should_force_poll(&claude(0), now), "never asked");
+        // but a learned or idle stretch never blocks the user
+        let stretched = PollInput {
+            rate_limit_factor: 8,
+            ..claude(now - 130_000)
+        };
+        assert!(!should_poll(&stretched, now));
+        assert!(should_force_poll(&stretched, now));
     }
 
     #[test]
@@ -1054,24 +1105,35 @@ mod tests {
         let roots = vec![
             ingest::Root {
                 provider: providers::CLAUDE_ID,
+                account: String::new(),
                 path: "/home/u/.claude/projects".into(),
             },
             ingest::Root {
+                provider: providers::CLAUDE_ID,
+                account: "work".into(),
+                path: "/home/u/.claude-work/projects".into(),
+            },
+            ingest::Root {
                 provider: providers::CODEX_ID,
+                account: String::new(),
                 path: "/home/u/.codex/sessions".into(),
             },
             ingest::Root {
                 provider: providers::CODEX_ID,
+                account: String::new(),
                 path: "/home/u/.codex/sessions/archived".into(),
             },
         ];
         let at = |p: &str| provider_for_path(&roots, Path::new(p));
-        assert_eq!(at("/home/u/.claude/projects/app/a.jsonl"), Some("claude"));
-        assert_eq!(at("/home/u/.codex/sessions/2026/a.jsonl"), Some("codex"));
+        let key = |p: &str| at(p).unwrap_or_default();
+        assert_eq!(key("/home/u/.claude/projects/app/a.jsonl"), "claude");
         assert_eq!(
-            at("/home/u/.codex/sessions/archived/a.jsonl"),
-            Some("codex")
+            key("/home/u/.claude-work/projects/app/a.jsonl"),
+            "claude@work",
+            "an extra account's files are filed under its own key"
         );
+        assert_eq!(key("/home/u/.codex/sessions/2026/a.jsonl"), "codex");
+        assert_eq!(key("/home/u/.codex/sessions/archived/a.jsonl"), "codex");
         assert_eq!(at("/home/u/notes/a.jsonl"), None);
     }
 

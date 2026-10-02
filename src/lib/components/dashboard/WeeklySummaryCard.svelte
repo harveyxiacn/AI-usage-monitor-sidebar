@@ -8,6 +8,9 @@
   import { getWeeklySummary } from '$lib/api';
   import { formatCost, formatInt, formatTokens } from '$lib/format';
   import { getLocale, t } from '$lib/i18n/i18n.svelte';
+  import { accountName } from '$lib/accounts';
+  import { providerDisplayName } from '$lib/providers';
+  import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import type { WeeklySummary } from '$lib/types';
 
@@ -41,6 +44,13 @@
   }
 
   const empty = $derived(summary !== null && summary.requests === 0);
+
+  /** "Claude Code · Work" for `claude@work`, plain "Claude Code" for the primary account. */
+  function accountTitle(key: string): string {
+    const at = key.indexOf('@');
+    const provider = providerDisplayName(at > 0 ? key.slice(0, at) : key);
+    return at > 0 ? `${provider} · ${accountName(settings.value.accounts, key.slice(at + 1)) ?? key.slice(at + 1)}` : provider;
+  }
 </script>
 
 {#if error}
@@ -76,6 +86,13 @@
           <dd class:hit={summary.limitsHit > 0}>{summary.limitsHit}</dd>
         </div>
       </dl>
+      {#if summary.accounts?.length}
+        <ul class="accounts" aria-label={t('week.byAccount')}>
+          {#each summary.accounts as a (a.key)}
+            <li><span>{accountTitle(a.key)}</span><span class="muted">{formatTokens(a.totalTokens)}{a.estimatedCostUsd === null ? '' : ` · ~${formatCost(a.estimatedCostUsd)}`}</span></li>
+          {/each}
+        </ul>
+      {/if}
       <p class="note muted">{t('week.note')}</p>
     {/if}
   </article>
@@ -84,6 +101,21 @@
 <style>
   .week {
     padding: 1rem;
+  }
+
+  .accounts {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.25rem;
+    font-size: 0.8125rem;
+  }
+
+  .accounts li {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
   }
 
   header {

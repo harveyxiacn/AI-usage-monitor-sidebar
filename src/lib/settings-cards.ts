@@ -4,6 +4,7 @@
 // Rune-free so `tests/settings-cards.unit.ts` can exercise it. Defaults are a
 // parameter (callers pass `defaultSettings` from `settings-defaults.ts`), so a
 // card can never reset to something other than the contract defaults.
+import { isAdvanced } from './settings-tiers';
 import type { SettingsPatch } from './settings-writer';
 import type { Settings } from './types';
 
@@ -20,7 +21,8 @@ export type CardId =
   | 'accounts'
   | 'data'
   | 'updates'
-  | 'integrations';
+  | 'integrations'
+  | 'advisor';
 
 type Key = keyof Settings;
 
@@ -42,12 +44,19 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   data: ['ingestEnabled', 'monthlyBudgetUsd', 'subscriptionUsd', 'quotaRetentionDays'],
   updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl', 'skippedVersion'],
   integrations: ['exportSnapshot', 'pollingPaused'],
+  advisor: ['advisorNotifications', 'gitAttribution'],
 };
+
+/** Every setting of the card is advanced, so the card only shows with "Show advanced settings". */
+export const cardAdvancedOnly = (card: CardId): boolean => CARD_KEYS[card].every(isAdvanced);
 
 export const CARD_IDS = Object.keys(CARD_KEYS) as CardId[];
 
-/** Keys no card resets: schema version, the deprecated mirrors, the user's presets, first-run bookkeeping. */
-export const UNRESET_KEYS: readonly Key[] = ['version', 'showScopedRing', 'showPercentLabel', 'customPresets', 'lastSeenVersion', 'onboarded'];
+/** Cards that only exist with "Show advanced settings"; the palette reveals them before jumping there. */
+export const ADVANCED_ONLY_CARDS: readonly string[] = CARD_IDS.filter(cardAdvancedOnly);
+
+/** Keys no card resets: schema version, the user's presets, first-run bookkeeping. */
+export const UNRESET_KEYS: readonly Key[] = ['version', 'customPresets', 'lastSeenVersion', 'onboarded'];
 
 /** Patch that sets each of `keys` to its default (nested groups in full). */
 export function defaultsPatch(keys: readonly Key[], defaults: Settings): SettingsPatch {

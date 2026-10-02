@@ -25,6 +25,26 @@ export function formatDiagnostics(d: Diagnostics): string {
     lines.push(`- ${p.id}: ${parts.join(', ')}`);
     if (p.error) lines.push(`    error: ${p.error}`);
   }
+  if (d.accounts?.length) {
+    lines.push('');
+    lines.push('Extra accounts:');
+    for (const a of d.accounts) {
+      const parts = [
+        a.enabled ? 'enabled' : 'disabled',
+        `status ${a.status ?? 'unknown'}`,
+        `config folder ${a.configDirFound ? 'found' : 'missing'}`,
+        `credentials file ${a.credentialsFileFound ? 'found' : 'missing'}`,
+        `log folder ${a.logDirFound ? 'found' : 'missing'}`,
+      ];
+      if (a.keychainService) parts.push(`keychain item ${a.keychainService}`);
+      if (a.planLabel) parts.push(`plan ${a.planLabel}`);
+      if (a.account) parts.push(`account ${a.account}`);
+      if (a.fetchedAt) parts.push(`fetched ${a.fetchedAt}`);
+      lines.push(`- ${a.id} (${a.label}): ${parts.join(', ')}`);
+      lines.push(`    config: ${a.configDir}`);
+      if (a.error) lines.push(`    error: ${a.error}`);
+    }
+  }
   lines.push('');
   lines.push(`Log folder: ${d.logDir}`);
   lines.push(`Config folder: ${d.configDir}`);

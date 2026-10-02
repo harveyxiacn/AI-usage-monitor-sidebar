@@ -44,17 +44,18 @@
   const perPercent = (u: CycleUsage) => u.totals && u.cycle.peak >= 1 && u.totals.totalTokens > 0
     ? formatTokens(u.totals.totalTokens / u.cycle.peak) : '—';
 
-  async function load(provider: string, list: typeof cycles) {
-    const key = JSON.stringify([provider, list.map((c) => [c.start, c.end])]);
+  async function load(provider: string, account: string, list: typeof cycles) {
+    const key = JSON.stringify([provider, account, list.map((c) => [c.start, c.end])]);
     if (key === totalsKey) return;
     totalsKey = key;
     const id = ++requestId;
-    // token logs are only ingested for the primary account
-    if (list.length === 0 || series?.account) { totals = []; return; }
+    if (list.length === 0) { totals = []; return; }
     try {
+      // the tokens of this very account ('' = the primary one)
       const result = await getWindowUsage({
         provider: provider as 'claude' | 'codex',
         windows: list.map((c) => ({ from: new Date(c.start).toISOString(), to: new Date(c.end).toISOString() })),
+        account,
       });
       if (!disposed && id === requestId) { totals = result; error = null; }
     } catch (e) {
@@ -64,9 +65,10 @@
 
   $effect(() => {
     const provider = series?.provider;
+    const account = series?.account ?? '';
     const list = cycles;
     if (!provider) return;
-    const timer = setTimeout(() => void load(provider, list), 120);
+    const timer = setTimeout(() => void load(provider, account, list), 120);
     return () => clearTimeout(timer);
   });
   onDestroy(() => { disposed = true; requestId++; });

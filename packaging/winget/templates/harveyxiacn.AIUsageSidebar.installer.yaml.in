@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+#
+# Rendered by scripts/gen-packaging.py from the published release assets;
+# InstallerSha256 is the upper-case SHA-256 of each asset.
+PackageIdentifier: harveyxiacn.AIUsageSidebar
+PackageVersion: @@VERSION@@
+MinimumOSVersion: 10.0.17763.0
+ReleaseDate: @@RELEASE_DATE@@
+Installers:
+  # NSIS, per-user (tauri.conf.json → bundle.windows.nsis.installMode)
+  - Architecture: x64
+    InstallerType: nullsoft
+    Scope: user
+    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/@@TAG@@/AI.Usage.Sidebar_@@VERSION@@_x64-setup.exe
+    InstallerSha256: @@SHA256_UPPER_NSIS@@
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+    UpgradeBehavior: install
+  # WiX/MSI, the alternative for centrally managed machines
+  - Architecture: x64
+    InstallerType: wix
+    Scope: machine
+    InstallerLocale: en-US
+    InstallerUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/@@TAG@@/AI.Usage.Sidebar_@@VERSION@@_x64_en-US.msi
+    InstallerSha256: @@SHA256_UPPER_MSI@@
+    UpgradeBehavior: install
+ManifestType: installer
+ManifestVersion: 1.6.0

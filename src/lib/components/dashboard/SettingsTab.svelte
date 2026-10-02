@@ -7,6 +7,10 @@
   narrow windows), the search box, "Reset all", and the cards in
   `./settings/`, which own their controls, their "Reset to defaults" and their
   data. A card hides itself when the search matches none of its controls.
+
+  Controls are basic or advanced (`$lib/settings-tiers`). Only the basic ones
+  show until "Show advanced settings" is switched on; a search always finds the
+  advanced ones too. The switch is per viewer (localStorage), not a setting.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -17,6 +21,7 @@
   import BehaviourCard from './settings/BehaviourCard.svelte';
   import DataCard from './settings/DataCard.svelte';
   import IntegrationsPanel from './settings/IntegrationsPanel.svelte';
+  import AdvisorSettings from './settings/AdvisorSettings.svelte';
   import NotificationsCard from './settings/NotificationsCard.svelte';
   import PositionCard from './settings/PositionCard.svelte';
   import PresetsCard from './settings/PresetsCard.svelte';
@@ -26,16 +31,19 @@
   import SizeColourCard from './settings/SizeColourCard.svelte';
   import SidebarItemsCard from './settings/SidebarItemsCard.svelte';
   import UpdatesCard from './settings/UpdatesCard.svelte';
+  import Toggle from './Toggle.svelte';
   import { t } from '$lib/i18n/i18n.svelte';
   import { resetAllPatch } from '$lib/settings-cards';
   import { SECTIONS } from '$lib/settings-sections';
   import { SettingsSearch, provideSettingsSearch } from '$lib/settings-scope.svelte';
+  import { advancedSettings } from '$lib/stores/advanced.svelte';
   import { defaultSettings, settings } from '$lib/stores/settings.svelte';
 
   const search = new SettingsSearch();
   provideSettingsSearch(search);
 
-  const shown = $derived(SECTIONS.filter((section) => !search.active || search.cards.get(section.id) !== false));
+  // a card with nothing to show (all advanced and advanced is off, or no search hit) leaves the index
+  const shown = $derived(SECTIONS.filter((section) => search.cards.get(section.id) !== false));
 
   let root = $state<HTMLElement | null>(null);
   let current = $state<string>(SECTIONS[0].id);
@@ -107,6 +115,14 @@
       {/if}
     </div>
 
+    <label class="advanced">
+      <span class="advanced-text">
+        <span>{t('settings.advanced.show')}</span>
+        <span class="advanced-hint">{t('settings.advanced.hint')}</span>
+      </span>
+      <Toggle checked={advancedSettings.on} label={t('settings.advanced.show')} onchange={(v) => advancedSettings.set(v)} />
+    </label>
+
     <nav aria-label={t('settings.nav')}>
       <ul class="index">
         {#each shown as section (section.id)}
@@ -156,6 +172,7 @@
     <AccountsCard />
     <DataCard />
     <IntegrationsPanel />
+    <AdvisorSettings />
     <UpdatesCard />
     <PrivacyCard />
     <BackupCard />
@@ -203,6 +220,27 @@
     padding: 0 0.4375rem;
     border: none;
     background: none;
+    color: var(--muted);
+  }
+
+  .advanced {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.25rem 0.625rem;
+    font-size: 0.8125rem;
+  }
+
+  .advanced-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    min-width: 0;
+  }
+
+  .advanced-hint {
+    font-size: 0.6875rem;
     color: var(--muted);
   }
 

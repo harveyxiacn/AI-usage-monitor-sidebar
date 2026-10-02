@@ -1,26 +1,35 @@
 <!--
   One settings row: label (+ hint) on the left, control on the right. [FRONTEND]
   Inside the Settings tab the row also hides itself when it does not match the
-  search box (label and hint, in the current language).
+  search box (label and hint, in the current language) and, when `advanced`,
+  until "Show advanced settings" is on or a search matches it (then it carries
+  an "advanced" badge).
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { t } from '$lib/i18n/i18n.svelte';
   import { matchesQuery } from '$lib/settings-search';
-  import { getCardScope, getSettingsSearch } from '$lib/settings-scope.svelte';
+  import { controlShown, getCardScope, getSettingsSearch } from '$lib/settings-scope.svelte';
 
   interface Props {
     label: string;
     hint?: string;
     /** stretch the control to the full row width (sliders, editors) */
     wide?: boolean;
+    /** an advanced-tier control (see `settings-tiers.ts`); a card made only of those marks all of its rows */
+    advanced?: boolean;
     children: Snippet;
   }
 
-  let { label, hint, wide = false, children }: Props = $props();
+  let { label, hint, wide = false, advanced = false, children }: Props = $props();
 
   const search = getSettingsSearch();
   const scope = getCardScope();
-  const shown = $derived(!search?.active || !!scope?.headMatches || matchesQuery(search.query, label, hint));
+  const isAdvanced = $derived(advanced || !!scope?.advanced);
+  const matches = $derived(!search?.active || !!scope?.headMatches || matchesQuery(search.query, label, hint));
+  const shown = $derived(controlShown(search, isAdvanced, matches));
+  /** revealed by the search only, so the user can tell it is normally tucked away */
+  const badge = $derived(isAdvanced && !!search && !search.showAdvanced);
   const id = Symbol('field');
   $effect(() => {
     if (!scope) return;
@@ -31,7 +40,7 @@
 
 <div class="setting-field" class:wide hidden={!shown}>
   <div class="text">
-    <span class="label">{label}</span>
+    <span class="label">{label}{#if badge} <span class="adv-badge">{t('settings.advanced.badge')}</span>{/if}</span>
     {#if hint}<span class="hint">{hint}</span>{/if}
   </div>
   <div class="control">{@render children()}</div>
@@ -64,6 +73,18 @@
 
   .label {
     color: var(--text);
+  }
+
+  .adv-badge {
+    display: inline-block;
+    margin-left: 0.25rem;
+    padding: 0 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.625rem;
+    line-height: 1.4;
+    color: var(--muted);
+    vertical-align: 0.0625rem;
   }
 
   .hint {

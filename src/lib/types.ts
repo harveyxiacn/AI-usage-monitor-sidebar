@@ -125,8 +125,12 @@ export interface AccountCheck {
   credentialsFound: boolean;
   /** the file that was looked for */
   credentialsFile: string;
-  /** macOS Claude without a credentials file: cannot be read (the login would be in the Keychain) */
+  /** macOS Claude without a credentials file: the login can only be in the Keychain item for this folder */
   keychainOnly: boolean;
+  /** macOS Claude: the Keychain service name looked up for this folder */
+  keychainService?: string | null;
+  /** that Keychain item exists (probed without reading it) */
+  keychainFound?: boolean;
 }
 
 export interface AppSnapshot {
@@ -261,8 +265,6 @@ export interface Settings {
   /** width of the visible handle when collapsed (px) */
   collapsedWidth: number;
   ringMode: RingMode;
-  /** @deprecated mirror of `sidebarItems.scoped`, kept so old settings files load */
-  showScopedRing: boolean;
   percentMode: PercentMode;
   /** `below` preserves the original label; `center` replaces the provider logo. */
   percentPosition: PercentPosition;
@@ -272,15 +274,13 @@ export interface Settings {
   ringStyle: RingStyle;
   /** one-shot pulse on threshold crossings and flash on resets */
   sidebarAnimations: boolean;
-  /** @deprecated mirror of `sidebarItems.percentLabel` */
-  showPercentLabel: boolean;
   /** what the floating bar may draw; hidden items are still tracked */
   sidebarItems: SidebarItems;
   refreshIntervalSec: number;
   /** Poll a provider less often while its session logs are quiet (10 min → ×2, 30 min → ×5, capped at 10 min) */
   adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
-  /** Extra accounts (max 6) of Claude Code / Codex; the primary account stays implicit. Quota only. */
+  /** Extra accounts (max 6) of Claude Code / Codex; the primary account stays implicit. Their quota and local usage logs are tracked per account. */
   accounts: AccountSettings[];
   ingestEnabled: boolean;
   /** Optional https source for a user-managed pricing table; empty uses the official project source. */
@@ -312,6 +312,8 @@ export interface Settings {
   notifications: boolean;
   /** warn when a window is on pace to run out before it resets */
   forecastNotifications: boolean;
+  /** suggest another provider when one is about to run out and another has room (needs `notifications`) */
+  advisorNotifications: boolean;
   /** warn when a window crosses `thresholds.warn` / `thresholds.critical` (needs `notifications`) */
   thresholdNotifications: boolean;
   /** warn when the month-to-date estimated cost reaches 80 % / 100 % of `monthlyBudgetUsd` (needs `notifications`) */
@@ -332,6 +334,8 @@ export interface Settings {
   focusHidesSidebar: boolean;
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
+  /** Task-level cost: read-only `git log` (hash, time, subject) in the recorded project folders; off = nothing is run. */
+  gitAttribution: boolean;
   /** Write snapshot.json to the app data dir after every snapshot (CLI / status bars). */
   exportSnapshot: boolean;
   /** Skip automatic provider polling (local log ingestion keeps running). */
@@ -357,6 +361,8 @@ export interface HistoryQuery {
   /** Exact cwd; null/omitted = all projects, empty string = unassigned. */
   project?: string | null;
   groupByProject?: boolean;
+  /** null/absent = every account; '' = the primary account only; else that extra account */
+  account?: string | null;
 }
 
 export interface TokenTotals {
@@ -383,6 +389,8 @@ export interface HistoryRow extends TokenTotals {
   reasoningEffort?: string | null;
   /** Exact cwd or "" for unassigned; null for aggregation across projects. */
   project: string | null;
+  /** extra account id; absent for the primary account */
+  account?: string | null;
 }
 
 export interface HistoryResult {
@@ -390,6 +398,8 @@ export interface HistoryResult {
   totals: TokenTotals;
   /** totals per provider */
   byProvider: Record<string, TokenTotals>;
+  /** totals per provider key (`claude`, `claude@work`); absent unless an extra account has events in range */
+  byAccount?: Record<string, TokenTotals>;
   /** Projects in the time/provider range, independent of the project filter. */
   projects: string[];
   /** At least one cost came from an approximate family match (§9). */
@@ -403,6 +413,8 @@ export interface CalendarQuery {
   provider: ProviderId | null;
   /** Same semantics as `HistoryQuery.project`. */
   project?: string | null;
+  /** Same semantics as `HistoryQuery.account`. */
+  account?: string | null;
 }
 
 /** One local calendar day with activity; days without events are omitted. */
@@ -432,6 +444,8 @@ export interface SessionQuery {
   provider: ProviderId | null;
   /** Same semantics as `HistoryQuery.project`. */
   project?: string | null;
+  /** Same semantics as `HistoryQuery.account`. */
+  account?: string | null;
   /** Server-side cap on the returned rows (default 200, clamped to 1..1000). */
   limit?: number | null;
 }
@@ -447,6 +461,8 @@ export interface SessionRow extends TokenTotals {
   /** Provider session id; "" groups the events that carry none. */
   sessionId: string;
   provider: ProviderId;
+  /** extra account id; absent for the primary account */
+  account?: string | null;
   /** Exact cwd of the session's last event in range; "" = unassigned. */
   project: string;
   /** RFC 3339 local, first/last event *inside* the range */
@@ -481,6 +497,8 @@ export interface QuotaHistoryQuery {
 export interface WindowUsageQuery {
   provider: ProviderId;
   windows: Array<{ from: string; to: string }>;
+  /** Same semantics as `HistoryQuery.account`. */
+  account?: string | null;
 }
 
 export interface QuotaSample {
@@ -586,6 +604,27 @@ export interface ProviderDiagnostics {
   fetchedAt: string | null;
 }
 
+/** One extra account in the diagnostics report: existence checks only. */
+export interface AccountDiagnostics {
+  /** registry key, e.g. `claude@work` */
+  id: string;
+  provider: ProviderId;
+  label: string;
+  enabled: boolean;
+  configDir: string;
+  configDirFound: boolean;
+  credentialsFileFound: boolean;
+  logDir: string;
+  logDirFound: boolean;
+  keychainService?: string | null;
+  status: ProviderStatus | null;
+  planLabel: string | null;
+  /** always masked */
+  account: string | null;
+  error: string | null;
+  fetchedAt: string | null;
+}
+
 /** What `get_diagnostics` returns: nothing secret, e-mails always masked. */
 export interface Diagnostics {
   appVersion: string;
@@ -594,6 +633,8 @@ export interface Diagnostics {
   backend: string;
   sessionType: string | null;
   providers: ProviderDiagnostics[];
+  /** every configured extra account; absent without any */
+  accounts?: AccountDiagnostics[];
   settings: Record<string, unknown>;
   logDir: string;
   configDir: string;
@@ -662,6 +703,16 @@ export interface WeeklySummary {
   busiestDayTokens: number;
   /** quota windows that reached 100 % */
   limitsHit: number;
+  /** per-account share of the totals; absent unless an extra account had usage that week */
+  accounts?: WeeklyAccount[];
+}
+
+export interface WeeklyAccount {
+  /** `claude` or `claude@work` */
+  key: string;
+  totalTokens: number;
+  requests: number;
+  estimatedCostUsd: number | null;
 }
 
 /** From `get_provider_setup`: existence checks only, no credential is read. */
@@ -711,3 +762,95 @@ export interface MonitorInfo {
 }
 
 export type DashboardTab = 'overview' | 'history' | 'sessions' | 'settings';
+
+/** Why the usage database is (not) open (get_db_status). */
+export interface DbStatus {
+  state: 'ok' | 'schemaTooNew' | 'migrationBackupFailed' | 'unavailable';
+  message: string;
+  /** schema of the file on disk (schemaTooNew) */
+  found: number | null;
+  /** oldest schema whose app can use that file (schemaTooNew) */
+  minReader: number | null;
+  /** newest schema this build understands */
+  supported: number;
+}
+
+/** An automatic backup taken before a database upgrade (list_pre_upgrade_backups). */
+export interface PreUpgradeBackup {
+  name: string;
+  path: string;
+  settingsPath: string | null;
+  fromVersion: number;
+  toVersion: number;
+  /** YYYYMMDD-HHMMSS, local time */
+  stamp: string;
+  sizeBytes: number;
+}
+
+// ---- decision support (src-tauri/src/advisor) ----
+
+/** The binding account-wide window of one provider account, with the numbers an advice is based on. */
+export interface AdvisorWindow {
+  /** `claude` or `claude@work` */
+  key: string;
+  provider: ProviderId;
+  displayName: string;
+  kind: WindowKind;
+  label: string;
+  usedPercent: number;
+  /** headroom until the next reset: 100 - used */
+  remainingPercent: number;
+  resetsInMin: number;
+  resetsAtMs: number;
+  /** minutes of safe work at the current pace (0 = full); null = no forecast */
+  safeMinutes: number | null;
+  projectedPercentAtReset: number | null;
+  confidence: ForecastConfidence | null;
+}
+
+/** From `get_routing_advice`: which provider to use next, or "no switch needed". */
+export interface RoutingAdvice {
+  kind: 'switch' | 'no_switch';
+  from: AdvisorWindow | null;
+  to: AdvisorWindow | null;
+  /** "consider `to` for the next ~N minutes" */
+  useTargetMinutes: number | null;
+  confidence: ForecastConfidence;
+  /** binding window of every provider that was considered */
+  basis: AdvisorWindow[];
+}
+
+export type CommitsStatus = 'ok' | 'disabled' | 'unknown_project' | 'not_a_repo' | 'git_missing' | 'error';
+
+export interface CommitsQuery {
+  /** exact cwd, as in the History project filter */
+  project: string;
+  from: string;
+  to: string;
+  provider?: ProviderId | null;
+  /** bypass the cached `git log` */
+  refresh?: boolean;
+}
+
+/** Usage attributed to one commit (flattened token totals). */
+export interface CommitRow extends TokenTotals {
+  hash: string;
+  shortHash: string;
+  /** committer time, RFC 3339 with the local offset */
+  ts: string;
+  subject: string;
+  /** start of the attribution interval */
+  windowStart: string;
+  sessions: number;
+}
+
+export interface CommitsResult {
+  status: CommitsStatus;
+  message: string | null;
+  /** newest first */
+  commits: CommitRow[];
+  /** usage in the range that no commit claimed */
+  unattributed: TokenTotals;
+  truncated: boolean;
+  cached: boolean;
+}

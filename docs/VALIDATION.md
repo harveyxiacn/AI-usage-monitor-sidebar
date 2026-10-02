@@ -4,6 +4,56 @@ The September 2026 stability pass covers the existing Claude/Codex sidebar,
 popover and dashboard, with native CSV export. All automated data fixtures are
 synthetic; tests do not require or print personal credentials or session logs.
 
+## Upgrade and settings-robustness harness (v0.7)
+
+Two release-day bugs in v0.6.0 (an external edit of `settings.json` brought
+back the first-run wizard; a UTF-8 BOM made the whole file invalid and the next
+start reset every setting) were not caught by CI because no test opened a file
+or database written by an *older* version. The harness in
+`src-tauri/src/upgrade_tests/` does, with fixtures in `src-tauri/tests/fixtures/`
+(provenance in its `README.md`):
+
+- `db.rs`: for each schema ever released (v0.2.2, v0.3.0, v0.5.0, v0.6.0) the
+  fixture SQL rebuilds that version's `usage.db`; `Db::open` must migrate it to
+  `SCHEMA_VERSION` keeping every row, give new columns their documented defaults
+  (`quota_samples.account = ''`), end with exactly the schema of a fresh
+  database, be idempotent when reopened, answer the current queries, and roll
+  back completely when a step fails.
+- `settings_files.rs`: for each released default file (and a fully customised
+  one) `settings::load` and `settings::reload_action` must keep every field the
+  file specifies; a table of hostile files (BOM, UTF-16, CRLF, half-written,
+  trailing garbage, empty, `null`/array root, wrong types, out-of-range numbers,
+  unknown keys, deep nesting, 2 MB, duplicate keys, missing app-owned keys)
+  checks the invariants: a bad file never replaces live settings on hot reload;
+  at start-up it falls back to defaults, is left untouched, and the next save
+  keeps a copy as `settings.json.bad-<ms>` (three newest are kept).
+  UTF-16 (what a PowerShell 5 `>` redirect writes) is decoded, not rejected.
+  `{}` is a valid file and resets preferences by design; the app-owned records
+  (`onboarded`, `lastSeenVersion`, `skippedVersion`) are kept regardless.
+
+The downgrade-safety rules (migration table, `min_reader_version`, the
+pre-migration backup and its rotation, refusing a too-new database) are unit
+tests in `store/mod.rs` and `store/compat.rs`; the `--restore-pre-upgrade`
+argument parser is tested in `cli.rs`.
+
+Run just the harness with `cargo test --locked upgrade_tests` in `src-tauri`.
+
+### When the schema or the settings change
+
+1. **Database:** if you bump `SCHEMA_VERSION` or add a table/column/index,
+   add `src-tauri/tests/fixtures/db/v<last released tag>.sql` for the version
+   *being replaced* (DDL from `git show <tag>:src-tauri/src/store/mod.rs`,
+   `sessions/store.rs`, `evaluation.rs`; a small synthetic dataset), register
+   it in `FIXTURES` in `upgrade_tests/db.rs`, and list it in the fixtures
+   README. Existing fixtures are never edited.
+2. **Settings:** if a field is added, renamed, removed or its default changes,
+   add `v<tag>-default.json` / `-customised.json` for the last released
+   version in `fixtures/settings/`, register them in `FILES`, and update the
+   expectations in `keys_added_after_a_version_load_with_their_defaults`.
+   `the_default_fixtures_still_match_todays_defaults` fails on a changed
+   default: decide whether that behaviour change is intended.
+3. Run the harness before the release PR (it is part of `cargo test`).
+
 ## v0.5.0 session analysis validation
 
 The session-analysis implementation was developed and checked on Windows x64.
@@ -70,8 +120,11 @@ not claim hands-on installation on every platform or a live paid AI evaluation.
 ```sh
 pnpm install --frozen-lockfile
 pnpm check
+pnpm check:i18n      # en / zh-CN keys and placeholders in step
+pnpm check:agents    # AGENTS.md section 5 vs settings-defaults.ts, model.rs, settings-tiers.ts
 pnpm test
 pnpm exec playwright install chromium
+pnpm test:e2e
 pnpm exec playwright test --config=tests/render.config.ts
 pnpm build
 cd src-tauri
@@ -102,6 +155,34 @@ Browser captures below use sample data, not real accounts:
 | Native geometry | Rust tests cover negative monitor origins, fractional/mixed DPI, work areas, clamping and hover timer cancellation |
 | CSV file writing | Rust tests cover portable suggestions, Unicode/BOM, replacing an existing report, and preserving it when a write fails |
 | Packaged apps | GitHub CI runs checks and builds installer artifacts on Ubuntu, macOS and Windows using locked dependencies; both workflows set `AWS_LC_SYS_PREBUILT_NASM=1` because rustls' `aws-lc-sys` aborts the Windows x86_64 build when NASM is absent |
+
+## Automated start-up and upgrade smoke tests (CI)
+
+The jobs below launch the real, freshly built application. None of them
+simulates mouse or keyboard input; they read the app's own log.
+
+| Job | Runs on | What it asserts |
+|---|---|---|
+| `Linux start-up smoke test` (`scripts/smoke-linux.sh`) | every CI run | Xvfb + private XDG home; `sidebar revealed` and `platform setup:` in the log; no `panicked` / `[ERROR]` line |
+| `Windows start-up smoke test` (`scripts/smoke-windows.ps1`) | every CI run | release exe on `windows-latest`; the same lines plus `tray menu ready` within 90 s |
+| `macOS start-up smoke test` (`scripts/smoke-macos.sh`) | every CI run | the built `.app` (shipped from the build job as a tar to keep the executable bit) on `macos-latest`; same assertions. CI has no `Claude Code-credentials` Keychain item, so no prompt can block start-up |
+| `Upgrade from <tag> (<os>)` | pull requests and manual runs only | 3 OS x {`v0.5.0`, latest release}. Installs the previous published release (Windows `*_x64-setup.exe` with `/S`, macOS `*.dmg` for the runner architecture, Linux AppImage with extract-and-run), starts it, stops it, seeds a hand-written `settings.json` (UTF-8 BOM, partial keys: `edge: left`, `autoHide: true`, `language: zh-CN`), then starts the new build on the same profile |
+
+The upgrade jobs assert, from the new build's own log only (the previous run's
+log is moved away first): the new build reveals the sidebar; the
+`platform setup:` line reports `edge=Left` and `autoHide=true` (so the BOM file
+was parsed and applied at start-up); and, for `v0.5.0`, the line
+`usage.db schema 2 -> N` (the real migration). The `latest` leg does not require
+a migration line, because it is legitimately absent when the schema did not
+change. These checks would have caught both v0.6 release bugs.
+
+First all-green run of the full set (12 jobs, including all six upgrade legs):
+[CI run 37016050751](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/actions/runs/37016050751).
+
+On failure each job uploads its logs as an artifact (`smoke-logs-*`,
+`upgrade-logs-*`, 7 days). The Windows and macOS scripts refuse to run outside
+CI unless `SMOKE_ALLOW_REAL_PROFILE=1` is set, because they use the real
+profile; `scripts/smoke-linux.sh` always uses a private one.
 
 ## Linux native smoke check
 

@@ -7,19 +7,22 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { matchesQuery } from '$lib/settings-search';
-  import { getCardScope, getSettingsSearch } from '$lib/settings-scope.svelte';
+  import { controlShown, getCardScope, getSettingsSearch } from '$lib/settings-scope.svelte';
 
   interface Props {
     /** searchable text of the block (titles, labels, hints) */
     text: string;
+    /** hidden until "Show advanced settings" is on or a search matches it */
+    advanced?: boolean;
     children: Snippet;
   }
 
-  let { text, children }: Props = $props();
+  let { text, advanced = false, children }: Props = $props();
 
   const search = getSettingsSearch();
   const scope = getCardScope();
-  const shown = $derived(!search?.active || !!scope?.headMatches || matchesQuery(search.query, text));
+  const matches = $derived(!search?.active || !!scope?.headMatches || matchesQuery(search.query, text));
+  const shown = $derived(controlShown(search, advanced || !!scope?.advanced, matches));
   const id = Symbol('block');
   $effect(() => {
     if (!scope) return;

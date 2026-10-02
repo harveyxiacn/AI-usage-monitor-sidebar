@@ -5,6 +5,7 @@
   import SettingsCard from './SettingsCard.svelte';
   import { reingestLogs } from '$lib/api';
   import { t } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { providerDisplayName } from '$lib/providers';
   import { planPriceHint } from '$lib/subscription';
   import { settings } from '$lib/stores/settings.svelte';
@@ -54,7 +55,7 @@
     />
   </Field>
 
-  <Field label={t('settings.quotaRetentionDays')} hint={t('settings.quotaRetentionHint')}>
+  <Field advanced={isAdvanced('quotaRetentionDays')} label={t('settings.quotaRetentionDays')} hint={t('settings.quotaRetentionHint')}>
     <input
       class="field num"
       type="number"
@@ -71,6 +72,7 @@
     {@const quota = snapshot.value?.providers.find((p) => p.provider === id)}
     {@const suggestion = planPriceHint(id, quota?.planLabel ?? quota?.plan)}
     <Field
+      advanced={isAdvanced('subscriptionUsd')}
       label={t('settings.subscriptionUsd', { provider: providerDisplayName(id) })}
       hint={t('settings.subscriptionHint') + (suggestion ? ' ' + t('settings.subscriptionSuggest', { price: '$' + suggestion }) : '')}
     >
@@ -87,7 +89,7 @@
     </Field>
   {/each}
 
-  <Field label={t('history.rescan')}>
+  <Field advanced={isAdvanced('quotaRetentionDays')} label={t('history.rescan')}>
     <button class="btn" disabled={rescanning} onclick={() => void rescan()}>
       {rescanning ? t('history.ingestRunning') : t('history.rescan')}
     </button>

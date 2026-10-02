@@ -2,7 +2,10 @@
 //!
 //! Credentials come from `$CLAUDE_CONFIG_DIR/.credentials.json` (default
 //! `~/.claude/.credentials.json`); on macOS the same JSON lives in the Keychain
-//! under the service name `Claude Code-credentials`.
+//! under the service name `Claude Code-credentials`. For an extra account (a
+//! non-default `CLAUDE_CONFIG_DIR`) the file is tried first and then, on macOS,
+//! the Keychain item `Claude Code-credentials-<first 8 hex of sha256(dir)>`
+//! (see [`keychain_service_for`] for the sources and their limits).
 
 use super::{
     clamp_percent, degraded, empty_quota, mark_primary, normalize_rfc3339, now_rfc3339,
@@ -126,29 +129,156 @@ pub fn log_root() -> Option<PathBuf> {
     config_dir().map(|d| d.join("projects"))
 }
 
+/// `<configDir>/projects` of an extra account.
+pub fn log_root_in(dir: &Path) -> PathBuf {
+    dir.join("projects")
+}
+
 /// Credentials file of an extra account's config dir.
 pub fn credentials_path_in(dir: &Path) -> PathBuf {
     dir.join(".credentials.json")
 }
 
-/// Credentials of an extra account: its `<dir>/.credentials.json` only.
-///
-/// The macOS Keychain is deliberately not consulted. Claude Code files the
-/// login of a non-default `CLAUDE_CONFIG_DIR` under a *different* Keychain
-/// service name, and which one could not be verified (only the default
-/// `Claude Code-credentials` is documented), so guessing it would risk
-/// reading the primary account's token for the wrong account.
+/// Credentials of an extra account: `<dir>/.credentials.json`, else (macOS
+/// only) the Keychain item Claude Code files for that config dir. Never the
+/// primary account's item `Claude Code-credentials`, so a missing login can
+/// not be answered with another account's token.
 pub fn load_credentials_from(dir: &Path) -> Option<Credentials> {
-    let text = std::fs::read_to_string(credentials_path_in(dir)).ok()?;
+    let text = match std::fs::read_to_string(credentials_path_in(dir)) {
+        Ok(t) => t,
+        Err(_) => keychain_credentials_for_dir(dir)?,
+    };
     parse_credentials(&text)
+}
+
+/// SHA-256 (FIPS 180-4), lower-case hex. Only used to derive a Keychain
+/// service name, so no new dependency is pulled in for it.
+pub fn sha256_hex(data: &[u8]) -> String {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for start in (0..msg.len()).step_by(64) {
+        let mut w = [0u32; 64];
+        for (i, slot) in w.iter_mut().take(16).enumerate() {
+            let o = start + i * 4;
+            *slot = u32::from_be_bytes([msg[o], msg[o + 1], msg[o + 2], msg[o + 3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ (!e & g);
+            let t1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+        for (slot, v) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *slot = slot.wrapping_add(v);
+        }
+    }
+    h.iter().map(|v| format!("{v:08x}")).collect()
+}
+
+/// Keychain service name Claude Code uses on macOS for the login of the
+/// non-default `CLAUDE_CONFIG_DIR` `dir`: `Claude Code-credentials-` plus the
+/// first 8 hex digits of the SHA-256 of the directory string.
+///
+/// **Source and confidence.** Anthropic documents only the default item
+/// (`Claude Code-credentials`); the suffix rule is what independent tools
+/// reverse-engineered from Claude Code (openusage #423, ccdm #69, the VS Code
+/// usage extension #38, cc-donut #84; see docs/PROVIDERS.md §5). They agree
+/// on the format but not on every detail, so this is a best effort: the
+/// directory string is hashed exactly as given (the settings path, which the
+/// user types as they would set `CLAUDE_CONFIG_DIR`; no `realpath`, and no
+/// NFC normalisation, so a path with non-ASCII characters may not match).
+/// A wrong guess finds no item and the account simply falls back to its
+/// credentials file; it can never read another account's item, because the
+/// name always carries the hash of *this* directory.
+pub fn keychain_service_for(dir: &Path) -> String {
+    format!(
+        "{KEYCHAIN_SERVICE}-{}",
+        &sha256_hex(dir.to_string_lossy().as_bytes())[..8]
+    )
+}
+
+/// Service names to try for `dir`: the exact string, then the same without
+/// trailing separators (a path pasted with a trailing `/`).
+fn keychain_services_for(dir: &Path) -> Vec<String> {
+    let exact = keychain_service_for(dir);
+    let raw = dir.to_string_lossy();
+    let trimmed = raw.trim_end_matches(['/', '\\']);
+    let mut out = vec![exact];
+    if !trimmed.is_empty() && trimmed != raw {
+        let alt = keychain_service_for(Path::new(trimmed));
+        if !out.contains(&alt) {
+            out.push(alt);
+        }
+    }
+    out
+}
+
+/// The Keychain item's JSON for an extra account, macOS only.
+fn keychain_credentials_for_dir(dir: &Path) -> Option<String> {
+    keychain_services_for(dir)
+        .iter()
+        .find_map(|service| keychain_credentials_of(service))
+}
+
+/// Whether the Keychain holds an item for `dir` (attributes only: no secret
+/// is requested, so macOS shows no access prompt). Always `false` elsewhere.
+pub fn keychain_item_exists_for_dir(dir: &Path) -> bool {
+    keychain_services_for(dir)
+        .iter()
+        .any(|service| keychain_item_exists(service))
 }
 
 /// Why an extra account has no usable login, for the status line.
 pub fn account_login_hint(dir: &Path, macos: bool) -> String {
     if macos && !credentials_path_in(dir).is_file() {
         return format!(
-            "No credentials file in {} — on macOS an extra Claude account is only supported \
-             when `.credentials.json` exists there (Claude Code keeps its login in the Keychain)",
+            "No login found for {} — no credentials file and no Keychain item `{}`. Run \
+             `CLAUDE_CONFIG_DIR={} claude` and sign in with /login",
+            dir.display(),
+            keychain_service_for(dir),
             dir.display()
         );
     }
@@ -183,25 +313,43 @@ fn read_credentials_text() -> Option<String> {
 #[cfg(target_os = "macos")]
 const KEYCHAIN_TTL: Duration = Duration::from_secs(120);
 
+/// Answers per Keychain service name (the primary item and each extra
+/// account's own).
 #[cfg(target_os = "macos")]
-static KEYCHAIN_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+static KEYCHAIN_CACHE: Mutex<Vec<(String, Instant, Option<String>)>> = Mutex::new(Vec::new());
 
 #[cfg(target_os = "macos")]
 fn keychain_credentials() -> Option<String> {
-    if let Some((at, cached)) = KEYCHAIN_CACHE.lock().as_ref() {
+    keychain_credentials_of(KEYCHAIN_SERVICE)
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_credentials_of(service: &str) -> Option<String> {
+    if let Some((_, at, cached)) = KEYCHAIN_CACHE.lock().iter().find(|(s, _, _)| s == service) {
         if at.elapsed() < KEYCHAIN_TTL {
             return cached.clone();
         }
     }
-    let fresh = read_keychain_item();
-    *KEYCHAIN_CACHE.lock() = Some((Instant::now(), fresh.clone()));
+    let fresh = read_keychain_item(service);
+    let mut cache = KEYCHAIN_CACHE.lock();
+    cache.retain(|(s, _, _)| s != service);
+    cache.push((service.to_string(), Instant::now(), fresh.clone()));
     fresh
 }
 
 #[cfg(target_os = "macos")]
-fn read_keychain_item() -> Option<String> {
+fn keychain_item_exists(service: &str) -> bool {
+    std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn read_keychain_item(service: &str) -> Option<String> {
     let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -221,12 +369,22 @@ fn keychain_credentials() -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "macos"))]
+fn keychain_credentials_of(_service: &str) -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_item_exists(_service: &str) -> bool {
+    false
+}
+
 /// Drop any cached Keychain answer so the next read sees a token that
 /// `claude` has just refreshed. A no-op off macOS.
 pub fn forget_cached_credentials() {
     #[cfg(target_os = "macos")]
     {
-        *KEYCHAIN_CACHE.lock() = None;
+        KEYCHAIN_CACHE.lock().clear();
     }
 }
 
@@ -644,11 +802,9 @@ impl ClaudeProvider {
         }
     }
 
-    /// The Keychain cache only exists for the primary account.
+    /// Drop cached Keychain answers (a no-op off macOS).
     fn forget(&self) {
-        if self.ctx.account.is_none() {
-            forget_cached_credentials();
-        }
+        forget_cached_credentials();
     }
 
     async fn fetch_primary_or_account(&self, http: &reqwest::Client) -> ProviderQuota {
@@ -1096,11 +1252,49 @@ mod tests {
         assert!(hint.contains("CLAUDE_CONFIG_DIR=") && hint.contains("/login"));
         std::fs::remove_file(credentials_path_in(&dir)).unwrap();
         let mac = account_login_hint(&dir, true);
-        assert!(mac.contains("macOS") && mac.contains(".credentials.json"));
+        assert!(mac.contains("Keychain item `Claude Code-credentials-") && mac.contains("/login"));
         // with the file present macOS gives the normal sign-in hint
         std::fs::write(credentials_path_in(&dir), "{}").unwrap();
-        assert!(!account_login_hint(&dir, true).contains("macOS"));
+        assert!(!account_login_hint(&dir, true).contains("Keychain"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sha256_matches_the_published_test_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // two blocks (the 56-byte NIST vector pads into a second block)
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    #[test]
+    fn an_extra_account_keychain_service_is_derived_from_its_own_directory() {
+        let a = keychain_service_for(Path::new("/home/u/.claude-work"));
+        let b = keychain_service_for(Path::new("/home/u/.claude-home"));
+        assert_ne!(a, b, "every config dir has its own item");
+        assert_ne!(a, KEYCHAIN_SERVICE, "never the primary account's item");
+        assert!(a.starts_with("Claude Code-credentials-"));
+        assert_eq!(a.len(), KEYCHAIN_SERVICE.len() + 1 + 8);
+        assert!(a[KEYCHAIN_SERVICE.len() + 1..]
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit()));
+        // a pasted trailing slash is tried as typed and without
+        let tries = keychain_services_for(Path::new("/home/u/.claude-work/"));
+        assert_eq!(tries.len(), 2);
+        assert_eq!(tries[1], a);
+        assert_eq!(
+            keychain_services_for(Path::new("/home/u/.claude-work")).len(),
+            1
+        );
     }
 
     #[tokio::test]

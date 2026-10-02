@@ -164,8 +164,9 @@ Details and mapping: **docs/PROVIDERS.md §4**.
 The primary account of each provider is implicit; extra accounts come from
 `Settings.accounts` (at most 6). Each is its own provider instance addressed by
 the registry key `claude@work` (`model::split_key`), with its own cache, backoff and
-poll clock; Claude's 120 s floor applies per account. Extra accounts are quota
-only. See **docs/PROVIDERS.md §5**.
+poll clock; Claude's 120 s floor applies per account. Their local logs are
+ingested from their own roots and tagged with the account (schema v4, §8).
+See **docs/PROVIDERS.md §5**.
 
 ## 3. Repository layout & ownership
 
@@ -182,6 +183,8 @@ src/                      SvelteKit frontend                     [FRONTEND]
   lib/components/         Ring.svelte, MiniBar.svelte, Popover.svelte, dashboard/ (tabs, history/, sessions/, settings/ cards), ...
   lib/builtin-presets.json built-in presets, shared with the tray (Rust include)
   lib/providers.ts        provider-agnostic frontend helpers      [FRONTEND]
+  lib/settings-tiers.ts   basic / advanced / internal tier of every setting (docs/SETTINGS-AUDIT.md)  [FRONTEND]
+  lib/plan-advisor.ts     plan advisor: upgrade / downgrade / keep from quota cycles (pure, unit-tested)  [FRONTEND]
 src-tauri/
   src/lib.rs, main.rs     builder wiring, plugins, invoke_handler list; main.rs also handles `--print` first [PLATFORM]
   src/cli.rs              `ai-usage-sidebar --print`: reads snapshot.json, prints, exits (no window)  [BACKEND]
@@ -198,25 +201,28 @@ src-tauri/
   src/settings_io.rs      export / import / history / restore commands  [BACKEND]
   src/diagnostics.rs      get_diagnostics, open_folder (redacted)  [BACKEND]
   src/accounts.rs         extra-account commands (check_account_dir, pick_account_folder)  [BACKEND]
+  src/advisor/            decision support: routing.rs (cross-provider routing advice, pure over the snapshot), git.rs (opt-in commit attribution), mod.rs (get_routing_advice, get_project_commits)  [BACKEND]
   src/onboarding.rs       get_provider_setup (existence checks only)  [BACKEND]
   src/providers/          claude.rs, codex.rs, copilot.rs, openrouter.rs, mod.rs (trait, registry, retry, cache) [BACKEND]
   src/alerts/             mod.rs (timer, once-only state), threshold.rs, predictive.rs, budget.rs, summary.rs, notifier.rs (native + webhook, focus gate) [BACKEND]
   src/focus.rs            focus / do-not-disturb helpers around focusUntil [BACKEND]
   src/forecast.rs         quota projection, token-rate fallback, backtest [BACKEND]
   src/ingest/             jsonl parsers, incremental ingestion     [BACKEND]
-  src/store/              sqlite schema (v3) + queries, retention   [BACKEND]
+  src/store/              sqlite schema (v4) + queries, retention; mod.rs (MIGRATIONS), compat.rs (min_reader policy, pre-migration backups), quota.rs, usage.rs, windows.rs   [BACKEND]
+  src/upgrade_tests/      test-only: every released DB schema migrated by current code, every released settings file and a table of hostile ones (db.rs, settings_files.rs)  [BACKEND]
   src/sessions/           session index, queries, insights.rs (aggregate analytics) [BACKEND]
   src/evaluation.rs       opt-in AI assessment, redaction          [BACKEND]
   src/pricing.rs          default pricing table + cost estimation [BACKEND]
   src/export.rs           CSV save, share-card PNG save            [BACKEND]
   src/export_snapshot.rs  snapshot.json writer (schema 1)          [BACKEND]
-  src/backup.rs           backup / staged restore / restart        [BACKEND]
+  src/backup.rs           backup / staged restore / restart, db status, pre-upgrade backup commands  [BACKEND]
   src/scheduler.rs        periodic refresh + ingest + maintenance, emits events  [BACKEND]
   src/updater.rs          in-app update check, never auto-installs [PLATFORM]
   tauri.conf.json, capabilities/, icons/                          [PLATFORM]
-docs/                     this file, PLATFORM.md, PROVIDERS.md, SESSIONS.md, STATUSLINE.md, PERFORMANCE.md, reference images
-scripts/                  check-i18n.mjs, check-agents-settings.mjs, install-linux.sh, smoke-linux.sh
-.github/workflows/        CI builds for linux/macos/windows        [PLATFORM]
+docs/                     this file, PLATFORM.md, PROVIDERS.md, SESSIONS.md, STATUSLINE.md, PERFORMANCE.md, VALIDATION.md, RELEASING.md, SETTINGS-AUDIT.md, devlog/, releases/, reference images
+packaging/                winget / Homebrew / Scoop / AUR manifest templates (rendered by scripts/gen-packaging.py)
+scripts/                  check-i18n.mjs, check-agents-settings.mjs, install-linux.sh, smoke-linux.sh, smoke-macos.sh, smoke-windows.ps1, gen-packaging.py
+.github/workflows/        ci.yml (checks, builds, launch and upgrade smoke), release.yml (bundles, optional signing), distribute.yml (package-manager manifests)  [PLATFORM]
 ```
 
 Rules for parallel work:
@@ -301,6 +307,13 @@ Key semantics:
   empty string selects events whose `cwd` is null or empty, and any other
   string matches the original working-directory path exactly. Paths are
   not trimmed, canonicalized or case-folded across platforms.
+* `HistoryQuery`, `CalendarQuery`, `SessionQuery`, `WindowUsageQuery` and
+  `SessionListQuery` take an optional `account` (absent = every account, `""` =
+  the primary account only, `"work"` = that extra account). `HistoryRow` and
+  `SessionRow` carry `account` and `HistoryResult` carries `byAccount` only for
+  extra accounts, so results without extra accounts are unchanged.
+  `Diagnostics.accounts` lists every extra account (omitted when none).
+  `WeeklySummary.accounts` splits the week per account (omitted likewise).
 * `HistoryQuery.groupByProject` defaults to false and combines with
   `groupByModel`. `HistoryRow.project` is the original path (or an empty
   string for unassigned events) when grouped or filtered by project; null
@@ -378,6 +391,8 @@ without a row, or a row without a registration, is a documentation bug).
 |---|---|---|
 | `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
 | `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
+| `get_routing_advice` | – | `RoutingAdvice \| null`: from the in-memory snapshot only, "consider provider B for the next ~N min" (or "no switch needed") with the numbers it rests on and a confidence; `null` = nothing worth saying. Rules and thresholds: `src-tauri/src/advisor/routing.rs` |
+| `get_project_commits` | `query: CommitsQuery` (`project` = exact recorded cwd, `from`, `to`, `provider?`, `refresh?`) | `CommitsResult`: commits of one project with attributed tokens / estimated cost / sessions. Opt-in (`gitAttribution`); runs a read-only `git log` (hash, time, subject) only for a cwd that is in `usage_events` and inside a git repo. Heuristic and limits: `src-tauri/src/advisor/git.rs` |
 | `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
 | `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
 
@@ -393,7 +408,7 @@ webhook. Once-only bookkeeping for budget and summary lives in
 ### Account commands — `src-tauri/src/accounts.rs`
 | command | args | returns |
 |---|---|---|
-| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account; contents are never read) |
+| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account, plus on macOS Claude the Keychain service name and whether that item exists; contents are never read) |
 | `pick_account_folder` | – | `string \| null` (native folder dialog) |
 
 ### Export, sharing and backup — `export.rs`, `backup.rs`
@@ -404,6 +419,9 @@ webhook. Once-only bookkeeping for budget and summary lives in
 | `backup_data` | `dest?: string` | `string \| null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
 | `restore_data` | `src?: string` | `BackupInfo \| null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
 | `restart_app` | – | – (relaunches the app) |
+| `get_db_status` | – | `DbStatus` (`state`: `ok` / `schemaTooNew` / `migrationBackupFailed` / `unavailable`, plus `message`, `found`, `minReader`, `supported`; §8.1) |
+| `list_pre_upgrade_backups` | – | `PreUpgradeBackup[]` (newest first; the automatic backups in `<data dir>/backups/`) |
+| `reveal_pre_upgrade_backup` | `name: string` | – (shows that listed file in the file manager) |
 
 ### Sessions and evaluation commands — `src-tauri/src/sessions/`, `evaluation.rs`
 Semantics, limits and privacy rules are in §11; the contract is the signature.
@@ -510,6 +528,24 @@ as a whole by a patch, invalid entries dropped by `settings::clamp`), `onboarded
 already exists without the key counts as onboarded).
 
 
+### Tiers, loading and unreadable files
+
+Every setting has a tier in `src/lib/settings-tiers.ts` (`basic`, `advanced`,
+`internal`; currently 22 / 32 / 5 of the 59 keys) that decides only what the
+Settings tab shows by default; the file accepts every key whatever its tier
+(AGENTS.md §5 has the Tier column, docs/SETTINGS-AUDIT.md the reasoning). The
+removed mirror keys `showScopedRing` / `showPercentLabel` are still read
+(`migrate_legacy_keys` in Rust, `normalizePatch` in TS) into `sidebarItems` and
+never written.
+
+`settings::load` decodes the file as UTF-8 (BOM stripped) or UTF-16 (BOM), then
+merges field by field over the defaults and clamps. A file that is missing or
+unusable (not text, not valid JSON, not a JSON object) yields the defaults for
+that start; a hot reload of such a file is ignored. The unusable file is not
+deleted: before the next save `preserve_unusable` copies it to
+`settings.json.bad-<ms>` (newest 3 kept; a blank file gets no copy). `onboarded`
+is only honoured as a boolean (a valid file without one counts as onboarded at start-up). The test harness is `upgrade_tests/` (§3).
+
 ### Undo ring (`settings.history.json`)
 
 Before every settings write that changes something, the version it replaces is
@@ -591,13 +627,15 @@ Rules, implemented in `src/lib/sidebar-items.ts` and unit-tested in
   anyway (whatever `moreButton` says), so the bar stays hoverable, draggable
   and never measures zero.
 
-`showScopedRing` and `showPercentLabel` are **deprecated** aliases of
-`sidebarItems.scoped` / `sidebarItems.percentLabel`. `settings.rs` migrates an
-old file into the nested object on load and keeps writing both (the nested
-value wins when a patch carries both spellings). Writing both was chosen over
-dropping the flat keys because it costs two lines and keeps hand-written
-settings files, older builds and downgrades working; nothing in the UI reads
-the flat fields any more.
+`showScopedRing` and `showPercentLabel` (v0.6 and earlier) were top-level
+spellings of `sidebarItems.scoped` / `sidebarItems.percentLabel`. Since 0.7
+they are no longer part of `Settings`: `settings::migrate_legacy_keys` reads
+them from any patch or settings file as the nested member (the nested value wins
+when both are present) and drops the flat key, so they are never written back
+(`settings-writer.ts` `normalizePatch` applies the same rule to previews and
+saved presets). Consequence for downgrades: a 0.6 build opening a file written
+by 0.7 sees the defaults for those two flags; the nested object it also reads
+carries the user's choice, so only a hand-edited flat key is lost.
 
 `cyberAccent="neon"`, `hideAccountEmail=false` and `monthlyBudgetUsd=0` (no budget
 line on the History tab) complete the defaults, together with
@@ -659,12 +697,19 @@ tested:
   the limit.
 * **gates** — the exponential error backoff (cap 5 min) and, for a `429`, the
   server's `Retry-After` (delta-seconds or HTTP-date, clamped to 30 s–1 h,
-  default 5 min). An explicit refresh ignores the schedule and the error
-  backoff but still honours `Retry-After`.
+  default 5 min). An explicit refresh ignores the schedule, both stretches
+  and the error backoff, but still honours `Retry-After` **and the provider
+  floor since the last request** (so pressing Refresh twice within 120 s
+  shows the cached Claude value instead of earning a `429`).
 
-The learned multiplier and both gates are persisted in
-`<data_dir>/cache/poll-state.json`, and the cached snapshot's `fetchedAt`
-counts as the last poll, so restarting the app does not produce a burst of requests.
+The learned multiplier, both gates and the time of the last request
+(`lastAttemptMs`, successful or not) are persisted in
+`<data_dir>/cache/poll-state.json`; at start-up the later of that and the
+cached snapshot's `fetchedAt` counts as the last poll, so restarting the app
+does not produce a burst of requests. Each `429` is logged with the number of
+requests this process sent to that account in the last 10 minutes: a small
+number means another client (Claude Code itself, another monitor) shares the
+account's budget.
 
 ### Resilience (`scheduler.rs`, `providers/`)
 
@@ -756,8 +801,11 @@ CREATE TABLE usage_events (
   cache_write_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0, session_id TEXT, request_id TEXT NOT NULL,
-  cwd TEXT, source_file TEXT, reasoning_effort TEXT, UNIQUE(provider, request_id));
+  cwd TEXT, source_file TEXT, reasoning_effort TEXT,
+  account TEXT NOT NULL DEFAULT '',   -- v4: '' = primary account
+  UNIQUE(provider, request_id));
 CREATE INDEX idx_usage_ts ON usage_events(ts);
+CREATE INDEX idx_usage_account_ts ON usage_events(provider, account, ts);
 CREATE TABLE quota_samples (
   id INTEGER PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT,
   used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT, ts INTEGER NOT NULL,
@@ -782,9 +830,19 @@ version marker. Every function of `store/quota.rs` takes the registry key
 (`claude`, `claude@work`) and splits it: sample throttling, `window_samples*`
 (the forecast input), the history query, the retention thinning partition and
 the weekly "limits hit" grouping are all per account. A database written by v3
-cannot be opened by an older build (`unsupported database schema 3`).
-`usage_events` and the session tables are **not** per account (extra accounts
-are quota only).
+cannot be opened by v0.5 or older (`unsupported database schema 3`), see §8.1.
+Schema v4 (complete multi-account, v0.7) adds `usage_events.account TEXT NOT
+NULL DEFAULT ''` and `idx_usage_account_ts(provider, account, ts)`; additive, so
+`min_reader` stays 2 (a build that knows schema 3 and the `min_reader` rule could open it and would see extra accounts'
+events as primary ones; the shipped v0.5 / v0.6 refuse it outright, §8.1). `UNIQUE(provider, request_id)` is
+unchanged: extra accounts' rows use the scoped request id
+`<account>\u{1f}<id>`, primary rows keep the provider's id. `ingest::roots()`
+returns primary roots then those of each enabled `settings.accounts` entry
+(`Root{provider, account, path}`, key `claude@work`); `ingest::set_accounts`
+is fed on startup and on every settings change and wakes the log watcher, whose
+`DirtyFiles` queue and activity clocks are keyed by that provider key. Sessions:
+`session_metadata.account` (guarded `ALTER`), other session tables unchanged.
+Details, money rules and the removal policy: **docs/PROVIDERS.md §5**.
 
 Ingestion is incremental (remember byte offset per file; if the file shrank or
 was rewritten without growth, re-parse from 0). File modification times are
@@ -831,6 +889,7 @@ raw reasoning effort and model variants.
 |---|---|---|
 | `settings.json` | config | the settings (watched; atomic writes) |
 | `settings.history.json` | config | undo ring, 5 versions (§7) |
+| `settings.json.bad-<ms>` | config | copy of an unreadable `settings.json`, made before the app's next save; newest 3 kept (§7) |
 | `analysis-settings.json` | config | AI-assessment settings (§11) |
 | `pricing.json` | config | the user's saved price table, when any |
 | `usage.db` | data | SQLite database above (WAL) |
@@ -838,11 +897,69 @@ raw reasoning effort and model variants.
 | `alerts-state.json` | data | once-only bookkeeping for budget and weekly-summary alerts |
 | `cache/quota-<provider>[@<account>].json`, `cache/poll-state.json` | data | last-good quota per provider/account; learned poll multiplier and gates |
 | `pricing-remote.json` | data | cached source price table |
+| `backups/` | data | automatic pre-upgrade backups (`usage-pre-v<from>-to-v<to>-<ts>.db` + `.settings.json`), newest 3 (§8.1) |
 | `restore-pending/`, `pre-restore/` | data | a staged backup restore, applied before the database opens at the next start; the replaced files (`backup::apply_pending`) |
 
 The data directory is the local app-data folder, except on Windows where an
 existing `usage.db` in the roaming folder keeps it there (`state::pick_data_dir`).
 The CLI `--print` computes the same directory without Tauri.
+
+### 8.1 Compatibility and downgrade safety (`store/compat.rs`)
+
+`meta.schema_version` is what the file *is*; `meta.min_reader_version` is the
+oldest schema whose code can safely read **and write** it. Migrations are the
+`MIGRATIONS` table in `store/mod.rs` (each step: target version, its
+`min_reader`, an idempotent apply function). The file's `min_reader_version`
+only ever rises.
+
+- Additive change (new nullable/defaulted column, new table, new index):
+  `schema_version` goes up, `min_reader` stays.
+- Breaking change (drop/rename, changed meaning, rewritten table):
+  `min_reader` becomes the new version.
+
+On open, for a build that understands schema `S`:
+
+| database | result |
+|---|---|
+| `schema_version < S` (or no file) | back up (below), migrate, stamp both keys |
+| `== S` | open |
+| `> S` and `min_reader <= S` | open as is; never lowers the number, never touches the newer columns |
+| `> S` and `min_reader > S` | refuse with `SchemaTooNew`; `AppState.db` is `None` |
+
+A missing `min_reader_version` (all databases written before v0.7) means "equal
+to `schema_version`". A refused database is not an app failure: quota polling,
+the rings, `snapshot.json` and `--print` do not use the database; History,
+cost, sessions and budgets report "usage database is unavailable", and the
+dashboard shows a banner from `get_db_status` (state `schemaTooNew`,
+`migrationBackupFailed` or `unavailable`) that names the schema needed and the
+backups. The file itself is never modified.
+
+History: v0.5 (schema 2) and v0.6 (schema 3) refuse any newer version number
+outright (`unsupported database schema N`) and know nothing of
+`min_reader_version`. The policy therefore protects downgrades *from v0.7 on*;
+a v0.6 -> v0.5 downgrade stays impossible without a backup. Schema 2 -> 3 was
+additive, so its `min_reader` is 2.
+
+**Pre-migration backup.** Before the first migration step, `VACUUM INTO
+<data dir>/backups/usage-pre-v<from>-to-v<to>-<YYYYMMDD-HHMMSS>.db` writes a
+consistent copy, plus `<same stem>.settings.json` (a copy of `settings.json`).
+The newest 3 pairs are kept. A brand-new database is not backed up. If the
+backup cannot be written (full disk, no permission) the migration is **aborted**:
+the database stays at its old version, the app runs without it, and the banner
+says why; the cause is also in the log. A full disk is deliberately not exempt,
+since a migration that cannot copy the file will not fare better in place.
+`AI_USAGE_SIDEBAR_SKIP_MIGRATION_BACKUP=1` skips the backup for people who accept
+that risk.
+
+**Going back.** `ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]`
+(handled in `cli.rs` before Tauri starts) lists the backups or stages one (the
+newest by default) through the same `restore-pending/` mechanism as `restore_data`
+(`backup::stage_files`); the staged files are swapped in at the next start of a
+build that has `apply_pending` (v0.6+), which keeps the replaced files in
+`pre-restore/`. Starting the *newer* build instead restores and then migrates
+forward again. Settings -> Backup & history lists the backups with "Reveal in folder".
+Commands: `get_db_status`, `list_pre_upgrade_backups`,
+`reveal_pre_upgrade_backup(name)`.
 
 ## 9. Cost estimation
 
@@ -967,3 +1084,52 @@ file rewrites invalidate checkpoints. A dirty-path queue handles ordinary update
 with periodic full reconciliation. Usage query results use a bounded generation
 and pricing-aware cache. Browser mock and dashboard panels load lazily; chart
 instances update in place, history tables paginate and hidden views reduce polling.
+
+## 12. Decision support (v0.7)
+
+Advice built from data the app already has. Every statement is an estimate
+that names its evidence, none claims a billing fact, and nothing is read, run
+or sent unless the user opened the view or switched the setting on. The code
+constants are authoritative; the numbers below mirror them.
+
+**Routing advice** (`src-tauri/src/advisor/routing.rs`, command
+`get_routing_advice`, optional notification `advisorNotifications`). A pure
+function over the in-memory snapshot and its forecasts.
+
+* *Candidates*: enabled, status `ok`, fetched at most 30 min ago
+  (`MAX_AGE_MS`), with an account-wide window (no `scope`) and a future reset.
+* *Source* (constrained): an account-wide window already at 100 %
+  (confidence `high`), or a forecast that runs out before its reset within
+  3 h (`SOURCE_HORIZON_MS`) at confidence `medium` or better. The least time
+  left wins.
+* *Target*: another candidate of `claude` or `codex` only (Copilot and
+  OpenRouter are never recommended), with at least 30 % remaining
+  (`MIN_TARGET_REMAINING`) in every account-wide window and no projected
+  run-out sooner than `max(2 x the source's time left, 60 min)`
+  (`TARGET_SAFE_FACTOR`, `MIN_TARGET_SAFE_MS`). The most headroom in its
+  binding window wins.
+* *Confidence* is the lower of the two sides; `low` yields no advice.
+  "For the next ~N h" is capped at 24 h (`MAX_DURATION_MS`).
+* The notification needs `notifications` and `advisorNotifications`, and fires
+  once per `from|to` pair and source reset period.
+
+**Plan advisor** (`src/lib/plan-advisor.ts`, shown in the History cost view).
+Only completed, reliable quota cycles of the account-wide windows count.
+
+| Verdict | Condition |
+|---|---|
+| insufficient | fewer than 3 weekly cycles (`MIN_WEEKLY_CYCLES`) **and** fewer than 12 five-hour cycles (`MIN_FIVE_HOUR_CYCLES`) |
+| upgrade | weekly limit reached in at least 2 cycles and at least 25 % of them, or the five-hour limit in at least 4 cycles and at least 20 % of them |
+| downgrade | no limit reached in any counted cycle, weekly median <= 40 % and peak <= 70 %, five-hour median <= 40 % and peak <= 80 % (each only when those cycles are numerous enough), a lower tier is known, and the API-equivalent monthly cost is below 2x the plan price |
+| keep | everything else |
+
+Tier ladders (Claude Pro / Max 5x / Max 20x, Codex Plus / Pro) and their prices
+are hints from the plan label, never billing data.
+
+**Commit cost** (`src-tauri/src/advisor/git.rs`, command
+`get_project_commits`, History -> Commits, setting `gitAttribution`, default
+off). Runs one read-only `git --no-pager log --no-merges -n 500` (hash,
+committer time, subject) with a 10 s timeout, only in a directory recorded in
+`usage_events.cwd` that sits inside a git repository. Tokens between two
+commits go to the later commit, reaching back at most 6 h; the rest is
+reported as unattributed. Results are cached 5 min.

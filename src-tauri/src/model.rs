@@ -400,15 +400,15 @@ pub struct SidebarItems {
     pub five_hour: bool,
     /// account-wide weekly windows
     pub weekly: bool,
-    /// per-model / per-feature windows (any window with a `scope`); replaces
-    /// the deprecated top-level `showScopedRing`
+    /// per-model / per-feature windows (any window with a `scope`); older
+    /// files spelled this top-level `showScopedRing` (still read, never written)
     pub scoped: bool,
     /// account-wide windows that are neither 5-hour nor weekly
     pub other: bool,
     /// provider mark in the middle of a ring group
     pub logo: bool,
-    /// percent under a ring group; replaces the deprecated top-level
-    /// `showPercentLabel`
+    /// percent under a ring group; older files spelled this top-level
+    /// `showPercentLabel` (still read, never written)
     pub percent_label: bool,
     /// the "⋯" button (a grip is still drawn when nothing else is left)
     pub more_button: bool,
@@ -469,6 +469,21 @@ pub struct WeeklySummary {
     pub busiest_day_tokens: i64,
     /// Quota windows (per provider/kind/scope/cycle) that reached 100 %.
     pub limits_hit: u32,
+    /// Per-account share of the totals above; empty (and omitted) unless an
+    /// extra account had usage that week.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<WeeklyAccount>,
+}
+
+/// One account's slice of a [`WeeklySummary`] (`key` is `claude` or
+/// `claude@work`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyAccount {
+    pub key: String,
+    pub total_tokens: i64,
+    pub requests: i64,
+    pub estimated_cost_usd: Option<f64>,
 }
 
 /// Existence check of a prospective extra account's folder (Accounts card).
@@ -483,9 +498,15 @@ pub struct AccountCheck {
     pub credentials_found: bool,
     /// Which file was looked for.
     pub credentials_file: String,
-    /// macOS Claude: no credentials file, so this account cannot be read
-    /// (its login would be in the Keychain, which is not consulted).
+    /// macOS Claude: no credentials file, so the login can only be in the
+    /// Keychain item Claude Code files for that folder.
     pub keychain_only: bool,
+    /// macOS Claude: the Keychain service name looked up for that folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keychain_service: Option<String>,
+    /// That Keychain item exists (probed without reading the secret).
+    #[serde(default)]
+    pub keychain_found: bool,
 }
 
 /// Where a provider's CLI stands on this machine; no credential is read.
@@ -587,9 +608,6 @@ pub struct Settings {
     pub popover_timeout_sec: u64,
     pub collapsed_width: u32,
     pub ring_mode: RingMode,
-    /// Deprecated, mirrors `sidebar_items.scoped` (kept so older builds and
-    /// hand-written settings files keep working).
-    pub show_scoped_ring: bool,
     pub percent_mode: PercentMode,
     /// Render the percentage below the ring (legacy layout) or in its center.
     #[serde(default)]
@@ -603,8 +621,6 @@ pub struct Settings {
     /// One-shot pulse / flash on threshold crossings and resets.
     #[serde(default = "default_true")]
     pub sidebar_animations: bool,
-    /// Deprecated, mirrors `sidebar_items.percent_label`.
-    pub show_percent_label: bool,
     pub sidebar_items: SidebarItems,
     pub refresh_interval_sec: u64,
     /// Stretch the polling period for providers whose session logs have been
@@ -652,6 +668,9 @@ pub struct Settings {
     pub notifications: bool,
     /// Warn when a window is on pace to run out before it resets.
     pub forecast_notifications: bool,
+    /// Suggest a switch to another provider when one is about to run out and
+    /// another has room (see `advisor::routing`). Needs `notifications`.
+    pub advisor_notifications: bool,
     /// Warn when a window crosses `thresholds.warn` / `thresholds.critical`.
     pub threshold_notifications: bool,
     /// Warn when the month-to-date estimated cost reaches 80 % / 100 % of
@@ -675,6 +694,10 @@ pub struct Settings {
     pub focus_hides_sidebar: bool,
     /// Mask account e-mails everywhere they render (screen sharing).
     pub hide_account_email: bool,
+    /// Task-level cost: run a read-only `git log` (hash, time, subject only) in
+    /// the project folders the usage log recorded and attribute usage to
+    /// commits (see `advisor::git`). Off = nothing is read or run.
+    pub git_attribution: bool,
     /// After every snapshot, write `snapshot.json` into the app data dir for
     /// scripts, status bars and `--print` (see `export_snapshot.rs`).
     pub export_snapshot: bool,
@@ -724,13 +747,11 @@ impl Default for Settings {
             popover_timeout_sec: 10,
             collapsed_width: 6,
             ring_mode: RingMode::Concentric,
-            show_scoped_ring: true,
             percent_mode: PercentMode::Used,
             percent_position: PercentPosition::default(),
             label_content: LabelContent::default(),
             ring_style: RingStyle::default(),
             sidebar_animations: true,
-            show_percent_label: true,
             sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
             adaptive_refresh: true,
@@ -760,6 +781,7 @@ impl Default for Settings {
             sizes: SizeSettings::default(),
             notifications: false,
             forecast_notifications: true,
+            advisor_notifications: false,
             threshold_notifications: true,
             budget_notifications: true,
             weekly_summary: false,
@@ -770,6 +792,7 @@ impl Default for Settings {
             focus_until: 0,
             focus_hides_sidebar: false,
             hide_account_email: false,
+            git_attribution: false,
             export_snapshot: false,
             polling_paused: false,
             tray_display: TrayDisplay::default(),
@@ -805,6 +828,10 @@ pub struct HistoryQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub group_by_project: bool,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Token usage of one provider inside each of several time windows (quota
@@ -814,6 +841,10 @@ pub struct HistoryQuery {
 pub struct WindowUsageQuery {
     pub provider: String,
     pub windows: Vec<TimeWindow>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -854,6 +885,10 @@ pub struct HistoryRow {
     /// None only for cross-project aggregation; empty means unassigned.
     #[serde(default)]
     pub project: Option<String>,
+    /// Extra account id; absent for the primary account (so a database with
+    /// no extra accounts serialises exactly as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     #[serde(flatten)]
     pub totals: TokenTotals,
 }
@@ -864,6 +899,10 @@ pub struct HistoryResult {
     pub rows: Vec<HistoryRow>,
     pub totals: TokenTotals,
     pub by_provider: BTreeMap<String, TokenTotals>,
+    /// Totals per provider key (`claude`, `claude@work`); only filled when an
+    /// extra account has events in range.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_account: BTreeMap<String, TokenTotals>,
     /// Projects in the selected time/provider range, before project filtering.
     #[serde(default)]
     pub projects: Vec<String>,
@@ -884,6 +923,10 @@ pub struct CalendarQuery {
     /// Same semantics as `HistoryQuery::project`.
     #[serde(default)]
     pub project: Option<String>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// One local calendar day with activity. Days without events are omitted.
@@ -929,6 +972,10 @@ pub struct SessionQuery {
     /// Server-side cap on the returned rows (default 200, clamped to 1..=1000).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Counters and identifiers only — never prompt or response text.
@@ -947,6 +994,9 @@ pub struct SessionRow {
     /// Provider session id; an empty string groups events that carry none.
     pub session_id: String,
     pub provider: String,
+    /// Extra account id; absent for the primary account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// Exact cwd of the session's last event in range; empty = unassigned.
     pub project: String,
     /// RFC 3339 with the local offset, first/last event **inside the range**.

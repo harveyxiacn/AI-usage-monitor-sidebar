@@ -11,9 +11,10 @@ pub mod codex;
 
 use crate::commands::providers;
 use crate::commands::store::{now_ms, Db, IngestFile, UsageEvent};
-use crate::model::IngestStats;
+use crate::model::{AccountSettings, IngestStats};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Events are inserted in batches of this size to keep transactions short.
@@ -101,25 +102,105 @@ fn anchors(path: &Path, offset: u64) -> Result<(u64, u64)> {
     Ok((head.finish(), tail.finish()))
 }
 
-/// A log root together with the provider it belongs to.
+/// A log root together with the provider (and extra account) it belongs to.
 pub struct Root {
     pub provider: &'static str,
+    /// Extra account id; empty = the primary account.
+    pub account: String,
     pub path: PathBuf,
 }
 
-/// Every log directory that exists on this machine.
+impl Root {
+    /// `claude` or `claude@work`: the key events, watcher batches and the
+    /// adaptive-poll clocks are filed under.
+    pub fn key(&self) -> String {
+        crate::model::provider_key(self.provider, Some(&self.account))
+    }
+}
+
+/// Extra accounts whose logs are ingested (`settings.accounts`), kept here so
+/// the watcher thread and the ingestion pass see them without a settings
+/// handle. Updated by [`set_accounts`].
+static ACCOUNTS: parking_lot::RwLock<Vec<AccountSettings>> = parking_lot::RwLock::new(Vec::new());
+/// Bumped whenever [`ACCOUNTS`] changes; the watcher polls it to re-plan its
+/// watches without waiting for its periodic check.
+static ACCOUNTS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Tell ingestion which extra accounts are configured. Only enabled accounts
+/// of a provider with account support contribute roots. Returns `true` when
+/// the set changed.
+pub fn set_accounts(accounts: &[AccountSettings]) -> bool {
+    let wanted: Vec<AccountSettings> = accounts.iter().filter(|a| a.enabled).cloned().collect();
+    let mut current = ACCOUNTS.write();
+    if *current == wanted {
+        return false;
+    }
+    *current = wanted;
+    ACCOUNTS_GENERATION.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
+/// Changes with every effective [`set_accounts`].
+pub fn accounts_generation() -> u64 {
+    ACCOUNTS_GENERATION.load(Ordering::Acquire)
+}
+
+/// Every log directory that exists on this machine: the primary accounts'
+/// first, then those of each enabled extra account (a path already listed is
+/// never listed twice, so an extra account pointing at the default config dir
+/// cannot double-count the primary one).
 pub fn roots() -> Vec<Root> {
-    let mut out = Vec::new();
-    let mut push = |provider: &'static str, path: Option<PathBuf>| {
+    roots_for(&ACCOUNTS.read())
+}
+
+fn roots_for(accounts: &[AccountSettings]) -> Vec<Root> {
+    let mut out: Vec<Root> = Vec::new();
+    let mut push = |provider: &'static str, account: &str, path: Option<PathBuf>| {
         if let Some(p) = path {
-            if p.is_dir() {
-                out.push(Root { provider, path: p });
+            if p.is_dir() && !out.iter().any(|r| r.path == p) {
+                out.push(Root {
+                    provider,
+                    account: account.to_string(),
+                    path: p,
+                });
             }
         }
     };
-    push(providers::CLAUDE_ID, providers::claude::log_root());
-    push(providers::CODEX_ID, providers::codex::log_root());
-    push(providers::CODEX_ID, providers::codex::archived_log_root());
+    push(providers::CLAUDE_ID, "", providers::claude::log_root());
+    push(providers::CODEX_ID, "", providers::codex::log_root());
+    push(
+        providers::CODEX_ID,
+        "",
+        providers::codex::archived_log_root(),
+    );
+    for a in accounts.iter().filter(|a| a.enabled) {
+        let dir = Path::new(&a.config_dir);
+        if !dir.is_absolute() {
+            continue;
+        }
+        match a.provider.as_str() {
+            providers::CLAUDE_ID => {
+                push(
+                    providers::CLAUDE_ID,
+                    &a.id,
+                    Some(providers::claude::log_root_in(dir)),
+                );
+            }
+            providers::CODEX_ID => {
+                push(
+                    providers::CODEX_ID,
+                    &a.id,
+                    Some(providers::codex::log_root_in(dir)),
+                );
+                push(
+                    providers::CODEX_ID,
+                    &a.id,
+                    Some(providers::codex::archived_log_root_in(dir)),
+                );
+            }
+            _ => {}
+        }
+    }
     out
 }
 
@@ -181,13 +262,13 @@ pub fn run(db: &Db, full: bool) -> IngestStats {
             if let Some(parent) = root.path.parent() {
                 let index = parent.join("session_index.jsonl");
                 if index.is_file() {
-                    if let Err(e) = crate::sessions::index_codex_titles(db, &index) {
+                    if let Err(e) = crate::sessions::index_codex_titles(db, &root.key(), &index) {
                         log::debug!("session title index: {e:#}");
                     }
                 }
             }
         }
-        ingest_root(db, root.provider, &root.path, &mut stats);
+        ingest_root(db, &root.key(), &root.path, &mut stats);
     }
     stats.duration_ms = started.elapsed().as_millis() as u64;
     stats.running = false;
@@ -196,6 +277,7 @@ pub fn run(db: &Db, full: bool) -> IngestStats {
 
 /// A watcher batch never walks unrelated session directories. The periodic
 /// reconciliation remains responsible for missed notifications and new roots.
+/// The first element of each pair is the provider key (`claude`, `claude@work`).
 pub fn run_paths(db: &Db, paths: &[(String, PathBuf)]) -> IngestStats {
     let started = Instant::now();
     let mut stats = IngestStats::default();
@@ -219,7 +301,8 @@ pub fn run_paths(db: &Db, paths: &[(String, PathBuf)]) -> IngestStats {
     stats
 }
 
-/// Ingest one directory tree, accumulating into `stats`.
+/// Ingest one directory tree, accumulating into `stats`. `provider` is the
+/// provider key (`claude`, `claude@work`).
 pub fn ingest_root(db: &Db, provider: &str, root: &Path, stats: &mut IngestStats) {
     for path in session_files(root) {
         stats.files_scanned += 1;
@@ -240,14 +323,18 @@ pub fn ingest_root(db: &Db, provider: &str, root: &Path, stats: &mut IngestStats
     }
 }
 
-/// Ingest a single file; returns the number of newly stored events.
+/// Ingest a single file; returns the number of newly stored events. `key` is
+/// the provider key: `claude` for the primary account, `claude@work` for an
+/// extra one, whose events are tagged with that account and get a scoped
+/// dedupe id.
 ///
 /// A file whose size *and* mtime are unchanged since the last pass is skipped
 /// without opening it.
-pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
+pub fn ingest_one(db: &Db, key: &str, path: &Path) -> Result<u64> {
+    let (provider, account) = crate::model::split_key(key);
     // The metadata index has its own checkpoint, so an existing usage-only
     // database gets session backfill even when all usage files are unchanged.
-    if let Err(error) = crate::sessions::index_file(db, provider, path) {
+    if let Err(error) = crate::sessions::index_file(db, key, path) {
         // Analysis indexing must not make the existing quota history unavailable.
         log::warn!(
             "session metadata index failed for {}: {error:#}",
@@ -262,10 +349,10 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
         .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
-    let key = path.display().to_string();
-    let previous = db.get_ingest_file(&key)?;
+    let file_key = path.display().to_string();
+    let previous = db.get_ingest_file(&file_key)?;
     let saved = db
-        .ingest_checkpoint(&key)?
+        .ingest_checkpoint(&file_key)?
         .and_then(|json| serde_json::from_str::<FileCheckpoint>(&json).ok())
         .filter(|c| {
             c.version == 1
@@ -307,14 +394,20 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
             break;
         }
         let events = if provider == providers::CODEX_ID {
-            let chunk = codex::parse_chunk(&text, stem, &key, offset, &mut parser);
+            let chunk = codex::parse_chunk(&text, stem, &file_key, offset, &mut parser);
             // Even old DBs with no saved mode converge during the one-time replay.
-            db.reconcile_codex_legacy(&key, &chunk.legacy_ids, parser.modern)?;
+            let legacy: Vec<String> = chunk
+                .legacy_ids
+                .iter()
+                .map(|id| crate::commands::store::usage::scoped_request_id(account, id))
+                .collect();
+            db.reconcile_codex_legacy(&file_key, &legacy, parser.modern)?;
             parser.offset = next;
             chunk.events
         } else {
-            claude::parse_chunk(&text, &key)
+            claude::parse_chunk(&text, &file_key)
         };
+        let events = tag_account(events, account);
         for chunk in events.chunks(BATCH) {
             added += crate::commands::store::insert_usage_events(db, chunk)?;
         }
@@ -322,7 +415,7 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
     }
     let (head, tail) = anchors(path, offset)?;
     db.save_ingest_checkpoint(
-        &key,
+        &file_key,
         &serde_json::to_string(&FileCheckpoint {
             version: 1,
             offset,
@@ -333,7 +426,7 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
         })?,
     )?;
     db.upsert_ingest_file(&IngestFile {
-        path: key,
+        path: file_key,
         provider: provider.to_string(),
         size,
         mtime,
@@ -341,6 +434,19 @@ pub fn ingest_one(db: &Db, provider: &str, path: &Path) -> Result<u64> {
         last_ingested_at: now_ms(),
     })?;
     Ok(added)
+}
+
+/// Stamp `account` on freshly parsed events and scope their dedupe ids. A
+/// no-op for the primary account (`""`), so its rows are exactly what they
+/// were before extra accounts could be ingested.
+fn tag_account(mut events: Vec<UsageEvent>, account: &str) -> Vec<UsageEvent> {
+    if !account.is_empty() {
+        for e in &mut events {
+            e.request_id = crate::commands::store::usage::scoped_request_id(account, &e.request_id);
+            e.account = account.to_string();
+        }
+    }
+    events
 }
 
 #[cfg(test)]
@@ -466,6 +572,136 @@ mod tests {
         assert_eq!(second, codex_record("valid"));
         assert_eq!(end, std::fs::metadata(&path).unwrap().len());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn claude_line(request: &str, tokens: i64) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"requestId\":\"{request}\",\"timestamp\":\"2026-09-15T02:20:47.002Z\",\"sessionId\":\"sess\",\"cwd\":\"/p\",\"message\":{{\"id\":\"msg_{request}\",\"model\":\"claude-opus-5\",\"usage\":{{\"input_tokens\":{tokens},\"output_tokens\":1}}}}}}\n"
+        )
+    }
+
+    #[test]
+    fn two_accounts_with_the_same_request_id_do_not_collide() {
+        use crate::commands::store::usage::count_events;
+        let dir = tempdir();
+        let primary = dir.join("primary.jsonl");
+        let work = dir.join("work.jsonl");
+        // the very same request id appears in both logins' logs
+        std::fs::write(&primary, claude_line("req_1", 10)).unwrap();
+        std::fs::write(&work, claude_line("req_1", 30)).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(ingest_one(&db, "claude", &primary).unwrap(), 1);
+        assert_eq!(ingest_one(&db, "claude@work", &work).unwrap(), 1);
+        assert_eq!(count_events(&db).unwrap(), 2);
+
+        let rows: Vec<(String, String, i64)> = {
+            let conn = db.lock();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT account, request_id, total_tokens FROM usage_events ORDER BY account",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            rows
+        };
+        assert_eq!(rows[0].0, "", "the primary account is untagged");
+        assert!(
+            !rows[0].1.contains('\u{1f}'),
+            "a primary request id is exactly the provider's own"
+        );
+        assert_eq!(rows[1].0, "work");
+        assert!(rows[1].1.starts_with("work\u{1f}"), "{:?}", rows[1].1);
+        assert_eq!((rows[0].2, rows[1].2), (11, 31));
+
+        // idempotent: nothing is added or double counted on a second pass
+        std::fs::write(
+            &work,
+            format!("{}{}", claude_line("req_1", 30), claude_line("req_2", 5)),
+        )
+        .unwrap();
+        assert_eq!(ingest_one(&db, "claude@work", &work).unwrap(), 1);
+        assert_eq!(ingest_one(&db, "claude@work", &work).unwrap(), 0);
+        assert_eq!(count_events(&db).unwrap(), 3);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn extra_accounts_add_their_own_roots_after_the_primary_ones() {
+        let dir = tempdir();
+        let claude_dir = dir.join("claude-work");
+        let codex_dir = dir.join("codex-work");
+        std::fs::create_dir_all(claude_dir.join("projects")).unwrap();
+        std::fs::create_dir_all(codex_dir.join("sessions")).unwrap();
+        std::fs::create_dir_all(codex_dir.join("archived_sessions")).unwrap();
+        let account = |id: &str, provider: &str, dir: &Path, enabled: bool| AccountSettings {
+            id: id.into(),
+            provider: provider.into(),
+            label: id.into(),
+            config_dir: dir.display().to_string(),
+            enabled,
+        };
+        let accounts = [
+            account("work", "claude", &claude_dir, true),
+            account("lab", "codex", &codex_dir, true),
+            account("off", "claude", &dir.join("nowhere"), false),
+            account("gone", "claude", &dir.join("nowhere"), true),
+        ];
+        let extra: Vec<(String, PathBuf)> = roots_for(&accounts)
+            .into_iter()
+            .filter(|r| !r.account.is_empty())
+            .map(|r| (r.key(), r.path))
+            .collect();
+        assert_eq!(
+            extra,
+            vec![
+                ("claude@work".to_string(), claude_dir.join("projects")),
+                ("codex@lab".to_string(), codex_dir.join("sessions")),
+                ("codex@lab".to_string(), codex_dir.join("archived_sessions")),
+            ],
+            "disabled and missing folders contribute nothing"
+        );
+        // no extra accounts: only primary roots, exactly as before
+        assert!(roots_for(&[]).iter().all(|r| r.account.is_empty()));
+        // an extra account that points at an already listed folder is not listed twice
+        let same = roots_for(&[account("dup", "claude", &claude_dir, true)]);
+        let once = same
+            .iter()
+            .filter(|r| r.path == claude_dir.join("projects"))
+            .count();
+        assert_eq!(once, 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn changing_the_account_set_bumps_the_generation_once_per_change() {
+        // a folder that does not exist contributes no root, so this global
+        // state cannot disturb the other tests
+        let ghost = AccountSettings {
+            id: "ghost".into(),
+            provider: "claude".into(),
+            label: "Ghost".into(),
+            config_dir: std::env::temp_dir()
+                .join("ai-usage-sidebar-no-such-dir")
+                .display()
+                .to_string(),
+            enabled: true,
+        };
+        let start = accounts_generation();
+        assert!(!set_accounts(&[]), "nothing configured, nothing changes");
+        assert_eq!(accounts_generation(), start);
+        assert!(set_accounts(std::slice::from_ref(&ghost)));
+        assert_eq!(accounts_generation(), start + 1);
+        assert!(!set_accounts(std::slice::from_ref(&ghost)), "same set");
+        let off = AccountSettings {
+            enabled: false,
+            ..ghost
+        };
+        assert!(set_accounts(&[off]), "a disabled account leaves the set");
+        assert_eq!(accounts_generation(), start + 2);
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! scheduler::refresh ──► alerts::on_snapshot ─┬─ threshold  (warn / critical crossings)
-//!                                             └─ predictive (on pace to run out)
+//!                                             ├─ predictive (on pace to run out)
+//!                                             └─ advisor    (another provider has room; opt-in)
 //! alerts::start loop ──► budget  (80 % / 100 % of monthlyBudgetUsd)
 //!                    └─► summary (Monday ~09:00, last week)
 //!                                  │
@@ -14,7 +15,8 @@
 //! Gates, applied in one place (`notifier::channels_for`): the `notifications`
 //! master switch, then focus mode, which silences **every** channel. Each
 //! alert type has its own toggle on top (`thresholdNotifications`,
-//! `forecastNotifications`, `budgetNotifications`, `weeklySummary`).
+//! `forecastNotifications`, `advisorNotifications`, `budgetNotifications`,
+//! `weeklySummary`).
 //!
 //! The scheduler only calls [`on_snapshot`]; [`start`] runs the two
 //! time-driven checks (budget, weekly summary) on their own slow timer.
@@ -182,6 +184,24 @@ fn snapshot_alerts(
                                 .for_window(&provider_key, &window_name(w, chinese)),
                         );
                     }
+                }
+            }
+        }
+    }
+    if settings.notifications && settings.advisor_notifications {
+        if let Some(advice) = crate::commands::advisor::routing::advise(snapshot, settings, now_ms)
+        {
+            use crate::commands::advisor::routing;
+            if advice.kind == routing::RoutingKind::Switch
+                && routing::claim_notification(&advice, now_ms)
+            {
+                if let (Some((title, body)), Some(from)) =
+                    (routing::alert_text(&advice, chinese), advice.from.as_ref())
+                {
+                    out.push(
+                        Alert::new(notifier::Level::Advice, title, body)
+                            .for_window(&from.key, &from.label),
+                    );
                 }
             }
         }
@@ -446,5 +466,46 @@ mod tests {
         let alerts = snapshot_alerts(&mut st, &both(primary(95.0), work(96.0)), &s, 0, false);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].provider.as_deref(), Some("alerts-test-acct"));
+    }
+
+    #[test]
+    fn advisor_alert_follows_its_toggle_and_fires_once_per_reset() {
+        use crate::model::{ForecastConfidence, QuotaForecast};
+        let now = 1_789_430_400_000i64;
+        let iso = |ms: i64| crate::commands::providers::rfc3339_from_unix_ms(ms).unwrap();
+        let mut hot = quota("claude", 92.0, &iso(now + 2 * 3_600_000));
+        hot.fetched_at = iso(now - 60_000);
+        hot.windows[0].forecast = Some(QuotaForecast {
+            projected_percent_at_reset: 150.0,
+            exhausts_at: Some(iso(now + 25 * 60_000)),
+            rate_percent_per_hour: 30.0,
+            confidence: ForecastConfidence::High,
+        });
+        let mut roomy = quota("codex", 10.0, &iso(now + 4 * 3_600_000));
+        roomy.display_name = "Codex".into();
+        roomy.fetched_at = iso(now - 60_000);
+        let both = AppSnapshot {
+            providers: vec![hot, roomy],
+            ..AppSnapshot::default()
+        };
+        let mut s = Settings {
+            notifications: true,
+            threshold_notifications: false,
+            forecast_notifications: false,
+            ..Settings::default()
+        };
+        let mut st = threshold::ThresholdState::default();
+        // off by default
+        assert!(snapshot_alerts(&mut st, &both, &s, now, false).is_empty());
+        s.advisor_notifications = true;
+        let alerts = snapshot_alerts(&mut st, &both, &s, now, false);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].level, notifier::Level::Advice);
+        assert!(alerts[0].title.contains("Codex"), "{}", alerts[0].title);
+        // the next refresh of the same situation stays quiet
+        assert!(snapshot_alerts(&mut st, &both, &s, now + 60_000, false).is_empty());
+        // and the master switch still wins
+        s.notifications = false;
+        assert!(snapshot_alerts(&mut st, &both, &s, now + 120_000, false).is_empty());
     }
 }

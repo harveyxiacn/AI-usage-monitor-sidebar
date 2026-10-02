@@ -4,6 +4,9 @@
   import { formatDuration, formatEstimatedCost, formatTokens } from '$lib/format';
   import { localDateInput, modelVariantLabel, projectName, sessionModelVariants } from '$lib/history';
   import { providerDisplayName } from '$lib/providers';
+  import { accountChoices, accountFilterOf, accountName, accountQuery } from '$lib/accounts';
+  import { settings } from '$lib/stores/settings.svelte';
+  import { t } from '$lib/i18n/i18n.svelte';
   import { st } from '$lib/session-labels.svelte';
   import type { AnalysisSettings as Config, SessionDetail, SessionListQuery, SessionListResult, SessionSummary } from '$lib/session-types';
   import { analysisDefaults, mergeMessagePages, pageBounds, sessionIdentity } from '$lib/sessions';
@@ -18,6 +21,9 @@
   const initial = { ...sessionViewState.query };
   let query = $state<SessionListQuery>({ ...initial });
   let search = $state(initial.search ?? ''), provider = $state(initial.provider ?? ''), project = $state(initial.project ?? '');
+  /** `all`, `primary` or an extra account id; the selector exists once an extra account does */
+  let account = $state(initial.account === undefined || initial.account === null ? 'all' : accountFilterOf(initial.account));
+  const accountOptions = $derived(accountChoices(settings.value.accounts, account === 'all' || account === 'primary' ? [] : [account]));
   let from = $state(initial.from ? localDateInput(Date.parse(initial.from)) : ''), to = $state(initial.to ? localDateInput(Date.parse(initial.to) - 1) : '');
   let sort = $state<NonNullable<SessionListQuery['sort']>>(initial.sort ?? 'recent');
   let result = $state<SessionListResult | null>(null), detail = $state<SessionDetail | null>(null);
@@ -94,6 +100,8 @@
     const end = to ? new Date(`${to}T00:00:00`) : null;
     if (end) end.setDate(end.getDate() + 1);
     query = { search: search.trim(), provider: provider || null, project: project.trim() || null, sort, offset: 0, limit: 25,
+      // the key only exists for a chosen account, so a plain query is what it always was
+      ...(account === 'all' ? {} : { account: accountQuery(account) }),
       from: from ? new Date(`${from}T00:00:00`).toISOString() : null, to: end?.toISOString() ?? null };
   }
   /** Insights rows open the same detail pane the list uses. */
@@ -170,9 +178,15 @@
     <input class="field search" aria-label={st('search')} placeholder={st('search')} bind:value={search} />
     <select class="field" aria-label={st('all')} bind:value={provider}><option value="">{st('all')}</option><option value="claude">{providerDisplayName('claude')}</option><option value="codex">{providerDisplayName('codex')}</option></select>
     <select class="field" aria-label={st('recent')} bind:value={sort} disabled={view === 'insights'}><option value="recent">{st('recent')}</option><option value="tokens">{st('tokens')}</option><option value="title">{st('name')}</option></select>
+    {#if accountOptions.length > 0}
+      <select class="field" aria-label={t('history.account')} bind:value={account}>
+        <option value="all">{t('history.quota.account.all')}</option><option value="primary">{t('history.quota.account.primary')}</option>
+        {#each accountOptions as a (a.id)}<option value={a.id}>{a.label}</option>{/each}
+      </select>
+    {/if}
     <input class="field project-filter" aria-label={st('project')} placeholder={st('project')} bind:value={project} />
     <label>{st('from')}<input class="field" type="date" bind:value={from} max={to || undefined} /></label><label>{st('to')}<input class="field" type="date" bind:value={to} min={from || undefined} /></label>
-    <button class="btn" type="submit">{st('apply')}</button><button class="btn" type="button" onclick={() => { search = ''; provider = ''; project = ''; from = ''; to = ''; sort = 'recent'; apply(); }}>{st('reset')}</button>
+    <button class="btn" type="submit">{st('apply')}</button><button class="btn" type="button" onclick={() => { search = ''; provider = ''; project = ''; account = 'all'; from = ''; to = ''; sort = 'recent'; apply(); }}>{st('reset')}</button>
   </form>
   {#if error}<p class="error" role="alert">{error} <button class="btn" onclick={() => void loadList()}>{st('retry')}</button></p>{/if}
   {#if view === 'insights'}
@@ -182,13 +196,13 @@
   <div class="workspace">
     <aside class="card list-panel" aria-label={st('title')} aria-busy={listLoading}>
       <div class="list-heading"><span>{bounds.first}–{bounds.last} / {result?.total ?? 0}</span><button class="link" onclick={() => void loadList()} disabled={listLoading}>{listLoading ? st('loading') : st('refresh')}</button></div>
-      {#if result?.rows.length}<div class="session-list">{#each result.rows as row (sessionIdentity(row.provider, row.sessionId))}{@const models = modelNames(row)}<button class="session-row" class:active={identity === sessionIdentity(row.provider, row.sessionId)} aria-pressed={identity === sessionIdentity(row.provider, row.sessionId)} onclick={() => void openSession(row.provider, row.sessionId)}><span class="row-meta"><span>{providerDisplayName(row.provider)}</span><span>{new Date(row.lastTs).toLocaleDateString()}</span></span><strong>{row.title}</strong><span class="row-project" title={row.project}>{projectName(row.project)} · {st(row.titleSource)}</span><span class="row-models" title={models}>{st('models')}: {models}</span><span class="row-stats"><b>{formatTokens(row.totalTokens)}</b> {st('tokens')} <span>{formatEstimatedCost(row)}</span></span></button>{/each}</div>{:else}<p class="empty">{listLoading ? st('loading') : st('empty')}</p>{/if}
+      {#if result?.rows.length}<div class="session-list">{#each result.rows as row (sessionIdentity(row.provider, row.sessionId))}{@const models = modelNames(row)}<button class="session-row" class:active={identity === sessionIdentity(row.provider, row.sessionId)} aria-pressed={identity === sessionIdentity(row.provider, row.sessionId)} onclick={() => void openSession(row.provider, row.sessionId)}><span class="row-meta"><span>{providerDisplayName(row.provider)}{#if row.account} <span class="account-chip">{accountName(settings.value.accounts, row.account)}</span>{/if}</span><span>{new Date(row.lastTs).toLocaleDateString()}</span></span><strong>{row.title}</strong><span class="row-project" title={row.project}>{projectName(row.project)} · {st(row.titleSource)}</span><span class="row-models" title={models}>{st('models')}: {models}</span><span class="row-stats"><b>{formatTokens(row.totalTokens)}</b> {st('tokens')} <span>{formatEstimatedCost(row)}</span></span></button>{/each}</div>{:else}<p class="empty">{listLoading ? st('loading') : st('empty')}</p>{/if}
       <nav class="pager" aria-label={st('title')}><button class="btn" disabled={bounds.previous === null || listLoading} onclick={() => page(bounds.previous!)}>{st('previous')}</button><button class="btn" disabled={bounds.next === null || listLoading} onclick={() => page(bounds.next!)}>{st('next')}</button></nav>
     </aside>
     <div class="card detail" aria-busy={detailLoading}>
       {#if detailError}<p class="error" role="alert">{detailError}{#if selected}<button class="btn" onclick={() => void openSession(selected!.provider, selected!.sessionId)}>{st('retry')}</button>{/if}</p>{/if}
       {#if detailLoading}<p class="empty">{st('loading')}</p>{:else if session && detail}
-        <header class="detail-head"><span class="eyebrow">{providerDisplayName(session.provider)} · {st(session.titleSource)}</span><h3>{session.title}</h3><p title={session.project}>{session.project || '—'}</p><p>{st('models')}: {modelNames(session)}</p><code>{st('sessionId')}: {session.sessionId || '—'}</code></header>
+        <header class="detail-head"><span class="eyebrow">{providerDisplayName(session.provider)}{session.account ? ` · ${accountName(settings.value.accounts, session.account)}` : ''} · {st(session.titleSource)}</span><h3>{session.title}</h3><p title={session.project}>{session.project || '—'}</p><p>{st('models')}: {modelNames(session)}</p><code>{st('sessionId')}: {session.sessionId || '—'}</code></header>
         <form class="alias-form" onsubmit={(e) => { e.preventDefault(); void saveAlias(); }}><input class="field" aria-label={st('alias')} placeholder={st('alias')} maxlength="200" bind:value={alias} /><button class="btn" type="submit" disabled={changing}>{st('save')}</button></form>
         <div class="metrics"><div><span>{st('tokens')}</span><strong>{formatTokens(session.totalTokens)}</strong></div><div><span>{st('estimatedCost')}</span><strong>{formatEstimatedCost(session)}</strong></div><div><span>{st('turns')}</span><strong>{session.userTurns}</strong></div><div><span>{st('cache')}</span><strong>{cacheShare}</strong></div></div>
         <p class="muted small">{st('ownUsage')}</p>

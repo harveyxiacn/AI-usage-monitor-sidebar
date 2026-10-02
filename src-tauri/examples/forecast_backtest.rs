@@ -48,7 +48,7 @@ fn main() -> Result<()> {
     let db = store::Db::open(&copy)?;
 
     for provider in ["claude", "codex", "copilot", "openrouter"] {
-        let tokens = store::usage_token_events(&db, provider, 0)?;
+        let tokens = store::usage_token_events(&db, provider, "", 0)?;
         for (kind, seconds) in [
             (WindowKind::FiveHour, 18_000u64),
             (WindowKind::SevenDay, 604_800),

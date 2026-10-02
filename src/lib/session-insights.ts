@@ -103,8 +103,10 @@ export function buildInsights(sessions: SessionSummary[], tools: ToolStat[], tot
 }
 
 /** The filters a History range hands to the Sessions tab (dates are ISO instants, `to` exclusive). */
-export function sessionFilters(range: { from: number; to: number } | null, provider: string, project: string | null): SessionListQuery {
+export function sessionFilters(range: { from: number; to: number } | null, provider: string, project: string | null, account: string | null = null): SessionListQuery {
   return { search: '', sort: 'recent', offset: 0, limit: 25, provider: provider || null, project: project || null,
+    // the key only exists for a chosen account, so a plain query is exactly what it was
+    ...(account === null ? {} : { account }),
     from: range ? new Date(range.from).toISOString() : null, to: range ? new Date(range.to).toISOString() : null };
 }
 

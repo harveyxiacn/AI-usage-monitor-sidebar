@@ -13,6 +13,7 @@
   import { openExternal } from '$lib/api';
   import { formatAgo } from '$lib/format';
   import { t } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { settings } from '$lib/stores/settings.svelte';
   import { update } from '$lib/stores/update.svelte';
   import { pricingUpdate } from '$lib/stores/pricing-update.svelte';
@@ -90,11 +91,11 @@
   {#if update.error}<p class="err" role="alert">{t('common.error', { message: update.error })}</p>{/if}
   {#if actionError}<p class="err" role="alert">{t('common.error', { message: actionError })}</p>{/if}
 
-  <SettingsBlock text={t('settings.updates.prices')}>
+  <SettingsBlock advanced text={t('settings.updates.prices')}>
     <h4 class="second">{t('settings.updates.prices')}</h4>
   </SettingsBlock>
 
-  <Field label={t('settings.autoPricingCheck')} hint={t('settings.autoPricingCheck.hint')}>
+  <Field advanced={isAdvanced('autoPricingCheck')} label={t('settings.autoPricingCheck')} hint={t('settings.autoPricingCheck.hint')}>
     <Toggle
       checked={s.autoPricingCheck}
       label={t('settings.autoPricingCheck')}
@@ -102,7 +103,7 @@
     />
   </Field>
 
-  <Field label={t('settings.pricingUrl')} hint={t('settings.pricingUrl.hint')} wide>
+  <Field advanced={isAdvanced('pricingUrl')} label={t('settings.pricingUrl')} hint={t('settings.pricingUrl.hint')} wide>
     <input
       class="field url"
       type="url"
@@ -114,7 +115,7 @@
     />
   </Field>
 
-  <SettingsBlock text={`${t('settings.pricing')} ${t('settings.pricing.model')} ${t('settings.pricing.input')} ${t('settings.pricing.output')} ${t('settings.pricing.cacheWrite')} ${t('settings.pricing.cacheRead')} ${t('pricingUpdate.check')}`}>
+  <SettingsBlock advanced text={`${t('settings.pricing')} ${t('settings.pricing.model')} ${t('settings.pricing.input')} ${t('settings.pricing.output')} ${t('settings.pricing.cacheWrite')} ${t('settings.pricing.cacheRead')} ${t('pricingUpdate.check')}`}>
     <PricingEditor />
   </SettingsBlock>
 </SettingsCard>

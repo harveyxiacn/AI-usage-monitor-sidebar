@@ -422,7 +422,8 @@ explicitly hidden from the tray hidden.
   multi-output margins on a real mixed-DPI Wayland desktop, monitor hot-plug
   without the geometry watchdog, and whether `set_focusable(false)` plus
   keyboard mode `NONE` really keep the popover from taking focus.
-* **macOS** windows are not notarised yet; `set_focusable(false)` cannot unfocus
+* **macOS** builds are not notarised unless the release was built with the
+  Apple signing secrets (docs/RELEASING.md §6.2); `set_focusable(false)` cannot unfocus
   an already-focused window (an OS limitation), which is why the popover is made
   non-focusable *before* it is ever shown.
 * **macOS full-screen Spaces.** tao's `set_visible_on_all_workspaces(true)`

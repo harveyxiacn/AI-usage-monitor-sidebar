@@ -8,6 +8,8 @@
 
 #[path = "accounts.rs"]
 pub mod accounts;
+#[path = "advisor/mod.rs"]
+pub mod advisor;
 #[path = "alerts/mod.rs"]
 pub mod alerts;
 #[path = "diagnostics.rs"]
@@ -33,6 +35,9 @@ pub mod store;
 #[cfg(test)]
 #[path = "test_support.rs"]
 pub mod test_support;
+#[cfg(test)]
+#[path = "upgrade_tests/mod.rs"]
+mod upgrade_tests;
 
 use crate::model::*;
 use crate::state::AppState;

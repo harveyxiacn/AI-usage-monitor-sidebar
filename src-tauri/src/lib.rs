@@ -142,6 +142,8 @@ pub fn run() {
             commands::alerts::send_test_notification,
             commands::alerts::get_notification_permission,
             commands::alerts::get_weekly_summary,
+            commands::advisor::get_routing_advice,
+            commands::advisor::get_project_commits,
             commands::onboarding::get_provider_setup,
             commands::accounts::check_account_dir,
             commands::accounts::pick_account_folder,
@@ -150,6 +152,9 @@ pub fn run() {
             backup::backup_data,
             backup::restore_data,
             backup::restart_app,
+            backup::get_db_status,
+            backup::list_pre_upgrade_backups,
+            backup::reveal_pre_upgrade_backup,
             // updater
             updater::get_update_status,
             updater::check_for_updates,

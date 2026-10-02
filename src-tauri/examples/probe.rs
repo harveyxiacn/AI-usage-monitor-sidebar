@@ -63,6 +63,7 @@ async fn main() -> Result<()> {
         provider: None,
         project: None,
         group_by_project: false,
+        account: None,
     };
     let pricing = ai_usage_sidebar_lib::commands::pricing::default_table();
     let history = store::query_history(&db, &query, &pricing)?;

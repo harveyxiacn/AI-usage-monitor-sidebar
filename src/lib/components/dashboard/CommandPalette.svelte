@@ -19,6 +19,8 @@
   import { buildCommands, type PaletteContext } from '$lib/palette-commands';
   import { requestHistoryView, requestSessionsView, requestSettingsCard } from '$lib/palette-nav';
   import { st } from '$lib/session-labels.svelte';
+  import { ADVANCED_ONLY_CARDS } from '$lib/settings-cards';
+  import { advancedSettings } from '$lib/stores/advanced.svelte';
   import { overlays } from '$lib/stores/overlays.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -80,7 +82,11 @@
       navigate: requestDashboardTab,
       openHistoryView: requestHistoryView,
       openSessionsView: requestSessionsView,
-      openSettingsCard: requestSettingsCard,
+      openSettingsCard: (id) => {
+        // an advanced-only card is not on the page until advanced settings are shown
+        if (ADVANCED_ONLY_CARDS.includes(id)) advancedSettings.set(true);
+        requestSettingsCard(id);
+      },
       refresh: () => void report(async () => { await snapshot.refresh(); return t('palette.done.refresh'); }),
       rescan: () => void report(async () => { await reingestLogs(); return t('palette.done.rescan'); }),
       toggleSidebar: () => void report(async () => { await toggleSidebar(); return null; }),

@@ -65,3 +65,22 @@ test('external window events survive a stale save response', async () => {
   expect(visible.edge).toBe('left');
   expect(visible.theme).toBe('light');
 });
+
+test('the deprecated flat keys of an old file or preset are read into sidebarItems and never kept', () => {
+  const merged = mergeSettings(mockSettings, { showScopedRing: false, showPercentLabel: false });
+  expect(merged.sidebarItems.scoped).toBe(false);
+  expect(merged.sidebarItems.percentLabel).toBe(false);
+  expect(merged.sidebarItems.weekly, 'nothing else changes').toBe(true);
+  expect('showScopedRing' in merged).toBe(false);
+  expect('showPercentLabel' in merged).toBe(false);
+  expect('showScopedRing' in mockSettings).toBe(false);
+
+  // both spellings in one patch: the nested one wins
+  const both = mergeSettings(mockSettings, { showScopedRing: true, sidebarItems: { scoped: false } });
+  expect(both.sidebarItems.scoped).toBe(false);
+
+  // a wrong type is dropped without touching the item
+  const bad = mergeSettings(mockSettings, { showScopedRing: 'no' as unknown as boolean });
+  expect(bad.sidebarItems.scoped).toBe(true);
+  expect('showScopedRing' in bad).toBe(false);
+});
