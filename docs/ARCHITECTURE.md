@@ -697,12 +697,19 @@ tested:
   the limit.
 * **gates** — the exponential error backoff (cap 5 min) and, for a `429`, the
   server's `Retry-After` (delta-seconds or HTTP-date, clamped to 30 s–1 h,
-  default 5 min). An explicit refresh ignores the schedule and the error
-  backoff but still honours `Retry-After`.
+  default 5 min). An explicit refresh ignores the schedule, both stretches
+  and the error backoff, but still honours `Retry-After` **and the provider
+  floor since the last request** (so pressing Refresh twice within 120 s
+  shows the cached Claude value instead of earning a `429`).
 
-The learned multiplier and both gates are persisted in
-`<data_dir>/cache/poll-state.json`, and the cached snapshot's `fetchedAt`
-counts as the last poll, so restarting the app does not produce a burst of requests.
+The learned multiplier, both gates and the time of the last request
+(`lastAttemptMs`, successful or not) are persisted in
+`<data_dir>/cache/poll-state.json`; at start-up the later of that and the
+cached snapshot's `fetchedAt` counts as the last poll, so restarting the app
+does not produce a burst of requests. Each `429` is logged with the number of
+requests this process sent to that account in the last 10 minutes: a small
+number means another client (Claude Code itself, another monitor) shares the
+account's budget.
 
 ### Resilience (`scheduler.rs`, `providers/`)
 

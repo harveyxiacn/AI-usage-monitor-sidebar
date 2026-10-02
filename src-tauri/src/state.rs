@@ -36,6 +36,10 @@ pub struct Backoff {
     /// `429`, halved only after a run of good polls (0 reads as 1).
     pub rate_limit_factor: u32,
     pub consecutive_successes: u32,
+    /// unix ms of the last request this app sent, successful or not. The
+    /// quota cache only remembers successes, so without this a restart after
+    /// a failed (or cache-less) attempt would ask again at once.
+    pub last_attempt_ms: i64,
 }
 
 pub const BACKOFF_MAX_MS: i64 = 5 * 60 * 1000;
@@ -81,6 +85,18 @@ impl Backoff {
     }
 }
 
+/// Start-up: a request remembered in `poll-state.json` that is newer than the
+/// cached value (an error, a `429`, a replaced cache file) counts as the last
+/// poll too, so the provider floor holds across restarts.
+pub fn seed_from_attempts(clocks: &mut PollClocks, backoff: &HashMap<String, Backoff>) {
+    for (key, entry) in backoff {
+        if entry.last_attempt_ms > 0 {
+            let seeded = clocks.last_poll_ms.entry(key.clone()).or_insert(0);
+            *seeded = (*seeded).max(entry.last_attempt_ms);
+        }
+    }
+}
+
 pub const POLL_STATE_FILE: &str = "poll-state.json";
 
 fn poll_state_path(data_dir: &Path) -> PathBuf {
@@ -113,13 +129,39 @@ pub struct PollClocks {
     pub last_poll_ms: HashMap<String, i64>,
     /// When each provider's session logs last changed.
     pub last_activity_ms: HashMap<String, i64>,
+    /// Requests this process sent per provider within `ATTEMPT_WINDOW_MS`, so
+    /// a `429` can be logged with "we asked N times": few means someone else
+    /// shares the account's limit.
+    pub recent_attempts: HashMap<String, Vec<i64>>,
 }
+
+/// How far back `PollClocks::recent_attempts` remembers.
+pub const ATTEMPT_WINDOW_MS: i64 = 10 * 60 * 1000;
 
 impl PollClocks {
     /// Seconds since `provider` was last seen working, `None` if never.
     pub fn idle_secs(&self, provider: &str, now_ms: i64) -> Option<u64> {
         let last = *self.last_activity_ms.get(provider)?;
         Some((now_ms.saturating_sub(last).max(0) / 1000) as u64)
+    }
+
+    /// Remember a request to `provider` sent at `now_ms`.
+    pub fn record_attempt(&mut self, provider: &str, now_ms: i64) {
+        let list = self
+            .recent_attempts
+            .entry(provider.to_string())
+            .or_default();
+        list.retain(|&t| now_ms - t < ATTEMPT_WINDOW_MS);
+        list.push(now_ms);
+    }
+
+    /// Requests to `provider` within the last `ATTEMPT_WINDOW_MS`.
+    pub fn attempts_in_window(&self, provider: &str, now_ms: i64) -> usize {
+        self.recent_attempts.get(provider).map_or(0, |l| {
+            l.iter()
+                .filter(|&&t| now_ms - t < ATTEMPT_WINDOW_MS)
+                .count()
+        })
     }
 
     /// Treat every provider as active again — used when the user explicitly
@@ -221,6 +263,7 @@ impl AppState {
                 poll_clocks.last_poll_ms.insert(q.key(), ms);
             }
         }
+        seed_from_attempts(&mut poll_clocks, &backoff);
 
         Self {
             config_dir,
@@ -244,5 +287,78 @@ impl AppState {
         self.db
             .clone()
             .ok_or_else(|| "usage database is unavailable".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remembered_attempt_newer_than_the_cache_seeds_the_last_poll() {
+        let mut clocks = PollClocks::default();
+        clocks.last_poll_ms.insert("claude".into(), 1_000);
+        let mut backoff = HashMap::new();
+        backoff.insert(
+            "claude".to_string(),
+            Backoff {
+                last_attempt_ms: 5_000,
+                ..Default::default()
+            },
+        );
+        backoff.insert(
+            "codex".to_string(),
+            Backoff {
+                last_attempt_ms: 7_000,
+                ..Default::default()
+            },
+        );
+        backoff.insert("copilot".to_string(), Backoff::default());
+        seed_from_attempts(&mut clocks, &backoff);
+        assert_eq!(
+            clocks.last_poll_ms["claude"], 5_000,
+            "the later failed attempt wins"
+        );
+        assert_eq!(
+            clocks.last_poll_ms["codex"], 7_000,
+            "no cache, still remembered"
+        );
+        assert!(
+            !clocks.last_poll_ms.contains_key("copilot"),
+            "never asked stays never asked"
+        );
+
+        // an older attempt never moves the cached time backwards
+        let mut clocks = PollClocks::default();
+        clocks.last_poll_ms.insert("claude".into(), 9_000);
+        seed_from_attempts(&mut clocks, &backoff);
+        assert_eq!(clocks.last_poll_ms["claude"], 9_000);
+    }
+
+    #[test]
+    fn recent_attempts_only_count_the_last_ten_minutes() {
+        let mut clocks = PollClocks::default();
+        let t0 = 1_700_000_000_000i64;
+        clocks.record_attempt("claude", t0);
+        clocks.record_attempt("claude", t0 + 60_000);
+        clocks.record_attempt("claude", t0 + ATTEMPT_WINDOW_MS + 1);
+        assert_eq!(
+            clocks.attempts_in_window("claude", t0 + ATTEMPT_WINDOW_MS + 1),
+            2
+        );
+        assert_eq!(clocks.attempts_in_window("codex", t0), 0);
+        assert_eq!(
+            clocks.recent_attempts["claude"].len(),
+            2,
+            "old entries are dropped"
+        );
+    }
+
+    #[test]
+    fn an_older_poll_state_file_still_loads() {
+        let old = r#"{"claude":{"consecutiveErrors":0,"nextAttemptMs":0,"retryAfterMs":0,"rateLimitFactor":2,"consecutiveSuccesses":1}}"#;
+        let map: HashMap<String, Backoff> = serde_json::from_str(old).unwrap();
+        assert_eq!(map["claude"].last_attempt_ms, 0);
+        assert_eq!(map["claude"].factor(), 2);
     }
 }

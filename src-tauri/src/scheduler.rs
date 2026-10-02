@@ -216,10 +216,17 @@ pub fn should_poll(input: &PollInput, now_ms: i64) -> bool {
 }
 
 /// An explicit refresh (tray, dashboard button, `refresh_now`) ignores the
-/// schedule and the error backoff, but not a `Retry-After`: the server told us
-/// in so many words to stop asking.
+/// schedule, the adaptive and learned stretches and the error backoff, but not
+/// a `Retry-After` (the server told us in so many words to stop asking) and not
+/// the provider's hard floor since the last request: clicking Refresh twice
+/// within two minutes must not cost a Claude `429`. The cached value stays.
 pub fn should_force_poll(input: &PollInput, now_ms: i64) -> bool {
-    now_ms >= input.retry_after_ms
+    let floor_ok = input.last_poll_ms == 0
+        || now_ms
+            >= input
+                .last_poll_ms
+                .saturating_add((input.min_interval_secs as i64).saturating_mul(1_000));
+    floor_ok && now_ms >= input.retry_after_ms
 }
 
 fn poll_input(
@@ -390,6 +397,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             if skipped.contains(&id) || only.as_deref().is_some_and(|wanted| wanted != id) {
                 continue;
             }
+            clocks.record_attempt(&id, now);
             clocks.last_poll_ms.insert(id, now);
         }
     }
@@ -411,16 +419,21 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             let fetched = !skipped.contains(&key) && only.as_deref().is_none_or(|id| id == key);
             if fetched {
                 let entry = backoff.entry(key.clone()).or_default();
+                // persisted, so a restart keeps the floor even without a cache
+                entry.last_attempt_ms = now;
                 match q.status {
                     ProviderStatus::RateLimited => {
                         let wait = retry_after_secs(q, done);
                         entry.on_rate_limited(done, wait);
-                        // Once per 429, so the log can answer "how often?".
+                        // Once per 429, so the log can answer "how often?" —
+                        // and whether it was us: a handful of requests in ten
+                        // minutes means another client shares the account.
                         log::warn!(
-                            "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}",
+                            "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}; this app sent {} request(s) in the last 10 min",
                             key,
                             wait,
-                            entry.factor()
+                            entry.factor(),
+                            clocks.attempts_in_window(&key, done)
                         );
                     }
                     ProviderStatus::Error => entry.on_error(done),
@@ -1006,7 +1019,7 @@ mod tests {
         let now = 1_700_000_000_000i64;
         let backed_off = PollInput {
             backoff_until_ms: now + 60_000,
-            ..input(Some(0), now)
+            ..input(Some(0), now - 600_000)
         };
         assert!(!should_poll(&backed_off, now));
         assert!(should_force_poll(&backed_off, now), "the user asked");
@@ -1022,6 +1035,29 @@ mod tests {
         );
         assert_eq!(next_poll_due_ms(&told_to_wait), now + 60_000);
         assert!(should_force_poll(&told_to_wait, now + 60_000));
+    }
+
+    #[test]
+    fn an_explicit_refresh_keeps_the_provider_floor() {
+        let now = 1_700_000_000_000i64;
+        let claude = |last| PollInput {
+            min_interval_secs: CLAUDE_MIN_INTERVAL_SEC,
+            ..input(Some(0), last)
+        };
+        assert!(
+            !should_force_poll(&claude(now - 30_000), now),
+            "30 s after the last request"
+        );
+        assert!(!should_force_poll(&claude(now - 119_000), now));
+        assert!(should_force_poll(&claude(now - 120_000), now));
+        assert!(should_force_poll(&claude(0), now), "never asked");
+        // but a learned or idle stretch never blocks the user
+        let stretched = PollInput {
+            rate_limit_factor: 8,
+            ..claude(now - 130_000)
+        };
+        assert!(!should_poll(&stretched, now));
+        assert!(should_force_poll(&stretched, now));
     }
 
     #[test]

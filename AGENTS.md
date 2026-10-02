@@ -173,7 +173,7 @@ environment variable, below).
   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
 
 A ring in an error state has its message in the popover and in the log.
-`HTTP 429` from Anthropic means "polled too often"; it clears by itself.
+`HTTP 429` from Anthropic means the account's usage endpoint was asked too often — by this app *or* by other clients on the same account (Claude Code itself shares that budget). It clears by itself; the log line says how many requests this app sent in the last 10 min.
 
 ## 5. Configure
 
