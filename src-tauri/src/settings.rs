@@ -50,13 +50,21 @@ pub fn load(config_dir: &Path) -> Settings {
 /// when it is not valid JSON (a half-written file, say). `merge` is
 /// field-by-field, so a single bad field cannot poison the rest.
 pub fn parse(text: &str) -> Option<Settings> {
-    let value: Value = serde_json::from_str(text).ok()?;
+    let value: Value = serde_json::from_str(without_bom(text)).ok()?;
     Some(merge(&Settings::default(), &value))
+}
+
+/// Windows PowerShell 5 (`Out-File -Encoding utf8`) and some editors save
+/// UTF-8 with a byte-order mark, which JSON does not allow. Without this, such
+/// a file was "not valid JSON": an edit never applied, and at the next start
+/// every setting fell back to its default.
+fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 /// `true` for a valid settings object that has no `onboarded` key.
 fn lacks_onboarded_key(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
+    serde_json::from_str::<Value>(without_bom(text))
         .ok()
         .and_then(|v| v.as_object().map(|o| !o.contains_key("onboarded")))
         .unwrap_or(false)
@@ -564,7 +572,7 @@ pub fn reload_action(
 /// otherwise editing `settings.json` would bring back the first-run wizard,
 /// the release notes or a skipped update.
 fn keep_bookkeeping(mut next: Settings, text: &str, live: &Settings) -> Settings {
-    let Ok(Value::Object(file)) = serde_json::from_str::<Value>(text) else {
+    let Ok(Value::Object(file)) = serde_json::from_str::<Value>(without_bom(text)) else {
         return next;
     };
     if !file.contains_key("onboarded") {
@@ -1060,6 +1068,19 @@ mod tests {
         assert!(back.auto_hide);
         assert_eq!(back.vertical_offset, -120);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_make_the_file_invalid() {
+        let text = "\u{feff}{\"edge\":\"left\",\"exportSnapshot\":true}";
+        let parsed = parse(text).expect("a BOM-prefixed file is valid settings");
+        assert!(parsed.export_snapshot);
+        assert_ne!(parsed.edge, Settings::default().edge);
+        assert!(lacks_onboarded_key(text));
+        assert!(matches!(
+            reload_action(Some(text.as_bytes()), None, &Settings::default()),
+            ReloadAction::Apply(_)
+        ));
     }
 
     #[test]
