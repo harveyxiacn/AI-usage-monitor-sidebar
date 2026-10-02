@@ -288,7 +288,6 @@
   "settings.shortcutOpenDashboard": "快捷键：打开仪表盘",
   "settings.shortcutHint": "留空表示不启用。例如：Ctrl+Alt+U",
   "settings.shortcutWayland": "全局快捷键依赖 X11 / XWayland，原生 Wayland 会话可能无法生效。",
-  "settings.shortcutInvalid": "无法识别的快捷键。请使用修饰键加一个按键，例如 Ctrl+Alt+U。",
   "settings.shortcutFailed": "注册失败：{message}",
   "settings.sizeColour": "尺寸与颜色",
   "settings.sizes": "尺寸",

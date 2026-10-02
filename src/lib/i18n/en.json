@@ -288,7 +288,6 @@
   "settings.shortcutOpenDashboard": "Shortcut: open dashboard",
   "settings.shortcutHint": "Empty = off. Example: Ctrl+Alt+U",
   "settings.shortcutWayland": "Global shortcuts need X11/XWayland — a native Wayland session may ignore them.",
-  "settings.shortcutInvalid": "Not a usable shortcut. Use modifiers and one key, e.g. Ctrl+Alt+U.",
   "settings.shortcutFailed": "Not registered: {message}",
   "settings.sizeColour": "Size & colour",
   "settings.sizes": "Sizes",
