@@ -647,6 +647,9 @@ pub struct Settings {
     pub notifications: bool,
     /// Warn when a window is on pace to run out before it resets.
     pub forecast_notifications: bool,
+    /// Suggest a switch to another provider when one is about to run out and
+    /// another has room (see `advisor::routing`). Needs `notifications`.
+    pub advisor_notifications: bool,
     /// Warn when a window crosses `thresholds.warn` / `thresholds.critical`.
     pub threshold_notifications: bool,
     /// Warn when the month-to-date estimated cost reaches 80 % / 100 % of
@@ -670,6 +673,10 @@ pub struct Settings {
     pub focus_hides_sidebar: bool,
     /// Mask account e-mails everywhere they render (screen sharing).
     pub hide_account_email: bool,
+    /// Task-level cost: run a read-only `git log` (hash, time, subject only) in
+    /// the project folders the usage log recorded and attribute usage to
+    /// commits (see `advisor::git`). Off = nothing is read or run.
+    pub git_attribution: bool,
     /// After every snapshot, write `snapshot.json` into the app data dir for
     /// scripts, status bars and `--print` (see `export_snapshot.rs`).
     pub export_snapshot: bool,
@@ -753,6 +760,7 @@ impl Default for Settings {
             sizes: SizeSettings::default(),
             notifications: false,
             forecast_notifications: true,
+            advisor_notifications: false,
             threshold_notifications: true,
             budget_notifications: true,
             weekly_summary: false,
@@ -763,6 +771,7 @@ impl Default for Settings {
             focus_until: 0,
             focus_hides_sidebar: false,
             hide_account_email: false,
+            git_attribution: false,
             export_snapshot: false,
             polling_paused: false,
             tray_display: TrayDisplay::default(),

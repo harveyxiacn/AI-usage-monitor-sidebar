@@ -42,6 +42,8 @@
     pinned?: boolean;
     /** automatic polling is paused (Settings.pollingPaused): say so in the footer */
     paused?: boolean;
+    /** one-line routing hint (`advisor.routing.hint`); only passed when a recommendation exists */
+    hint?: string | null;
     onDetails?: () => void;
     onClose?: () => void;
   }
@@ -57,6 +59,7 @@
     history = [],
     pinned = false,
     paused = false,
+    hint = null,
     onDetails,
     onClose,
   }: Props = $props();
@@ -210,6 +213,10 @@
 
     {#if statusHint}
       <p class="status" class:bad={quota.status === 'error'}>{statusHint}</p>
+    {/if}
+
+    {#if hint}
+      <p class="advice" title={t('advisor.routing.hintTitle')}>{hint}</p>
     {/if}
 
     <footer>
@@ -465,6 +472,13 @@
     border-top: 1px solid var(--bar-border);
     font-size: 0.6875rem;
     color: var(--faint);
+  }
+
+  .advice {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--text);
   }
 
   .paused {

@@ -8,6 +8,8 @@
 
 #[path = "accounts.rs"]
 pub mod accounts;
+#[path = "advisor/mod.rs"]
+pub mod advisor;
 #[path = "alerts/mod.rs"]
 pub mod alerts;
 #[path = "diagnostics.rs"]

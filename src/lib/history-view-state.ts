@@ -1,9 +1,9 @@
 import type { Bucket, ProviderId } from './types';
 import type { HeatMetric, HistoryPreset } from './history';
 
-/** The three History sub-views. */
-export type HistoryView = 'usage' | 'quota' | 'cost';
-export const HISTORY_VIEWS: readonly HistoryView[] = ['usage', 'quota', 'cost'];
+/** The History sub-views. */
+export type HistoryView = 'usage' | 'quota' | 'cost' | 'commits';
+export const HISTORY_VIEWS: readonly HistoryView[] = ['usage', 'quota', 'cost', 'commits'];
 
 const VIEW_STORAGE_KEY = 'ai-usage-sidebar.history.view';
 
@@ -33,6 +33,9 @@ export function initialHistoryView(): HistoryView {
     try {
       const params = new URLSearchParams(window.location.search);
       const linked = params.get('view');
+      // `&project=<exact cwd>` preselects the project filter (the Commits view needs one)
+      const project = params.get('project');
+      if (params.get('tab') === 'history' && project) historyViewState.project = project;
       if (params.get('tab') === 'history' && isHistoryView(linked)) {
         historyViewState.view = linked;
         return linked;

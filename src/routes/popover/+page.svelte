@@ -35,6 +35,9 @@
   import { t } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
+  import { adviceInvolves, isSwitch } from '$lib/advice';
+  import { routingHint } from '$lib/advice-text';
+  import { advice } from '$lib/stores/advice.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
   import type { PopoverRequest, QuotaSample } from '$lib/types';
 
@@ -90,6 +93,16 @@
     return () => {
       cancelled = true;
     };
+  });
+
+  // a one-line routing hint, only for the two providers the recommendation is about
+  $effect(() => {
+    void snapshot.value?.generatedAt;
+    void advice.refresh();
+  });
+  const hint = $derived.by(() => {
+    const a = advice.value;
+    return quota && isSwitch(a) && adviceInvolves(a, quotaKey(quota)) ? routingHint(a) : null;
   });
 
   onMount(() => {
@@ -174,6 +187,7 @@
       {history}
       {pinned}
       paused={s.pollingPaused}
+      {hint}
       onClose={() => void popoverHide()}
       onDetails={() => void openDashboard('history')}
     />

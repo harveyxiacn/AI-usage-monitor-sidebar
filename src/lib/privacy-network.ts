@@ -11,6 +11,7 @@ export type PrivacyItemId =
   | 'credentials'
   | 'sessionLogs'
   | 'ownFiles'
+  | 'gitLog'
   | 'snapshot'
   | 'claude'
   | 'codex'
@@ -35,6 +36,7 @@ export const PRIVACY_ITEMS: readonly PrivacyItem[] = [
   { id: 'sessionLogs', kind: 'local', setting: 'ingestEnabled' },
   { id: 'ownFiles', kind: 'local', setting: null },
   { id: 'snapshot', kind: 'local', setting: 'exportSnapshot' },
+  { id: 'gitLog', kind: 'local', setting: 'gitAttribution' },
   { id: 'claude', kind: 'request', setting: 'providers', provider: 'claude' },
   { id: 'codex', kind: 'request', setting: 'providers', provider: 'codex' },
   { id: 'copilot', kind: 'request', setting: 'providers', provider: 'copilot' },
@@ -65,6 +67,8 @@ export function privacyItemActive(item: PrivacyItem, s: Settings): boolean | nul
       return s.autoPricingCheck;
     case 'exportSnapshot':
       return s.exportSnapshot;
+    case 'gitAttribution':
+      return s.gitAttribution;
     case 'webhook':
       // alerts reach the webhook only while notifications are on
       return s.notifications && s.webhook.enabled && s.webhook.url !== '';

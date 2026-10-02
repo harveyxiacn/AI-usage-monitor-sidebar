@@ -4,10 +4,10 @@ import { test, expect } from '@playwright/test';
 // These checks load the real settings route and observe what it renders.
 const SECTION_IDS = [
   'appearance', 'presets', 'sidebarItems', 'sizeColour', 'position', 'behaviour', 'notifications',
-  'shortcuts', 'providers', 'accounts', 'data', 'integrations', 'updates', 'privacy', 'backup', 'about',
+  'shortcuts', 'providers', 'accounts', 'data', 'integrations', 'advisor', 'updates', 'privacy', 'backup', 'about',
 ];
 // cards made only of advanced settings: off the page and the index until "Show advanced settings"
-const ADVANCED_ONLY = ['sizeColour', 'shortcuts', 'accounts', 'integrations'];
+const ADVANCED_ONLY = ['sizeColour', 'shortcuts', 'accounts', 'integrations', 'advisor'];
 const BASIC_IDS = SECTION_IDS.filter((id) => !ADVANCED_ONLY.includes(id));
 const ADVANCED_KEY = 'ai-usage-sidebar.showAdvancedSettings';
 
@@ -27,8 +27,8 @@ for (const language of ['en', 'zh-CN']) {
     await expect(page.getByRole('searchbox')).toBeVisible();
     // a card with something to reset starts with its button disabled
     await expect(page.locator('article#position button.reset')).toBeDisabled();
-    // the privacy card lists every request the app can make
-    await expect(page.locator('article#privacy li')).toHaveCount(12);
+    // the privacy card lists every local read and every request the app can make
+    await expect(page.locator('article#privacy li')).toHaveCount(13);
     expect(errors).toEqual([]);
     await page.screenshot({ path: `test-results/settings-${language}.png`, fullPage: true });
   });

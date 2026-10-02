@@ -36,7 +36,7 @@ test('advanced sidebar items name real items and leave the main ones basic', () 
 });
 
 test('a card whose settings are all advanced only exists with "Show advanced settings"', () => {
-  expect([...ADVANCED_ONLY_CARDS].sort()).toEqual(['accounts', 'integrations', 'shortcuts', 'sizeColour']);
+  expect([...ADVANCED_ONLY_CARDS].sort()).toEqual(['accounts', 'advisor', 'integrations', 'shortcuts', 'sizeColour']);
   for (const id of ADVANCED_ONLY_CARDS) expect(SECTIONS.map((s) => s.id)).toContain(id);
   // mixed cards stay on the page: they have basic controls
   expect(cardAdvancedOnly('notifications')).toBe(false);

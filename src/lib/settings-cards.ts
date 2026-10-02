@@ -21,7 +21,8 @@ export type CardId =
   | 'accounts'
   | 'data'
   | 'updates'
-  | 'integrations';
+  | 'integrations'
+  | 'advisor';
 
 type Key = keyof Settings;
 
@@ -43,6 +44,7 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   data: ['ingestEnabled', 'monthlyBudgetUsd', 'subscriptionUsd', 'quotaRetentionDays'],
   updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl', 'skippedVersion'],
   integrations: ['exportSnapshot', 'pollingPaused'],
+  advisor: ['advisorNotifications', 'gitAttribution'],
 };
 
 /** Every setting of the card is advanced, so the card only shows with "Show advanced settings". */

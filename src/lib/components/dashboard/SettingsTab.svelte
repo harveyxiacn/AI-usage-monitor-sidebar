@@ -21,6 +21,7 @@
   import BehaviourCard from './settings/BehaviourCard.svelte';
   import DataCard from './settings/DataCard.svelte';
   import IntegrationsPanel from './settings/IntegrationsPanel.svelte';
+  import AdvisorSettings from './settings/AdvisorSettings.svelte';
   import NotificationsCard from './settings/NotificationsCard.svelte';
   import PositionCard from './settings/PositionCard.svelte';
   import PresetsCard from './settings/PresetsCard.svelte';
@@ -171,6 +172,7 @@
     <AccountsCard />
     <DataCard />
     <IntegrationsPanel />
+    <AdvisorSettings />
     <UpdatesCard />
     <PrivacyCard />
     <BackupCard />

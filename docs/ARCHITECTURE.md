@@ -378,6 +378,8 @@ without a row, or a row without a registration, is a documentation bug).
 |---|---|---|
 | `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
 | `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
+| `get_routing_advice` | – | `RoutingAdvice | null`: from the in-memory snapshot only, "consider provider B for the next ~N min" (or "no switch needed") with the numbers it rests on and a confidence; `null` = nothing worth saying. Rules and thresholds: `src-tauri/src/advisor/routing.rs` |
+| `get_project_commits` | `query: CommitsQuery` (`project` = exact recorded cwd, `from`, `to`, `provider?`, `refresh?`) | `CommitsResult`: commits of one project with attributed tokens / estimated cost / sessions. Opt-in (`gitAttribution`); runs a read-only `git log` (hash, time, subject) only for a cwd that is in `usage_events` and inside a git repo. Heuristic and limits: `src-tauri/src/advisor/git.rs` |
 | `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
 | `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
 

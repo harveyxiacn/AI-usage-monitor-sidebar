@@ -16,6 +16,7 @@ export const SECTIONS = [
   { id: 'accounts', title: 'settings.accounts' },
   { id: 'data', title: 'settings.data' },
   { id: 'integrations', title: 'integrations.title' },
+  { id: 'advisor', title: 'settings.card.advisor' },
   { id: 'updates', title: 'settings.card.updates' },
   { id: 'privacy', title: 'settings.card.privacy' },
   { id: 'backup', title: 'settings.card.backup' },
