@@ -84,6 +84,7 @@ export const defaultSettings: Settings = {
   ingestEnabled: true,
   pricingUrl: '',
   monthlyBudgetUsd: 0,
+  quotaRetentionDays: 365,
   autostart: false,
   autoUpdateCheck: true,
   autoPricingCheck: true,

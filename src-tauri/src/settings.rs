@@ -167,6 +167,7 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.popover_timeout_sec = s.popover_timeout_sec.min(600);
     // 0 = budget line off; the cap keeps a typo out of the chart's y-axis.
     s.monthly_budget_usd = clamp_f64(s.monthly_budget_usd, 0.0, 1_000_000.0, 0.0);
+    s.quota_retention_days = s.quota_retention_days.min(3650);
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);

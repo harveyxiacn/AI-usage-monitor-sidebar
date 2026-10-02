@@ -308,6 +308,8 @@
   "settings.pricingUrl.hint": "Optional. Empty uses the official project price list; an https URL uses your chosen source instead.",
   "settings.monthlyBudgetUsd": "Monthly budget (USD)",
   "settings.monthlyBudgetHint": "0 hides the budget line. Estimated cost only — subscriptions don't bill per token.",
+  "settings.quotaRetentionDays": "Keep quota history (days)",
+  "settings.quotaRetentionHint": "0 keeps it forever. Older quota samples are thinned to one per hour after 14 days. Token usage history is never deleted.",
   "settings.pricing": "Pricing (USD per 1M tokens)",
   "settings.pricing.model": "Model prefix",
   "settings.pricing.input": "Input",

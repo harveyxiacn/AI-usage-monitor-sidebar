@@ -453,6 +453,9 @@ pub struct Settings {
     pub pricing_url: String,
     /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
     pub monthly_budget_usd: f64,
+    /// Delete quota samples older than this many days (0 = keep forever).
+    /// Token usage events are never deleted.
+    pub quota_retention_days: u32,
     pub autostart: bool,
     /// Ask GitHub once a day whether a newer release exists. Never installs
     /// anything on its own — the user always confirms (docs/RELEASING.md).
@@ -521,6 +524,7 @@ impl Default for Settings {
             ingest_enabled: true,
             pricing_url: String::new(),
             monthly_budget_usd: 0.0,
+            quota_retention_days: 365,
             autostart: false,
             auto_update_check: true,
             auto_pricing_check: true,

@@ -235,6 +235,8 @@ export interface Settings {
   pricingUrl: string;
   /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
   monthlyBudgetUsd: number;
+  /** Delete quota history older than this many days; 0 = keep forever. Token usage is never deleted. */
+  quotaRetentionDays: number;
   autostart: boolean;
   /** ask GitHub once a day for a newer release; never installs on its own */
   autoUpdateCheck: boolean;

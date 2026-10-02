@@ -687,6 +687,17 @@
         onchange={(e) => void settings.patch({ monthlyBudgetUsd: Math.min(1_000_000, Math.max(0, e.currentTarget.valueAsNumber || 0)) })}
       />
     </Field>
+    <Field label={t('settings.quotaRetentionDays')} hint={t('settings.quotaRetentionHint')}>
+      <input
+        class="field num"
+        type="number"
+        min="0"
+        max="3650"
+        step="1"
+        value={s.quotaRetentionDays}
+        onchange={(e) => void settings.patch({ quotaRetentionDays: Math.min(3650, Math.max(0, Math.round(e.currentTarget.valueAsNumber || 0))) })}
+      />
+    </Field>
 
     <Field label={t('history.rescan')}>
       <button class="btn" disabled={rescanning} onclick={() => void rescan()}>
