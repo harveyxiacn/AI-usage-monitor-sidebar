@@ -326,6 +326,7 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
     // A changed pricing source invalidates any in-memory offer and, where no
     // complete local table exists, reloads the matching applied cache.
     crate::commands::pricing::settings_changed(app, settings);
+    crate::export_snapshot::on_settings_changed(app, settings.export_snapshot);
     if let Err(e) = app.emit(events::SETTINGS_UPDATED, settings) {
         log::warn!("could not emit {}: {e}", events::SETTINGS_UPDATED);
     }

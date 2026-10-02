@@ -264,6 +264,10 @@ export interface Settings {
   focusHidesSidebar: boolean;
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
+  /** Write snapshot.json to the app data dir after every snapshot (CLI / status bars). */
+  exportSnapshot: boolean;
+  /** Skip automatic provider polling (local log ingestion keeps running). */
+  pollingPaused: boolean;
   alwaysOnTop: boolean;
 }
 

@@ -2,6 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // `--print` is a plain CLI: it must not start Tauri or wake the
+    // single-instance plugin of a running app, so it is decided first.
+    if let Some(code) = ai_usage_sidebar_lib::cli::handle(std::env::args_os()) {
+        std::process::exit(code);
+    }
     // Platform environment tweaks must happen before GTK/WebKit initialise.
     #[cfg(target_os = "linux")]
     {

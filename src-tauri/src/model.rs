@@ -486,6 +486,12 @@ pub struct Settings {
     pub focus_hides_sidebar: bool,
     /// Mask account e-mails everywhere they render (screen sharing).
     pub hide_account_email: bool,
+    /// After every snapshot, write `snapshot.json` into the app data dir for
+    /// scripts, status bars and `--print` (see `export_snapshot.rs`).
+    pub export_snapshot: bool,
+    /// Skip the *automatic* provider polling (ingestion of local logs keeps
+    /// running). An explicit refresh still polls. Persisted on purpose.
+    pub polling_paused: bool,
     pub always_on_top: bool,
 }
 
@@ -555,6 +561,8 @@ impl Default for Settings {
             focus_until: 0,
             focus_hides_sidebar: false,
             hide_account_email: false,
+            export_snapshot: false,
+            polling_paused: false,
             always_on_top: true,
         }
     }

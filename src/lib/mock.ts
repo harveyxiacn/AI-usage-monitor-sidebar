@@ -151,6 +151,8 @@ export const mockSettings: Settings = {
   focusUntil: 0,
   focusHidesSidebar: false,
   hideAccountEmail: false,
+  exportSnapshot: false,
+  pollingPaused: false,
   alwaysOnTop: true,
 };
 
