@@ -33,6 +33,9 @@ export function initialHistoryView(): HistoryView {
     try {
       const params = new URLSearchParams(window.location.search);
       const linked = params.get('view');
+      // `&project=<exact cwd>` preselects the project filter (the Commits view needs one)
+      const project = params.get('project');
+      if (params.get('tab') === 'history' && project) historyViewState.project = project;
       if (params.get('tab') === 'history' && isHistoryView(linked)) {
         historyViewState.view = linked;
         return linked;

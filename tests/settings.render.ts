@@ -20,8 +20,8 @@ for (const language of ['en', 'zh-CN']) {
     await expect(page.getByRole('searchbox')).toBeVisible();
     // a card with something to reset starts with its button disabled
     await expect(page.locator('article#position button.reset')).toBeDisabled();
-    // the privacy card lists every request the app can make
-    await expect(page.locator('article#privacy li')).toHaveCount(12);
+    // the privacy card lists every local read and every request the app can make
+    await expect(page.locator('article#privacy li')).toHaveCount(13);
     expect(errors).toEqual([]);
     await page.screenshot({ path: `test-results/settings-${language}.png`, fullPage: true });
   });

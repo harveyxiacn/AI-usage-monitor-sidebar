@@ -11,7 +11,6 @@ export const SECTIONS = [
   { id: 'position', title: 'settings.position' },
   { id: 'behaviour', title: 'settings.behaviour' },
   { id: 'notifications', title: 'settings.card.notifications' },
-  { id: 'advisor', title: 'settings.card.advisor' },
   { id: 'shortcuts', title: 'settings.card.shortcuts' },
   { id: 'providers', title: 'settings.providers' },
   { id: 'accounts', title: 'settings.accounts' },
