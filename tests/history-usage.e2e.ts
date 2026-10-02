@@ -96,7 +96,8 @@ test('the sub-view choice is remembered across tabs and reachable by deep link',
   await expect(views(page).getByRole('button', { name: 'Usage', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await views(page).getByRole('button', { name: 'Quota', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Quota history', exact: true })).toBeVisible();
-  await expect(page.locator('.table-wrap')).toHaveCount(0);
+  // no usage table here (the quota cycles table also uses .table-wrap, once its data arrives)
+  await expect(page.locator('.table-wrap th[aria-sort]')).toHaveCount(0);
   // the shared filters stay in place and sticky
   await expect(page.locator('#provider')).toBeVisible();
   await page.getByRole('button', { name: 'Overview', exact: true }).click();

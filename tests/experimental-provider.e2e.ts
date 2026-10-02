@@ -27,7 +27,7 @@ test('an experimental provider is listed, badged and switched off', async ({ pag
   // (the row has two switches: "Track" polls it, "Bar" only shows it)
   const toggle = row.getByRole('checkbox', { name: /Track this provider/ });
   await expect(toggle).not.toBeChecked();
-  await expect(page.locator('.prow')).toHaveCount(3);
+  await expect(page.locator('.prow')).toHaveCount(4); // Claude, Codex, Copilot, OpenRouter
 
   // No hand-written mark exists for it: the fallback monogram is drawn.
   await expect(row.locator('.plogo svg text')).toHaveText('C');

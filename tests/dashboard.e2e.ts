@@ -87,7 +87,7 @@ test('the project filter narrows the table and exports complete paths', async ({
   await page.locator('#project').selectOption(`project:${path}`);
   await expect(page.getByRole('columnheader', { name: /Project/ })).toBeVisible();
   const cells = page.locator('.table-wrap tbody td.project-name');
-  expect(await cells.count()).toBeGreaterThan(0);
+  await expect(cells.first()).toBeVisible();
   // the shortened label disambiguates the two "website" projects…
   for (const text of await cells.allTextContents()) expect(text).toBe('website — /home/demo/work/client');
   // …while the exact path stays available for selection and export
