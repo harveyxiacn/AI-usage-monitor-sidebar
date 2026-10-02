@@ -2,6 +2,8 @@ import type { SessionRow, TokenTotals } from './types';
 
 export interface SessionListQuery {
   from?: string | null; to?: string | null; provider?: string | null;
+  /** null/absent = every account; '' = the primary account only; else that extra account */
+  account?: string | null;
   project?: string | null; search?: string; sort?: 'recent' | 'tokens' | 'title';
   offset?: number; limit?: number;
 }

@@ -18,6 +18,10 @@
     customTo: string;
     provider: ProviderId | '';
     project: string | null;
+    /** `all`, `primary` or an extra account id */
+    account?: string;
+    /** extra accounts to choose from; the selector is hidden while there are none */
+    accountOptions?: Array<{ id: string; label: string; removed: boolean }>;
     /** false when the custom dates do not form a range */
     rangeValid: boolean;
     providerOptions: ProviderId[];
@@ -35,6 +39,8 @@
     customTo = $bindable(),
     provider = $bindable(),
     project = $bindable(),
+    account = $bindable('all'),
+    accountOptions = [],
     rangeValid,
     providerOptions,
     projectOptions,
@@ -52,7 +58,7 @@
   ];
   const presetOptions = $derived(PRESETS.map(([id, key]) => [id, tDyn(key)] as const));
   const viewOptions = $derived(HISTORY_VIEWS.map((id) => [id, t(`history.view.${id}` as 'history.view.usage')] as const));
-  const filtered = $derived(provider !== '' || project !== null);
+  const filtered = $derived(provider !== '' || project !== null || account !== 'all');
 </script>
 
 <div class="filters card" role="search" aria-label={t('history.filters')}>
@@ -83,6 +89,17 @@
       {/each}
     </select>
 
+    {#if accountOptions.length > 0}
+      <label class="ctl-label" for="account">{t('history.account')}</label>
+      <select id="account" class="field" bind:value={account}>
+        <option value="all">{t('history.quota.account.all')}</option>
+        <option value="primary">{t('history.quota.account.primary')}</option>
+        {#each accountOptions as a (a.id)}
+          <option value={a.id}>{a.removed ? t('history.account.removed', { id: a.label }) : a.label}</option>
+        {/each}
+      </select>
+    {/if}
+
     <label class="ctl-label" for="project">{t('history.project')}</label>
     <select id="project" class="field project-select"
       value={project === null ? 'all' : `project:${project}`}
@@ -95,7 +112,7 @@
     </select>
 
     {#if filtered}
-      <button class="btn" onclick={() => { provider = ''; project = null; }}>{t('history.filters.clear')}</button>
+      <button class="btn" onclick={() => { provider = ''; project = null; account = 'all'; }}>{t('history.filters.clear')}</button>
     {/if}
   </div>
 </div>

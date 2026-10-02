@@ -22,6 +22,7 @@
   import UsageChart from '$lib/components/UsageChart.svelte';
   import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
   import { bucketDateRange } from '$lib/analytics';
+  import { accountChoices, accountIdsOf, accountName, accountQuery } from '$lib/accounts';
   import QuotaHistoryPanel from './QuotaHistoryPanel.svelte';
   import SubscriptionRoi from './history/SubscriptionRoi.svelte';
   import { subscriptionTotal } from '$lib/subscription';
@@ -62,6 +63,10 @@
   let groupByModel = $state(historyViewState.groupByModel);
   let groupByProject = $state(historyViewState.groupByProject);
   let project = $state<string | null>(historyViewState.project);
+  /** `all`, `primary` or an extra account id; the selector only exists once an extra account does */
+  let accountFilter = $state(historyViewState.account);
+  /** extra accounts seen in stored history (an account that was removed keeps its rows) */
+  let seenAccountIds = $state<string[]>([]);
   let projects = $state<string[]>([]);
   let metric = $state<'tokens' | 'cost'>(historyViewState.metric);
   let chartLayout = $state<'grouped' | 'stacked'>(historyViewState.chartLayout);
@@ -80,7 +85,7 @@
 
   let tableView = $state<'buckets' | 'sessions'>(historyViewState.tableView);
   $effect(() => {
-    Object.assign(historyViewState, { preset, customFrom, customTo, bucket, provider, groupByModel, groupByProject, project, metric, chartLayout, tableView, heatView, heatMetric });
+    Object.assign(historyViewState, { preset, customFrom, customTo, bucket, provider, groupByModel, groupByProject, project, account: accountFilter, metric, chartLayout, tableView, heatView, heatMetric });
   });
 
   let ingest = $state<IngestStats | null>(null);
@@ -129,7 +134,7 @@
     error = null;
     // Time ticks and local ingestion refresh the same view in place. A real
     // filter change must still clear stale rows before fetching its result.
-    const filterKey = JSON.stringify([preset, customFrom, customTo, activeRange.from, bucket, groupByModel, groupByProject, provider, project]);
+    const filterKey = JSON.stringify([preset, customFrom, customTo, activeRange.from, bucket, groupByModel, groupByProject, provider, project, accountFilter]);
     if (filterKey !== historyFilterKey) result = null;
     historyFilterKey = filterKey;
     try {
@@ -141,10 +146,13 @@
         groupByProject,
         project,
         provider: provider === '' ? null : provider,
+        account: accountQ,
       });
       if (id === requestId && !disposed) {
         result = next;
         projects = next.projects;
+        const ids = accountIdsOf(next.byAccount).filter((id) => !seenAccountIds.includes(id));
+        if (ids.length > 0) seenAccountIds = [...seenAccountIds, ...ids];
       }
     } catch (e) {
       if (id === requestId && !disposed) error = String(e);
@@ -155,7 +163,7 @@
 
   // refetch whenever a query input changes
   $effect(() => {
-    void [range, bucket, groupByModel, groupByProject, provider, project];
+    void [range, bucket, groupByModel, groupByProject, provider, project, accountFilter];
     // Invalidate immediately so an older response cannot flash during debounce.
     requestId++;
     const timer = setTimeout(() => void load(), 80);
@@ -191,6 +199,7 @@
         to: new Date(to).toISOString(),
         provider: provider === '' ? null : provider,
         project,
+        account: accountQ,
       });
       if (id === calendarId && !disposed) calendar = next;
     } catch (e) {
@@ -203,7 +212,7 @@
 
   // `dataVersion` changes only when a scan actually added events
   $effect(() => {
-    void [heatFrom, heatTo, provider, project, dataVersion];
+    void [heatFrom, heatTo, provider, project, accountFilter, dataVersion];
     calendarId++;
     const timer = setTimeout(() => void loadCalendar(), 80);
     return () => clearTimeout(timer);
@@ -254,6 +263,16 @@
   }
 
   const rows = $derived(result?.rows ?? []);
+  /** the query value of the account selector (null = every account) */
+  const accountQ = $derived(accountQuery(accountFilter));
+  const accountOptions = $derived(accountChoices(settings.value.accounts, seenAccountIds));
+  /** the account column / chips / CSV column exist only once an extra account does */
+  const showAccount = $derived(accountOptions.length > 0);
+  const accountLabel = (id: string) => accountName(settings.value.accounts, id) ?? id;
+  // an account that is neither configured nor in the data cannot stay selected
+  $effect(() => {
+    if (accountFilter !== 'all' && accountFilter !== 'primary' && !accountOptions.some((a) => a.id === accountFilter)) accountFilter = 'all';
+  });
   // the active filter stays selectable even when the new range no longer lists it
   const projectOptions = $derived(
     [...new Set(project === null ? projects : [...projects, project])].sort((a, b) => a.localeCompare(b))
@@ -319,7 +338,7 @@
     if (!result || result.rows.length > 0) return null;
     if (!settings.value.ingestEnabled) return 'ingestDisabled';
     if (ingest && !ingest.running && ingest.filesScanned === 0) return 'noLogs';
-    if (provider !== '' || project !== null) return 'filtered';
+    if (provider !== '' || project !== null || accountFilter !== 'all') return 'filtered';
     return 'range';
   });
 
@@ -331,6 +350,7 @@
   function clearFilters() {
     provider = '';
     project = null;
+    accountFilter = 'all';
   }
 
   const metricOptions = $derived([['tokens', t('history.metric.tokens')], ['cost', t('history.metric.cost')]] as const);
@@ -350,6 +370,8 @@
     bind:customTo
     bind:provider
     bind:project
+    bind:account={accountFilter}
+    {accountOptions}
     rangeValid={range !== null}
     {providerOptions}
     {projectOptions}
@@ -406,7 +428,7 @@
     {#if emptyKind}
       <HistoryEmpty kind={emptyKind} {rescanning} onrescan={() => void rescan()} onclear={clearFilters} />
     {:else}
-      <UsageKpiRow {range} {provider} {project} {dataVersion} {themeKey} />
+      <UsageKpiRow {range} {provider} {project} account={accountQ} {dataVersion} {themeKey} />
 
       <p class="muted small">{t('history.modelDetailsNote')}</p>
 
@@ -446,6 +468,7 @@
           {bucket}
           {provider}
           {project}
+          account={accountQ}
           mainRows={groupByModel && !groupByProject ? rows : null}
           {dataVersion}
           {themeKey}
@@ -460,6 +483,7 @@
         <ProjectRanking
           {range}
           {provider}
+          account={accountQ}
           selected={project}
           {dataVersion}
           {themeKey}
@@ -505,6 +529,9 @@
         {range}
         {provider}
         {project}
+        account={accountQ}
+        {showAccount}
+        {accountLabel}
         {rows}
         {loading}
         hasResult={result !== null}
@@ -522,7 +549,7 @@
       <IngestPanel {ingest} {rescanning} onrescan={() => void rescan()} />
     {/if}
   {:else if view === 'quota'}
-    <QuotaHistoryPanel {range} provider={provider || null} live={preset !== 'custom'} {themeKey} />
+    <QuotaHistoryPanel {range} provider={provider || null} account={accountFilter} live={preset !== 'custom'} {themeKey} />
   {:else}
     <div class="card panel">
       <header class="panel-head">
@@ -545,7 +572,7 @@
         {:else if budget.incomplete}
           <p class="muted cost-note" role="status">{t('history.budget.incomplete')}</p>
         {/if}
-        <BudgetChart series={budget.series} budgetUsd={monthlyBudgetUsd} subscriptionUsd={subscriptionTotal(settings.value.subscriptionUsd, provider || null)} {themeKey} />
+        <BudgetChart series={budget.series} budgetUsd={monthlyBudgetUsd} subscriptionUsd={subscriptionTotal(settings.value.subscriptionUsd, provider || null, accountQ)} {themeKey} />
         <p class="note"><CostNote /></p>
       {:else if calendarError}
         <p class="err" role="alert">{t('common.error', { message: calendarError })}</p>
@@ -553,7 +580,7 @@
         <p class="muted" role="status">{t('common.loading')}</p>
       {/if}
     </div>
-    <SubscriptionRoi provider={provider || null} {themeKey} refreshKey={dataVersion} />
+    <SubscriptionRoi provider={provider || null} account={accountQ} {themeKey} refreshKey={dataVersion} />
   {/if}
 </section>
 

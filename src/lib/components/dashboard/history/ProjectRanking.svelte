@@ -21,6 +21,8 @@
   interface Props {
     range: HistoryRange | null;
     provider: ProviderId | '';
+    /** null = every account, '' = the primary account, else an extra account id */
+    account?: string | null;
     /** the active project filter, highlighted in the list */
     selected: string | null;
     dataVersion: number;
@@ -29,7 +31,7 @@
     onpick: (project: string) => void;
   }
 
-  let { range, provider, selected, dataVersion, themeKey, projectLabel, onpick }: Props = $props();
+  let { range, provider, account = null, selected, dataVersion, themeKey, projectLabel, onpick }: Props = $props();
 
   const LIMIT = 10;
   /** the session query's own server-side maximum */
@@ -50,7 +52,7 @@
       ranks = null;
       return;
     }
-    const key = JSON.stringify([active.from, provider]);
+    const key = JSON.stringify([active.from, provider, account]);
     if (key !== filterKey) ranks = null;
     filterKey = key;
     error = null;
@@ -60,8 +62,8 @@
     try {
       const [history, sessions] = await Promise.all([
         // month buckets: one row per project and month, summed below
-        getUsageHistory({ from, to, bucket: 'month', groupByModel: false, groupByProject: true, project: null, provider: providerQuery }),
-        getUsageSessions({ from, to, provider: providerQuery, project: null, limit: SESSION_LIMIT }).catch(() => null),
+        getUsageHistory({ from, to, bucket: 'month', groupByModel: false, groupByProject: true, project: null, provider: providerQuery, account }),
+        getUsageSessions({ from, to, provider: providerQuery, project: null, account, limit: SESSION_LIMIT }).catch(() => null),
       ]);
       if (id !== requestId || disposed) return;
       const counts = countSessionsByProject(sessions?.rows ?? []);
@@ -74,7 +76,7 @@
   }
 
   $effect(() => {
-    void [range, provider, dataVersion];
+    void [range, provider, account, dataVersion];
     requestId++;
     const timer = setTimeout(() => void load(), 80);
     return () => clearTimeout(timer);

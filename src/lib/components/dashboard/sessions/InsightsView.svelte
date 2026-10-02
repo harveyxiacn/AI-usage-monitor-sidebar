@@ -34,9 +34,9 @@
     const request = ++version;
     loading = true;
     error = '';
-    const { search, provider, project, from, to } = $state.snapshot(query);
+    const { search, provider, project, from, to, account } = $state.snapshot(query);
     try {
-      const next = await getSessionInsights({ search, provider, project, from, to });
+      const next = await getSessionInsights({ search, provider, project, from, to, ...(account === undefined ? {} : { account }) });
       if (!disposed && request === version) data = next;
     } catch (e) {
       if (!disposed && request === version) { data = null; error = String(e); }
@@ -46,7 +46,7 @@
   }
 
   $effect(() => {
-    void [query.search, query.provider, query.project, query.from, query.to];
+    void [query.search, query.provider, query.project, query.from, query.to, query.account];
     void load();
   });
 
