@@ -25,6 +25,7 @@ pub mod popover;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod tray;
+pub mod tray_status;
 
 use crate::model::*;
 use crate::window::monitors::LogicalRect;
