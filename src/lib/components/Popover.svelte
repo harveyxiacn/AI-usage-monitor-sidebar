@@ -36,6 +36,8 @@
     now?: number;
     /** pinned popovers get a close button (hover popovers close on their own) */
     pinned?: boolean;
+    /** automatic polling is paused (Settings.pollingPaused): say so in the footer */
+    paused?: boolean;
     onDetails?: () => void;
     onClose?: () => void;
   }
@@ -49,6 +51,7 @@
     tailPercent = 50,
     now = Date.now(),
     pinned = false,
+    paused = false,
     onDetails,
     onClose,
   }: Props = $props();
@@ -180,7 +183,8 @@
         >{t('popover.updated', {
           ago: formatAgo(quota.fetchedAt, now),
           source: tDyn(`source.${quota.source}`),
-        })}</span
+        })}{#if paused}
+          · <span class="paused">{t('popover.paused')}</span>{/if}</span
       >
       <button class="details" onclick={() => onDetails?.()}>{t('popover.details')}</button>
     </footer>
@@ -414,6 +418,11 @@
     border-top: 1px solid var(--bar-border);
     font-size: 0.6875rem;
     color: var(--faint);
+  }
+
+  .paused {
+    color: var(--warn, var(--muted));
+    font-weight: 500;
   }
 
   .details {

@@ -6,6 +6,7 @@
 // estimation) so the UI code is exercised exactly as it would be in Tauri.
 import type {
   AppInfo,
+  BackupInfo,
   AppSnapshot,
   Bucket,
   CalendarDay,
@@ -982,6 +983,21 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return structuredClone(mockProviders) as T;
     case 'get_app_info':
       return structuredClone(mockAppInfo) as T;
+    case 'backup_data':
+      return '~/Backups/ai-usage-sidebar-backup-20261002-101500' as T;
+    case 'restore_data': {
+      const info: BackupInfo = {
+        path: '~/Backups/ai-usage-sidebar-backup-20261002-101500',
+        createdAt: iso(now - 2 * DAY),
+        appVersion: '0.6.0',
+        schemaVersion: 2,
+        hasDatabase: true,
+        hasSettings: true,
+      };
+      return info as T;
+    }
+    case 'restart_app':
+      return undefined as T;
     case 'get_monitors':
       return structuredClone(mockMonitors) as T;
     case 'popover_show':

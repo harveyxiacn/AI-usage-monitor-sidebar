@@ -469,6 +469,17 @@ export interface PriceUpdateStatus {
   customPricing: boolean;
 }
 
+/** What a backup folder holds (backup_data / restore_data). */
+export interface BackupInfo {
+  /** the backup folder that was validated */
+  path: string;
+  createdAt: string | null;
+  appVersion: string | null;
+  schemaVersion: number | null;
+  hasDatabase: boolean;
+  hasSettings: boolean;
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;

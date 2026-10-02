@@ -135,6 +135,7 @@
       highlightKind={target?.windowKind ?? null}
       {now}
       {pinned}
+      paused={s.pollingPaused}
       onClose={() => void popoverHide()}
       onDetails={() => void openDashboard('history')}
     />

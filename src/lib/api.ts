@@ -5,6 +5,7 @@
 import type {
   AppInfo,
   AppSnapshot,
+  BackupInfo,
   CalendarQuery,
   CalendarResult,
   DashboardTab,
@@ -86,6 +87,11 @@ export const useSourcePricing = () => invoke<PricingTable>('use_source_pricing')
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');
+/** Backs settings + database up into a new timestamped folder inside `dest`; no `dest` opens a folder picker. null = cancelled. */
+export const backupData = (dest?: string) => invoke<string | null>('backup_data', { dest: dest ?? null });
+/** Validates a backup and stages it; it is swapped in at the next start (`restartApp`). null = cancelled. */
+export const restoreData = (src?: string) => invoke<BackupInfo | null>('restore_data', { src: src ?? null });
+export const restartApp = () => invoke<void>('restart_app');
 
 /** Native save dialog on desktop; a normal file download in browser previews. */
 export async function exportUsageCsv(csv: string, suggestedName: string): Promise<string | null> {
