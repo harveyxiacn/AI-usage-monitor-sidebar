@@ -36,6 +36,33 @@ pub struct ProviderDiagnostics {
     pub fetched_at: Option<String>,
 }
 
+/// One extra account (`settings.accounts`): existence checks only, nothing of
+/// the credential files is ever read for this report.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDiagnostics {
+    /// Registry key, e.g. `claude@work`.
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+    pub enabled: bool,
+    pub config_dir: String,
+    pub config_dir_found: bool,
+    pub credentials_file_found: bool,
+    /// The folder the session logs are read from, and whether it exists.
+    pub log_dir: String,
+    pub log_dir_found: bool,
+    /// macOS Claude only: the Keychain service tried before the credentials
+    /// file (a name, never its content).
+    pub keychain_service: Option<String>,
+    pub status: Option<ProviderStatus>,
+    pub plan_label: Option<String>,
+    /// Always masked (`h•••@g•••.com`).
+    pub account: Option<String>,
+    pub error: Option<String>,
+    pub fetched_at: Option<String>,
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
@@ -47,6 +74,9 @@ pub struct Diagnostics {
     /// `$XDG_SESSION_TYPE` on Linux, otherwise absent.
     pub session_type: Option<String>,
     pub providers: Vec<ProviderDiagnostics>,
+    /// Every configured extra account; empty (and omitted) without any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountDiagnostics>,
     /// The effective settings, minus anything that could carry a secret.
     pub settings: Value,
     pub log_dir: String,
@@ -118,6 +148,54 @@ pub fn settings_for_report(settings: &Settings) -> Value {
         );
     }
     value
+}
+
+/// The extra accounts of `settings`, each with the existence checks and, when
+/// the snapshot has it, its last quota status. Pure apart from `Path::is_*`.
+pub fn account_diagnostics(
+    settings: &Settings,
+    snapshot: &crate::model::AppSnapshot,
+) -> Vec<AccountDiagnostics> {
+    settings
+        .accounts
+        .iter()
+        .map(|a| {
+            let key = crate::model::provider_key(&a.provider, Some(&a.id));
+            let check = crate::commands::accounts::check(&a.provider, &a.config_dir, false);
+            let dir = Path::new(&a.config_dir);
+            let log_dir = match a.provider.as_str() {
+                crate::commands::providers::CODEX_ID => {
+                    crate::commands::providers::codex::log_root_in(dir)
+                }
+                _ => crate::commands::providers::claude::log_root_in(dir),
+            };
+            let quota = snapshot.providers.iter().find(|p| p.key() == key);
+            AccountDiagnostics {
+                id: key,
+                provider: a.provider.clone(),
+                label: a.label.clone(),
+                enabled: a.enabled,
+                config_dir: a.config_dir.clone(),
+                config_dir_found: check.dir_found,
+                credentials_file_found: check.credentials_found,
+                log_dir_found: dir.is_absolute() && log_dir.is_dir(),
+                log_dir: log_dir.display().to_string(),
+                keychain_service: (cfg!(target_os = "macos")
+                    && a.provider == crate::commands::providers::CLAUDE_ID)
+                    .then(|| crate::commands::providers::claude::keychain_service_for(dir)),
+                status: quota.map(|q| q.status),
+                plan_label: quota.and_then(|q| q.plan_label.clone()),
+                account: quota
+                    .and_then(|q| q.account.as_ref())
+                    .and_then(|x| x.email.as_deref())
+                    .map(mask_email),
+                error: quota
+                    .and_then(|q| q.error.as_deref())
+                    .map(crate::evaluation::redact),
+                fetched_at: quota.map(|q| q.fetched_at.clone()),
+            }
+        })
+        .collect()
 }
 
 /// The last `lines` lines of `text`.
@@ -218,6 +296,7 @@ pub async fn get_diagnostics(
             None
         },
         providers,
+        accounts: account_diagnostics(&settings, &snapshot),
         settings: settings_for_report(&settings),
         log_dir: log_dir.display().to_string(),
         config_dir: state.config_dir.display().to_string(),
@@ -284,6 +363,51 @@ mod tests {
         let report = settings_for_report(&settings).to_string();
         assert!(!report.contains("hunter2"));
         assert!(report.contains("https://example.com/p.json"));
+    }
+
+    #[test]
+    fn every_extra_account_is_listed_with_existence_checks_only() {
+        let root = tempdir();
+        let present = root.join("work");
+        std::fs::create_dir_all(present.join("projects")).unwrap();
+        std::fs::write(
+            present.join(".credentials.json"),
+            b"{\"secret\":\"never-shown\"}",
+        )
+        .unwrap();
+        let account = |id: &str, provider: &str, dir: &Path| crate::model::AccountSettings {
+            id: id.into(),
+            provider: provider.into(),
+            label: id.to_uppercase(),
+            config_dir: dir.display().to_string(),
+            enabled: id != "off",
+        };
+        let settings = Settings {
+            accounts: vec![
+                account("work", "claude", &present),
+                account("off", "codex", &root.join("missing")),
+            ],
+            ..Settings::default()
+        };
+        let list = account_diagnostics(&settings, &crate::model::AppSnapshot::default());
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "claude@work");
+        assert!(
+            list[0].config_dir_found && list[0].credentials_file_found && list[0].log_dir_found
+        );
+        assert_eq!(list[1].id, "codex@off");
+        assert!(!list[1].enabled);
+        assert!(
+            !list[1].config_dir_found && !list[1].credentials_file_found && !list[1].log_dir_found
+        );
+        assert!(list[0].status.is_none(), "no quota in the snapshot yet");
+        let json = serde_json::to_string(&list).unwrap();
+        assert!(
+            !json.contains("never-shown"),
+            "file contents are never read"
+        );
+        assert!(account_diagnostics(&Settings::default(), &Default::default()).is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
