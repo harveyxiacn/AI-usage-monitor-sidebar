@@ -179,92 +179,101 @@ Settings` in `src-tauri/src/model.rs`; the latter is authoritative. The tables
 below list every key exactly once; `pnpm check:agents`
 (`scripts/check-agents-settings.mjs`) fails CI when they and the code disagree.
 
+The **Tier** column is what the dashboard's Settings tab shows by default
+(`src/lib/settings-tiers.ts`; the reasoning is in `docs/SETTINGS-AUDIT.md`):
+`basic` settings are always listed; `advanced` ones appear after the
+dashboard's "Show advanced settings" switch (a per-viewer UI choice, not a
+setting) or when a search matches them; `internal` ones are the app's own
+records. The tier changes only what is *shown*: every key works the same from
+the file whatever its tier. Of `sidebarItems`, only `other`, `logo` and
+`moreButton` are advanced.
+
 ### Language, theme, look
 
-| Key | Values (default first) | Meaning |
-|---|---|---|
-| `version` | `1` | schema marker; leave it alone (never imported) |
-| `language` | `"auto"`, `"en"`, `"zh-CN"` | UI and tray language; `auto` follows the OS |
-| `theme` | `"dark"`, `"light"`, `"auto"` | `auto` follows the OS |
-| `surfaceStyle` | `"glass"`, `"solid"`, `"cyber"` | liquid glass (blurred backdrop where the OS has one), opaque, or a neon sci-fi HUD |
-| `cyberAccent` | `"neon"`, `"matrix"`, `"amber"`, `"ice"`, `"synthwave"` | neon pair the `cyber` HUD is painted with; ignored by the other surfaces |
-| `opacity` | `1` (0.3 – 1) | window opacity |
-| `scale` | `1` (0.75 – 1.5) | overall size multiplier |
-| `colors` | `{"claude":"#ff5c1a","codex":"#10a37f","copilot":"#8250df","openrouter":"#6467f2","warn":"#f5c542","critical":"#ff3b30","surface":"","text":""}` | CSS hex (`#rgb`, `#rrggbb`, `#rrggbbaa`); an invalid value falls back to the default; empty `surface` / `text` = the theme's own |
-| `sizes` | `{"ringSize":56,"ringStroke":4.5,"barGap":18,"barPadding":10,"cornerRadius":26,"labelSize":13}` | px at scale 1, clamped to 40–96, 3–8, 6–40, 4–24, 8–40, 9–18 |
+| Key | Values (default first) | Meaning | Tier |
+|---|---|---|---|
+| `version` | `1` | schema marker; leave it alone (never imported) | internal |
+| `language` | `"auto"`, `"en"`, `"zh-CN"` | UI and tray language; `auto` follows the OS | basic |
+| `theme` | `"dark"`, `"light"`, `"auto"` | `auto` follows the OS | basic |
+| `surfaceStyle` | `"glass"`, `"solid"`, `"cyber"` | liquid glass (blurred backdrop where the OS has one), opaque, or a neon sci-fi HUD | basic |
+| `cyberAccent` | `"neon"`, `"matrix"`, `"amber"`, `"ice"`, `"synthwave"` | neon pair the `cyber` HUD is painted with; ignored by the other surfaces | basic |
+| `opacity` | `1` (0.3 – 1) | window opacity | advanced |
+| `scale` | `1` (0.75 – 1.5) | overall size multiplier | basic |
+| `colors` | `{"claude":"#ff5c1a","codex":"#10a37f","copilot":"#8250df","openrouter":"#6467f2","warn":"#f5c542","critical":"#ff3b30","surface":"","text":""}` | CSS hex (`#rgb`, `#rrggbb`, `#rrggbbaa`); an invalid value falls back to the default; empty `surface` / `text` = the theme's own | advanced |
+| `sizes` | `{"ringSize":56,"ringStroke":4.5,"barGap":18,"barPadding":10,"cornerRadius":26,"labelSize":13}` | px at scale 1, clamped to 40–96, 3–8, 6–40, 4–24, 8–40, 9–18 | advanced |
 
 ### The bar: position and behaviour
 
-| Key | Values (default first) | Meaning |
-|---|---|---|
-| `edge` | `"right"`, `"left"`, `"top"`, `"bottom"` | screen edge (also set by dragging). `top`/`bottom` make the bar a horizontal strip |
-| `verticalAlign` | `"center"`, `"top"`, `"bottom"` | position **along** the edge: `top` = its start (left end of a top/bottom edge), `bottom` = its end |
-| `verticalOffset` | `0` (px, positive = towards the end of the edge: down on left/right, right on top/bottom) | also set by dragging |
-| `monitor` | `null` = primary, or a monitor name | |
-| `alwaysOnTop` | `true` | keep the bar above other windows |
-| `autoHide` | `false`, `true` | collapse to a thin handle when idle |
-| `autoHideDelayMs` | `800` (0 – 600000) | idle time before the bar collapses |
-| `collapsedWidth` | `6` (2 – 24) | thickness in px of the collapsed handle |
-| `popoverTimeoutSec` | `10` (0 – 600, 0 = never) | the detail popover closes after this many seconds without pointer activity; a pinned one gets 6× |
-| `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS; not native Wayland). A combination needs a modifier |
-| `shortcutOpenDashboard` | `""` (off), e.g. `"Ctrl+Alt+D"` | global shortcut opening the dashboard |
-| `autostart` | `false`, `true` | start at login |
-| `trayDisplay` | `"icon"`, `"percent"` | `percent` shows the busiest window's percentage in the tray (menu-bar title on macOS, drawn into the icon on Windows/Linux) |
+| Key | Values (default first) | Meaning | Tier |
+|---|---|---|---|
+| `edge` | `"right"`, `"left"`, `"top"`, `"bottom"` | screen edge (also set by dragging). `top`/`bottom` make the bar a horizontal strip | basic |
+| `verticalAlign` | `"center"`, `"top"`, `"bottom"` | position **along** the edge: `top` = its start (left end of a top/bottom edge), `bottom` = its end | advanced |
+| `verticalOffset` | `0` (px, positive = towards the end of the edge: down on left/right, right on top/bottom) | also set by dragging | advanced |
+| `monitor` | `null` = primary, or a monitor name | | basic |
+| `alwaysOnTop` | `true` | keep the bar above other windows | advanced |
+| `autoHide` | `false`, `true` | collapse to a thin handle when idle | basic |
+| `autoHideDelayMs` | `800` (0 – 600000) | idle time before the bar collapses | advanced |
+| `collapsedWidth` | `6` (2 – 24) | thickness in px of the collapsed handle | advanced |
+| `popoverTimeoutSec` | `10` (0 – 600, 0 = never) | the detail popover closes after this many seconds without pointer activity; a pinned one gets 6× | advanced |
+| `shortcutToggleSidebar` | `""` (off), e.g. `"Ctrl+Alt+U"` | global shortcut showing/hiding the bar (X11/XWayland, Windows, macOS; not native Wayland). A combination needs a modifier | advanced |
+| `shortcutOpenDashboard` | `""` (off), e.g. `"Ctrl+Alt+D"` | global shortcut opening the dashboard | advanced |
+| `autostart` | `false`, `true` | start at login | basic |
+| `trayDisplay` | `"icon"`, `"percent"` | `percent` shows the busiest window's percentage in the tray (menu-bar title on macOS, drawn into the icon on Windows/Linux) | advanced |
 
 ### The bar: what it draws
 
-| Key | Values (default first) | Meaning |
-|---|---|---|
-| `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, only the primary window, or one per window |
-| `ringStyle` | `"ring"`, `"bar"` | rings, or compact mini-bars (a logo dot plus one slim bar per window) |
-| `percentMode` | `"used"`, `"remaining"` | |
-| `percentPosition` | `"below"`, `"center"` | show the percentage below each ring, or in its centre in place of the provider logo; used only when `sidebarItems.percentLabel` is on |
-| `labelContent` | `"percent"`, `"reset"`, `"both"` | what the label says: percentage, reset countdown or both |
-| `sidebarAnimations` | `true`, `false` | one-shot pulse when a ring crosses a threshold and a flash on a reset; reduced motion turns them off |
-| `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
-| `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications; each 1 – 100 and `warn` < `critical` |
+| Key | Values (default first) | Meaning | Tier |
+|---|---|---|---|
+| `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, only the primary window, or one per window | basic |
+| `ringStyle` | `"ring"`, `"bar"` | rings, or compact mini-bars (a logo dot plus one slim bar per window) | advanced |
+| `percentMode` | `"used"`, `"remaining"` | | basic |
+| `percentPosition` | `"below"`, `"center"` | show the percentage below each ring, or in its centre in place of the provider logo; used only when `sidebarItems.percentLabel` is on | advanced |
+| `labelContent` | `"percent"`, `"reset"`, `"both"` | what the label says: percentage, reset countdown or both | advanced |
+| `sidebarAnimations` | `true`, `false` | one-shot pulse when a ring crosses a threshold and a flash on a reset; reduced motion turns them off | advanced |
+| `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard | basic |
+| `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications; each 1 – 100 and `warn` < `critical` | advanced |
 
 ### Providers, accounts and polling
 
-| Key | Values (default first) | Meaning |
-|---|---|---|
-| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2},"openrouter":{"enabled":false,"showInSidebar":true,"order":3}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` is **experimental** and only turns itself on when its credentials are found; `openrouter` is **experimental** and always starts off |
-| `accounts` | `[]` | extra Claude Code / Codex accounts, at most 6: `{"id":"work","provider":"claude","label":"Work","configDir":"/abs/path","enabled":true}`; see §4 |
-| `openrouterKeyEnv` | `"OPENROUTER_API_KEY"` | *name* of the environment variable holding the OpenRouter key (upper-case letters, digits, `_`); never the key |
-| `refreshIntervalSec` | `60` (min 15) | quota polling period; Claude is never polled faster than every 120 s, per account |
-| `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
-| `pollingPaused` | `false`, `true` | skip the *automatic* polling (log ingestion keeps running; an explicit refresh still polls). Also in the tray and the command palette |
-| `ingestEnabled` | `true`, `false` | parse the CLIs' local session logs into the usage database (token history, sessions, forecasts); off = quota rings only |
-| `quotaRetentionDays` | `365` (0 – 3650, 0 = keep forever) | delete quota samples older than this; samples older than 14 days are thinned to one peak per hour. Token usage events are never deleted |
+| Key | Values (default first) | Meaning | Tier |
+|---|---|---|---|
+| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2},"openrouter":{"enabled":false,"showInSidebar":true,"order":3}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` is **experimental** and only turns itself on when its credentials are found; `openrouter` is **experimental** and always starts off | basic |
+| `accounts` | `[]` | extra Claude Code / Codex accounts, at most 6: `{"id":"work","provider":"claude","label":"Work","configDir":"/abs/path","enabled":true}`; see §4 | advanced |
+| `openrouterKeyEnv` | `"OPENROUTER_API_KEY"` | *name* of the environment variable holding the OpenRouter key (upper-case letters, digits, `_`); never the key | advanced |
+| `refreshIntervalSec` | `60` (min 15) | quota polling period; Claude is never polled faster than every 120 s, per account | basic |
+| `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet | advanced |
+| `pollingPaused` | `false`, `true` | skip the *automatic* polling (log ingestion keeps running; an explicit refresh still polls). Also in the tray and the command palette | advanced |
+| `ingestEnabled` | `true`, `false` | parse the CLIs' local session logs into the usage database (token history, sessions, forecasts); off = quota rings only | basic |
+| `quotaRetentionDays` | `365` (0 – 3650, 0 = keep forever) | delete quota samples older than this; samples older than 14 days are thinned to one peak per hour. Token usage events are never deleted | advanced |
 
 ### Cost, notifications and integrations
 
-| Key | Values (default first) | Meaning |
-|---|---|---|
-| `pricingUrl` | `""` | price source URL. Empty = the project's GitHub raw `pricing.json`; non-empty must be an `https://` custom source |
-| `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically |
-| `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
-| `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what the user pays per month per provider, to compare with the API-equivalent estimate in History |
-| `notifications` | `false`, `true` | master switch for every notification (native and webhook); the four switches below only act while it is on |
-| `thresholdNotifications` | `true`, `false` | warn when a window crosses `thresholds.warn` / `thresholds.critical` (once per window, level and cycle) |
-| `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets |
-| `budgetNotifications` | `true`, `false` | warn at 80 % and 100 % of `monthlyBudgetUsd` (needs a budget > 0), once a month each |
-| `weeklySummary` | `false`, `true` | Monday ~09:00: one notification summarising last week |
-| `webhook` | `{"enabled":false,"url":"","kind":"generic"}` | optional second channel: `kind` is `"generic"` (JSON), `"ntfy"` or `"slack"`; `https://` only (enabling with another URL turns it off); the URL is never logged |
-| `focusUntil` | `0` (off), `-1` (until turned off), or an epoch-ms deadline | focus mode silences every notification channel; normally set from the tray, the palette or Settings |
-| `focusHidesSidebar` | `false`, `true` | also hide the bar while focus mode is on |
-| `exportSnapshot` | `false`, `true` | write `snapshot.json` after every refresh for `ai-usage-sidebar --print` and status bars (`docs/STATUSLINE.md`) |
-| `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
+| Key | Values (default first) | Meaning | Tier |
+|---|---|---|---|
+| `pricingUrl` | `""` | price source URL. Empty = the project's GitHub raw `pricing.json`; non-empty must be an `https://` custom source | advanced |
+| `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically | advanced |
+| `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing | basic |
+| `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what the user pays per month per provider, to compare with the API-equivalent estimate in History | advanced |
+| `notifications` | `false`, `true` | master switch for every notification (native and webhook); the four switches below only act while it is on | basic |
+| `thresholdNotifications` | `true`, `false` | warn when a window crosses `thresholds.warn` / `thresholds.critical` (once per window, level and cycle) | basic |
+| `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets | basic |
+| `budgetNotifications` | `true`, `false` | warn at 80 % and 100 % of `monthlyBudgetUsd` (needs a budget > 0), once a month each | advanced |
+| `weeklySummary` | `false`, `true` | Monday ~09:00: one notification summarising last week | advanced |
+| `webhook` | `{"enabled":false,"url":"","kind":"generic"}` | optional second channel: `kind` is `"generic"` (JSON), `"ntfy"` or `"slack"`; `https://` only (enabling with another URL turns it off); the URL is never logged | advanced |
+| `focusUntil` | `0` (off), `-1` (until turned off), or an epoch-ms deadline | focus mode silences every notification channel; normally set from the tray, the palette or Settings | basic |
+| `focusHidesSidebar` | `false`, `true` | also hide the bar while focus mode is on | advanced |
+| `exportSnapshot` | `false`, `true` | write `snapshot.json` after every refresh for `ai-usage-sidebar --print` and status bars (`docs/STATUSLINE.md`) | advanced |
+| `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) | basic |
 
 ### Updates, presets and first-run bookkeeping
 
-| Key | Values (default first) | Meaning |
-|---|---|---|
-| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |
-| `skippedVersion` | `""` | update version the user chose to skip; leave it to the app |
-| `lastSeenVersion` | `""` | version whose "What's new" was last shown; leave it to the app |
-| `onboarded` | `false`, `true` | the first-run wizard was done or skipped; a settings file that already exists counts as onboarded |
-| `customPresets` | `{}` | the user's saved presets, name → partial settings object (at most 10, names up to 40 characters; a preset cannot carry `customPresets` or `focusUntil`). Built-in presets (minimal, power, screenShare, cyber) live in `src/lib/builtin-presets.json` |
+| Key | Values (default first) | Meaning | Tier |
+|---|---|---|---|
+| `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` | basic |
+| `skippedVersion` | `""` | update version the user chose to skip; leave it to the app | internal |
+| `lastSeenVersion` | `""` | version whose "What's new" was last shown; leave it to the app | internal |
+| `onboarded` | `false`, `true` | the first-run wizard was done or skipped; a settings file that already exists counts as onboarded | internal |
+| `customPresets` | `{}` | the user's saved presets, name → partial settings object (at most 10, names up to 40 characters; a preset cannot carry `customPresets` or `focusUntil`). Built-in presets (minimal, power, screenShare, cyber) live in `src/lib/builtin-presets.json` | internal |
 
 Old files may still carry `showScopedRing` / `showPercentLabel` (removed in
 0.7): the app reads them as `sidebarItems.scoped` / `sidebarItems.percentLabel`
