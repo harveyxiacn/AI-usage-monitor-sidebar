@@ -34,7 +34,10 @@
     /** 0..100, position of the tail tip along the bubble's docked side */
     tailPercent?: number;
     now?: number;
+    /** pinned popovers get a close button (hover popovers close on their own) */
+    pinned?: boolean;
     onDetails?: () => void;
+    onClose?: () => void;
   }
 
   let {
@@ -45,7 +48,9 @@
     highlightKind = null,
     tailPercent = 50,
     now = Date.now(),
+    pinned = false,
     onDetails,
+    onClose,
   }: Props = $props();
 
   /** tail tip along the docked side; the CSS picks the axis from `edge` */
@@ -73,6 +78,17 @@
     return tDyn(`status.${quota.status}`);
   });
 
+  /**
+   * Spoken by the polite live region below. It only changes when the provider's
+   * status does, never on the countdown tick, so it announces faults and
+   * recoveries without chattering.
+   */
+  const statusAnnouncement = $derived(
+    quota.status === 'ok'
+      ? ''
+      : t('a11y.statusChanged', { provider: quota.displayName, status: tDyn(`status.${quota.status}`) })
+  );
+
   const creditsLine = $derived.by(() => {
     const c = quota.credits;
     if (!c) return null;
@@ -84,7 +100,8 @@
 </script>
 
 <div class="root" data-edge={edge} style:--tail-y={tailOffset} style:--tail-x={tailOffset}>
-  <div class="bubble surface">
+  <div class="bubble surface" role="dialog" aria-label={t('popover.title', { provider: quota.displayName })}>
+    <div class="sr-only" role="status" aria-live="polite">{statusAnnouncement}</div>
     <header>
       <span class="logo" style:color={accentFor(quota.provider, 0)}>
         <ProviderLogo provider={quota.provider} size={24} />
@@ -92,6 +109,9 @@
       <h1>{t('popover.title', { provider: quota.displayName })}</h1>
       {#if quota.planLabel}
         <span class="plan">{quota.planLabel}</span>
+      {/if}
+      {#if pinned}
+        <button class="close" onclick={() => onClose?.()} aria-label={t('popover.close')} title={t('popover.close')}>×</button>
       {/if}
     </header>
 
@@ -284,6 +304,33 @@
     white-space: nowrap;
   }
 
+  .close {
+    margin-left: auto;
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-right: -0.375rem;
+    padding: 0;
+    border-radius: 999px;
+    font-size: 1.125rem;
+    line-height: 1;
+    color: var(--muted);
+    transition:
+      color var(--dur-ui) var(--ease-out),
+      background var(--dur-ui) var(--ease-out);
+  }
+
+  .plan + .close {
+    margin-left: 0.25rem;
+  }
+
+  .close:hover {
+    color: var(--text);
+    background: var(--hover);
+  }
+
   .rows {
     display: flex;
     flex-direction: column;
@@ -301,6 +348,7 @@
     align-items: center;
     gap: 0.375rem;
     padding: 0;
+    border-radius: 0.25rem;
     font-size: 0.8125rem;
     color: var(--muted);
     transition: color var(--dur-ui) var(--ease-out);
@@ -370,6 +418,7 @@
 
   .details {
     padding: 0;
+    border-radius: 0.25rem;
     font-size: 0.6875rem;
     font-weight: 500;
     color: var(--muted);

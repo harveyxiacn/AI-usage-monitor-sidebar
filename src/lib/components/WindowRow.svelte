@@ -41,11 +41,18 @@
   // the bar paints whatever the percent label says, see Bar.svelte
   const shown = $derived(percentMode === 'remaining' ? 100 - used : used);
   const forecast = $derived(formatForecast(w, percentMode, now));
+  const name = $derived(label ?? windowLabel(w, context));
 </script>
 
 <div class="row" class:highlight class:compact>
-  <div class="label">{label ?? windowLabel(w, context)}</div>
-  <Bar value={shown} {color} height={compact ? 5 : 6} />
+  <div class="label">{name}</div>
+  <Bar
+    value={shown}
+    {color}
+    height={compact ? 5 : 6}
+    label={name}
+    valueText={`${formatPercent(w.usedPercent, percentMode)}, ${formatReset(w.resetsAt, now)}`}
+  />
   <div class="stats">
     <span class="pct">{formatPercent(w.usedPercent, percentMode)}</span>
     <span class="reset">{formatReset(w.resetsAt, now)}</span>

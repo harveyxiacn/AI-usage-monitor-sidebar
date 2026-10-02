@@ -44,9 +44,9 @@
     sidebarRelayout,
     type Unlisten,
   } from '$lib/api';
-  import { shortPercent } from '$lib/format';
+  import { formatPercent, formatReset, severityOf, windowLabel } from '$lib/format';
   import { forecastTickPercent } from '$lib/forecast';
-  import { t } from '$lib/i18n/i18n.svelte';
+  import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { handleColorOf, rings, type RingItem } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -59,6 +59,17 @@
   const s = $derived(settings.value);
   const items = $derived(rings.items);
   const loading = $derived(snapshot.value === null || !settings.loaded);
+  /**
+   * Placeholder rings while the first snapshot is on its way: as many as the
+   * settings say will be drawn, so the bar does not jump in size when the real
+   * rings replace them.
+   */
+  const placeholders = $derived(
+    Array.from(
+      { length: Math.max(1, Object.values(s.providers).filter((p) => p.enabled && p.showInSidebar).length) },
+      (_, i) => i
+    )
+  );
 
   /** platform-owned expand/collapse state; only meaningful when autoHide is on */
   let expanded = $state(true);
@@ -144,7 +155,15 @@
     requestPopover(item, ev.currentTarget as HTMLElement);
   }
 
+  /**
+   * Click or Enter/Space pins the ring's popover. A double-click is two clicks
+   * plus a dblclick: only the first click counts, otherwise the second one
+   * would un-pin (and hide) the popover that the first had just opened.
+   * The popover window never takes focus, so a keyboard user cannot be moved
+   * into it; pinning keeps it open, and its Esc / close button need a pointer.
+   */
   function onRingClick(item: RingItem, ev: MouseEvent) {
+    if (ev.detail > 1) return;
     const el = ev.currentTarget as HTMLElement;
     const nextPinned = pinnedKey !== item.key;
     pinnedKey = nextPinned ? item.key : null;
@@ -159,12 +178,30 @@
     }
   }
 
-  /** Screen-reader label: every arc of the group, outer → inner. */
+  /**
+   * Screen-reader label: provider, then its status when it is not "ok", then
+   * every arc outer → inner with percent, severity and reset time.
+   */
   function ringLabel(item: RingItem): string {
-    if (item.arcs.length === 0) return item.quota.displayName;
-    const parts = item.arcs.map((a) => `${a.window.label} ${shortPercent(a.window.usedPercent, s.percentMode)}`);
-    return `${item.quota.displayName}: ${parts.join(', ')}`;
+    const head = [item.quota.displayName];
+    if (item.quota.status !== 'ok') head.push(tDyn(`status.${item.quota.status}`));
+    const now = Date.now();
+    const parts = item.arcs.map((a) => {
+      const sev = severityOf(a.window.usedPercent, s.thresholds);
+      const level = sev === 'normal' ? '' : ` (${t(`a11y.severity.${sev}`)})`;
+      return `${windowLabel(a.window, 'bar')} ${formatPercent(a.window.usedPercent, s.percentMode)}${level}, ${formatReset(a.window.resetsAt, now)}`;
+    });
+    const name = head.join(' · ');
+    return parts.length === 0 ? name : `${name}: ${parts.join('; ')}`;
   }
+
+  /** polite live region: only changes when a provider's status does */
+  const statusAnnouncement = $derived(
+    items
+      .filter((i) => i.quota.status !== 'ok')
+      .map((i) => t('a11y.statusChanged', { provider: i.quota.displayName, status: tDyn(`status.${i.quota.status}`) }))
+      .join('. ')
+  );
 </script>
 
 <svelte:head><title>{t('app.name')}</title></svelte:head>
@@ -179,6 +216,7 @@
   onmousemove={heartbeat}
   role="presentation"
 >
+  <div class="sr-only" role="status" aria-live="polite">{statusAnnouncement}</div>
   {#if collapsed}
     <!-- auto-hidden: only a thin coloured sliver is left on the screen edge -->
     <!-- `collapsedWidth` is the sliver's thickness: its width on a left/right
@@ -195,7 +233,7 @@
   {:else}
     <div class="pill surface" use:dragHandle={onDrag} ondblclick={() => void openDashboard('overview')} role="presentation">
       {#if loading}
-        {#each [0, 1] as i (i)}
+        {#each placeholders as i (i)}
           <div class="slot">
             <Ring arcs={[]} thresholds={s.thresholds} loading showPercentLabel={s.sidebarItems.percentLabel} percentPosition={s.percentPosition} />
           </div>
@@ -205,7 +243,7 @@
              bar): the grip is rendered whatever `moreButton` says, so the pill
              keeps a non-zero box and stays hoverable, draggable and clickable. -->
         <div class="slot empty" title={t('overview.noProviders')}>
-          <button class="dots" onclick={() => void openDashboard('settings')} aria-label={t('sidebar.more')}>⋯</button>
+          <button class="dots" onclick={() => void openDashboard('settings')} ondblclick={(e) => e.stopPropagation()} aria-label={t('sidebar.more')}>⋯</button>
         </div>
       {:else}
         {#each items as item (item.key)}
@@ -218,6 +256,7 @@
             aria-pressed={pinnedKey === item.key}
             onmouseenter={(e) => onRingEnter(item, e)}
             onclick={(e) => onRingClick(item, e)}
+            ondblclick={(e) => e.stopPropagation()}
             onkeydown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -246,7 +285,7 @@
           </div>
         {/each}
         {#if s.sidebarItems.moreButton}
-          <button class="dots" onclick={() => void openDashboard('overview')} aria-label={t('sidebar.more')}>⋯</button>
+          <button class="dots" onclick={() => void openDashboard('overview')} ondblclick={(e) => e.stopPropagation()} aria-label={t('sidebar.more')}>⋯</button>
         {/if}
       {/if}
     </div>
@@ -323,6 +362,7 @@
   .slot {
     display: block;
     line-height: 0;
+    border-radius: 0.75rem;
   }
 
   .slot.empty {
@@ -343,8 +383,10 @@
   }
 
   .dots {
+    position: relative;
     display: block;
     width: 100%;
+    border-radius: 0.25rem;
     margin-top: -0.375rem;
     padding: 0;
     font-size: 1rem;
@@ -358,6 +400,18 @@
     color: var(--text);
   }
 
+  /* The glyph is ~10px tall; an invisible box makes the target at least 24px
+     without moving anything. In a column it grows downwards, into the pill's
+     bottom padding, so it never covers the ring above. */
+  .dots::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: max(100%, 24px);
+    height: max(1.5rem, 24px);
+  }
+
   /* In a row the dots sit beside the last ring instead of under it; the
      negative margin keeps them tucked against the group either way. */
   .stage[data-edge='top'] .dots,
@@ -366,6 +420,13 @@
     align-self: center;
     margin-top: 0;
     margin-left: -0.375rem;
+  }
+
+  /* in a row it grows to the right, centred on the glyph's line */
+  .stage[data-edge='top'] .dots::before,
+  .stage[data-edge='bottom'] .dots::before {
+    top: 50%;
+    transform: translateY(-50%);
   }
 
   .handle {

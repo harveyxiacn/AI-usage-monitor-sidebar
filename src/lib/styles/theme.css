@@ -106,8 +106,10 @@
   --surface-track: var(--track);
 
   --text: #f5f5f7;
-  --muted: #9a9aa3;
-  --faint: #6a6a73;
+  /* secondary text tokens: >= 4.5:1 on the pill (#0c0c0e) and on the dashboard
+     surfaces up to --surface-2 (#232329), since they carry 11-13px text */
+  --muted: #a6a6af;
+  --faint: #8a8a94;
 
   /* dashboard (opaque) */
   --bg: #121215;
@@ -151,8 +153,9 @@
   --surface-track: var(--track);
 
   --text: #16161a;
-  --muted: #6b6b76;
-  --faint: #9a9aa3;
+  /* --faint >= 4.5:1 on the pill (#fcfcfd) and --surface-2; --muted also on --surface-3 */
+  --muted: #5c5c67;
+  --faint: #6b6b76;
 
   --bg: #f4f4f7;
   --surface: #ffffff;
