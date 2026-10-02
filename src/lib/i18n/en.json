@@ -599,7 +599,7 @@
   "integrations.restore.ready": "Backup from {date} is ready. Restart to apply it.",
   "integrations.restore.unknownDate": "an unknown date",
   "integrations.restart": "Restart now",
-  "dbStatus.schemaTooNew": "The usage database was written by a newer version of the app (schema {found}); this version understands schema {supported}. History, cost and session pages are unavailable, quota rings still work. Update to a version that supports schema {minReader}, or restore a pre-upgrade backup (Settings > Integrations, or run ai-usage-sidebar --restore-pre-upgrade).",
+  "dbStatus.schemaTooNew": "The usage database was written by a newer version of the app (schema {found}); this version understands schema {supported}. History, cost and session pages are unavailable, quota rings still work. Update to a version that supports schema {minReader}, or restore a pre-upgrade backup (Settings > Backup & history, or run ai-usage-sidebar --restore-pre-upgrade).",
   "dbStatus.migrationBackupFailed": "The usage database was not upgraded because its safety backup could not be written ({message}). Nothing was changed. Free disk space or fix the folder permissions and restart. History, cost and session pages are unavailable until then.",
   "dbStatus.unavailable": "The usage database could not be opened ({message}). History, cost and session pages are unavailable; quota rings still work.",
   "preUpgrade.title": "Backups from before database upgrades",
