@@ -16,7 +16,7 @@ pub const PRICING_FILE: &str = "pricing.json";
 pub const DEFAULT_PRICING_URL: &str =
     "https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json";
 /// Revision of [`DEFAULTS`]. Keep this in sync with the shipped `pricing.json`.
-pub const BUILTIN_PRICING_UPDATED_AT: &str = "2026-09-23T00:00:00Z";
+pub const BUILTIN_PRICING_UPDATED_AT: &str = "2026-10-02T00:00:00Z";
 
 /// `(model id, input, output, cache write, cache read)` — USD / 1M tokens.
 /// Sources checked 2026-09-23:
@@ -40,6 +40,8 @@ const DEFAULTS: &[(&str, f64, f64, f64, f64)] = &[
     ("claude-sonnet-4-5", 3.0, 15.0, 3.75, 0.3),
     ("claude-sonnet-4-6", 3.0, 15.0, 3.75, 0.3),
     ("claude-sonnet-5", 2.0, 10.0, 2.5, 0.2),
+    // Checked 2026-10-02: https://platform.claude.com/docs/en/about-claude/pricing
+    ("claude-sonnet-5-5", 2.0, 10.0, 2.5, 0.2),
     ("claude-haiku-4-5", 1.0, 5.0, 1.25, 0.1),
     ("claude-fable-5", 10.0, 50.0, 12.5, 1.0),
     ("claude-mythos-5", 10.0, 50.0, 12.5, 1.0),
@@ -64,6 +66,8 @@ const DEFAULTS: &[(&str, f64, f64, f64, f64)] = &[
     ("gpt-5.6-terra", 2.0, 12.0, 2.5, 0.2),
     ("gpt-5.6-luna", 0.2, 1.2, 0.25, 0.02),
     ("gpt-6-sol", 2.0, 10.0, 2.5, 0.2),
+    // Checked 2026-10-02: https://developers.openai.com/api/docs/pricing
+    ("gpt-6.1-sol", 2.0, 10.0, 2.5, 0.1),
     ("gpt-6-luna", 0.1, 0.5, 0.125, 0.01),
     // Keep Astra last so unknown GPT-6 variants retain the prior family price.
     ("gpt-6-astra", 10.0, 50.0, 12.5, 1.0),

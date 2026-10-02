@@ -635,6 +635,10 @@ Defaults were checked on 2026-09-23 against
 [GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex),
 [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing), and
 [Claude Opus 5.5](https://www.anthropic.com/claude-opus-5-5).
+Claude Sonnet 5.5 and GPT-6.1 Sol were added on 2026-10-02 using the official
+Claude and OpenAI pricing pages above. Both use $2 input, $10 output and $2.50
+cache writes per 1M tokens; cache reads are $0.20 for Sonnet 5.5 and $0.10 for
+GPT-6.1 Sol.
 These are standard short-context estimates, not invoices: fast/batch tiers,
 long-context multipliers, region fees and cache TTL differences are not
 tracked in the normalized counters. Cache writes use the published rate
