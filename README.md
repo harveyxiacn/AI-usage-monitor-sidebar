@@ -96,7 +96,7 @@ quota is left, and when does it reset?*
 | Presets | Four built-in presets (minimal, power, screen share, cyber) and up to ten of your own, with a preview of what changes |
 | Undo, import and export | The last 5 versions of `settings.json` can be restored (an edit burst counts as one); settings export to and import from a file |
 | Backup and restore | A full backup (settings plus a consistent copy of the usage database); a restore is validated, staged and applied at the next start, keeping the replaced files |
-| Downgrade safety | Before every database migration the app copies `usage.db` (and `settings.json`) to `backups/` in the data folder and keeps the newest 3 (listed under Settings → Backup). `ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]` restores one without starting the UI. If the migration cannot be backed up it does not run. A database from a newer app that stays compatible opens as is; an incompatible one is refused with a banner while the quota rings keep working. The policy: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Downgrade safety | Before every database migration the app copies `usage.db` (and `settings.json`) to `backups/` in the data folder and keeps the newest 3 (listed under Settings → Backup & history). `ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]` restores one without starting the UI. If the migration cannot be backed up it does not run. A database from a newer app that stays compatible opens as is; an incompatible one is refused with a banner while the quota rings keep working. The policy: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Settings file robustness | `settings.json` edited by hand or by another tool is accepted as UTF-8 (with or without BOM) or UTF-16; partial files, unknown keys and out-of-range values are fixed or ignored rather than resetting everything. A file that cannot be read is never overwritten silently: it is copied to `settings.json.bad-<timestamp>` first (the last 3 are kept) |
 | Diagnostics and privacy | A copyable, redacted diagnostics report (e-mails always masked, no tokens), a "Privacy & network" card listing every outbound request and every file the app keeps, and `hideAccountEmail` to mask addresses everywhere |
 | Shortcuts | A shortcut recorder that reports why a key could not be registered |
@@ -567,7 +567,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 预设 | 四个内置预设（极简、进阶、屏幕共享、赛博）和最多十个自定义预设，应用前可预览改动 |
 | 撤销、导入与导出 | 可恢复最近 5 个版本的 `settings.json`（连续编辑算一次）；设置可导出为文件或从文件导入 |
 | 备份与恢复 | 完整备份（设置加一致的用量数据库副本）；恢复前先校验并暂存，下次启动时应用，被替换的文件会保留 |
-| 降级安全 | 每次数据库迁移前，应用先把 `usage.db`（及 `settings.json`）复制到数据目录的 `backups/`，保留最新 3 份（在“设置 → 备份”中列出）。`ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]` 可不启动界面直接还原；备份失败则不执行迁移。来自较新版本且仍兼容的数据库照常打开；不兼容的会被拒绝并显示横幅，配额圆环照常工作。策略见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 降级安全 | 每次数据库迁移前，应用先把 `usage.db`（及 `settings.json`）复制到数据目录的 `backups/`，保留最新 3 份（在“设置 → 备份与历史”中列出）。`ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]` 可不启动界面直接还原；备份失败则不执行迁移。来自较新版本且仍兼容的数据库照常打开；不兼容的会被拒绝并显示横幅，配额圆环照常工作。策略见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 设置文件容错 | 手工或其他工具编辑的 `settings.json` 可为 UTF-8（带或不带 BOM）或 UTF-16；缺失的键、未知键与越界值会被补全或忽略，而不是整体重置。无法读取的文件不会被静默覆盖：先复制为 `settings.json.bad-<时间戳>`（保留最近 3 份） |
 | 诊断与隐私 | 可复制且已脱敏的诊断报告（邮箱始终遮盖，不含令牌）、列出所有外发请求与本地文件的“隐私与网络”卡片，以及在各处遮盖邮箱的 `hideAccountEmail` |
 | 快捷键 | 快捷键录制器，无法注册时会说明原因 |
