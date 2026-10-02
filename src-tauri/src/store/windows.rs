@@ -73,6 +73,27 @@ pub fn query_window_usage(
     Ok(out)
 }
 
+/// `(ts, total_tokens)` of every event of `provider` at or after `since` (unix
+/// ms), oldest first — the token-based fallback of the burn-rate forecast.
+pub fn usage_token_events(
+    db: &Db,
+    provider: &str,
+    since: i64,
+) -> Result<Vec<crate::commands::forecast::TokenEvent>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare_cached(
+        "SELECT ts, total_tokens FROM usage_events
+         WHERE provider = ?1 AND ts >= ?2 ORDER BY ts",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![provider, since], |r| {
+        Ok(crate::commands::forecast::TokenEvent {
+            ts_ms: r.get(0)?,
+            tokens: r.get(1)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +168,25 @@ mod tests {
                 .collect(),
         };
         assert!(query_window_usage(&db, &many, &PricingTable::default()).is_err());
+    }
+
+    #[test]
+    fn token_events_are_per_provider_from_a_start_time_oldest_first() {
+        let db = Db::open_in_memory().unwrap();
+        let t0 = 1_789_430_400_000i64;
+        insert_usage_events(
+            &db,
+            &[
+                ev("claude", "b", t0 + 2_000, 200, 20),
+                ev("claude", "a", t0, 100, 10),
+                ev("claude", "old", t0 - 1, 1, 1),
+                ev("codex", "x", t0 + 1_000, 9, 9),
+            ],
+        )
+        .unwrap();
+        let events = usage_token_events(&db, "claude", t0).unwrap();
+        let got: Vec<(i64, i64)> = events.iter().map(|e| (e.ts_ms, e.tokens)).collect();
+        assert_eq!(got, vec![(t0, 110), (t0 + 2_000, 220)]);
+        assert!(usage_token_events(&db, "copilot", t0).unwrap().is_empty());
     }
 }

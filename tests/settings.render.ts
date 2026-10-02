@@ -21,7 +21,7 @@ for (const language of ['en', 'zh-CN']) {
     // a card with something to reset starts with its button disabled
     await expect(page.locator('article#position button.reset')).toBeDisabled();
     // the privacy card lists every request the app can make
-    await expect(page.locator('article#privacy li')).toHaveCount(11);
+    await expect(page.locator('article#privacy li')).toHaveCount(12);
     expect(errors).toEqual([]);
     await page.screenshot({ path: `test-results/settings-${language}.png`, fullPage: true });
   });

@@ -48,11 +48,16 @@ export function providerColor(colors: ColorSettings, provider: ProviderId): stri
   return typeof value === 'string' ? value : null;
 }
 
+/** Spellings a plain capitalise-each-word cannot produce. */
+const DISPLAY_NAMES: Readonly<Record<string, string>> = { openrouter: 'OpenRouter' };
+
 /**
  * Last-resort label for a provider the snapshot does not name: "github-copilot"
  * → "Github Copilot". The backend's `displayName` always wins when present.
  */
 export function providerDisplayName(provider: ProviderId): string {
+  const known = DISPLAY_NAMES[provider.toLowerCase()];
+  if (known) return known;
   return (
     provider
       .split(/[-_\s]+/)

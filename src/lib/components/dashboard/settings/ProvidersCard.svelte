@@ -2,6 +2,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Toggle from '../Toggle.svelte';
+  import Field from '../Field.svelte';
   import SettingsBlock from './SettingsBlock.svelte';
   import SettingsCard from './SettingsCard.svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
@@ -49,7 +50,7 @@
   }
 
   const searchText = $derived(
-    [...providerRows.map(providerName), t('settings.providers.hint'), t('settings.providerEnabled'), t('settings.sidebarItems.provider')].join(' ')
+    [...providerRows.map(providerName), t('settings.providers.hint'), t('settings.providerEnabled'), t('settings.sidebarItems.provider'), t('settings.openrouterKeyEnv'), t('settings.openrouterKeyEnv.hint')].join(' ')
   );
 </script>
 
@@ -88,6 +89,20 @@
       </div>
     {/each}
     <p class="note">{t('settings.providers.hint')}</p>
+    {#if s.providers.openrouter}
+      <Field label={t('settings.openrouterKeyEnv')} hint={t('settings.openrouterKeyEnv.hint')}>
+        <input
+          class="field"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          maxlength="100"
+          value={s.openrouterKeyEnv}
+          aria-label={t('settings.openrouterKeyEnv')}
+          onchange={(e) => void settings.patch({ openrouterKeyEnv: e.currentTarget.value.trim() })}
+        />
+      </Field>
+    {/if}
   </SettingsBlock>
 </SettingsCard>
 

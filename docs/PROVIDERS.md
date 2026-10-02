@@ -25,6 +25,7 @@ CLI calls, with the same headers. That is the bar:
 | GitHub Copilot | **implementable with evidence** | yes, `experimental` (see §1) |
 | Google Gemini CLI | evidence for the HTTP call, **blocked on credential storage** | no (see §2) |
 | Cursor | **not implemented — ToS and stability** | no (see §3) |
+| OpenRouter | documented API, **no live account to verify** | yes, `experimental`, opt-in (see §4) |
 
 ---
 
@@ -374,3 +375,46 @@ credential a CLI wrote for its own API client, and this project will not ship
 it.
 
 **Verdict: not implemented — ToS and stability.**
+
+---
+
+## 4. OpenRouter — documented API, experimental
+
+Added in v0.6. **Experimental — not verified against a live account.** The
+author has no OpenRouter key to test with; every shape below is from the public
+API reference (openrouter.ai/docs, fetched 2026-10-02) and the tests use
+fixtures written from those pages, not captured responses.
+
+Unlike §1–§3 there is **no CLI login to borrow**: OpenRouter is an API gateway
+and its credential is a plain API key. The bar of "the credential the tool
+wrote for itself" therefore cannot apply, and the provider instead reads the
+key from an **environment variable whose name is a setting**
+(`openrouterKeyEnv`, default `OPENROUTER_API_KEY`). The key is never written to
+settings, logs or the UI, is only sent to `openrouter.ai`, and a value that
+does not look like a variable name (a pasted key) is rejected. Because it is
+read from the process environment, a variable set after the app started needs
+an app restart. There are no local session logs, so ingestion ignores it.
+
+Endpoints (`Authorization: Bearer <key>`):
+
+* `GET https://openrouter.ai/api/v1/key` — `data.limit`, `limit_remaining`,
+  `limit_reset` (`daily` / `weekly` / `monthly` / `null`), `usage`,
+  `is_free_tier`. Any key may call it.
+* `GET https://openrouter.ai/api/v1/credits` — `data.total_credits`,
+  `data.total_usage`. The reference says **only management keys** may call it;
+  a 403 for an ordinary key is expected and swallowed.
+
+Mapping:
+
+| Key | Result |
+|---|---|
+| has a `limit` | one "Credits" window, used % = `(limit - limit_remaining) / limit` (falls back to `usage / limit`); when `limit_reset` is set the reset is the next UTC midnight (Monday for weekly, the 1st for monthly — taken from the docs' wording, unverified) |
+| no limit, `/credits` readable | one "Credits" window, used % = `total_usage / total_credits`, no reset; informational |
+| no limit, `/credits` refused | no window, only a "spent by this key" line |
+
+Status: missing/empty variable → `not_logged_in` (no request is made); 401/403
+→ `token_expired`; 429 → `rate_limited` with `Retry-After`; anything else →
+`error`, keeping the last good windows.
+
+Off by default and absent from the snapshot until the user switches it on
+(Settings → Providers, badged *Experimental*).

@@ -36,7 +36,7 @@ test('every privacy row has texts in both languages and a real controlling setti
     if (item.setting) expect(item.setting in defaultSettings, item.id).toBe(true);
   }
   expect(PRIVACY_ITEMS.filter((i) => i.kind === 'request').map((i) => i.id)).toEqual(
-    ['claude', 'codex', 'copilot', 'update', 'pricing', 'assessment', 'webhook'],
+    ['claude', 'codex', 'copilot', 'openrouter', 'update', 'pricing', 'assessment', 'webhook'],
   );
 });
 

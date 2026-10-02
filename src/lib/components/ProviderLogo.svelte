@@ -3,7 +3,7 @@
   These are deliberately *not* copies of the trademarked logos: the Claude mark
   is a generic 8-point asterisk/burst, the OpenAI mark a generic six-fold
   hexagonal rosette. Both are drawn from scratch in a 24×24 box and inherit
-  `currentColor`. Any other provider gets a neutral monogram — a ringed initial
+  `currentColor`. OpenRouter gets a generic "route splitting in two" glyph. Any other provider gets a neutral monogram — a ringed initial
   — so the sidebar never renders an empty disc for a provider this file has not
   been taught about (and so no future provider's trademark is imitated either).
 -->
@@ -71,6 +71,13 @@
         <path d={PETAL} transform={`rotate(${deg})`} />
       {/each}
       <circle r="2.1" />
+    </g>
+  {:else if provider === 'openrouter'}
+    <!-- a route splitting in two: one input node, two branches with arrowheads -->
+    <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="4.5" cy="12" r="1.9" />
+      <path d="M6.4 12 H10 C13 12 13 6.5 16 6.5 H19.5 M17 4 l2.6 2.5 -2.6 2.5" />
+      <path d="M10 12 C13 12 13 17.5 16 17.5 H19.5 M17 15 l2.6 2.5 -2.6 2.5" />
     </g>
   {:else}
     <g fill="none" stroke="currentColor" stroke-width="1.35">

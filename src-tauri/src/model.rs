@@ -439,6 +439,7 @@ pub struct ColorSettings {
     pub claude: String,
     pub codex: String,
     pub copilot: String,
+    pub openrouter: String,
     pub warn: String,
     pub critical: String,
     pub surface: String,
@@ -451,6 +452,7 @@ impl Default for ColorSettings {
             claude: "#ff5c1a".into(),
             codex: "#10a37f".into(),
             copilot: "#8250df".into(),
+            openrouter: "#6467f2".into(),
             warn: "#f5c542".into(),
             critical: "#ff3b30".into(),
             surface: "".into(),
@@ -539,6 +541,9 @@ pub struct Settings {
     pub pricing_url: String,
     /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
     pub monthly_budget_usd: f64,
+    /// Name of the environment variable that holds the OpenRouter API key
+    /// (experimental provider). Never the key itself.
+    pub openrouter_key_env: String,
     /// What the user pays per month for each provider's subscription, in USD;
     /// 0 = unknown. Only used to compare the API-equivalent estimate with it.
     pub subscription_usd: BTreeMap<String, f64>,
@@ -647,6 +652,7 @@ impl Default for Settings {
             ingest_enabled: true,
             pricing_url: String::new(),
             monthly_budget_usd: 0.0,
+            openrouter_key_env: "OPENROUTER_API_KEY".into(),
             subscription_usd: [("claude", 0.0), ("codex", 0.0)]
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
