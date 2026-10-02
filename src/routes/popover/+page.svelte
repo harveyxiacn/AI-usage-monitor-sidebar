@@ -170,6 +170,7 @@
       {now}
       {history}
       {pinned}
+      paused={s.pollingPaused}
       onClose={() => void popoverHide()}
       onDetails={() => void openDashboard('history')}
     />

@@ -173,6 +173,8 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `focusUntil` | `0` (off), `-1` (until turned off) or an epoch-ms deadline | focus / do-not-disturb: native notifications are silenced until then; a timed value expires by itself. Also set from the tray's "Focus mode" submenu |
 | `focusHidesSidebar` | `false`, `true` | hide the bar while focus mode is on, show it again when it ends |
+| `exportSnapshot` | `false`, `true` | write `snapshot.json` (versioned, no e-mails) to the app data dir after every snapshot; `ai-usage-sidebar --print [--format json|line|statusline] [--provider ID]` reads it and exits 0, or 2 when missing/older than 15 min. See `docs/STATUSLINE.md` |
+| `pollingPaused` | `false`, `true` | skip the automatic provider polling (log ingestion continues; an explicit refresh still polls). Persisted; also a tray check item |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `autostart` | `false`, `true` | start at login |
 | `autoUpdateCheck` | `true`, `false` | check GitHub for a newer application release once a day; never installs on its own; independent from `autoPricingCheck` |

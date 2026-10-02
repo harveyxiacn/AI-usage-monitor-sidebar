@@ -11,6 +11,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getUsageCalendar } from '$lib/api';
+  import CostNote from '$lib/components/CostNote.svelte';
   import { buildKpis, localDays, previousPeriod, splitPeriods, type Kpi, type KpiId, type KpiSet } from '$lib/analytics';
   import { HEAT_ACCENT } from '$lib/colors';
   import { formatEstimatedCost, formatInt, formatTokens } from '$lib/format';
@@ -131,7 +132,7 @@
         <li class="tile card placeholder" aria-busy="true"><span class="muted">{t('common.loading')}</span></li>
       {/if}
     </ul>
-    <p class="note">{t('history.kpi.note')} {t('history.costNote')}</p>
+    <p class="note">{t('history.kpi.note')} <CostNote /></p>
   {/if}
 </section>
 

@@ -274,6 +274,10 @@ export interface Settings {
   focusHidesSidebar: boolean;
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
+  /** Write snapshot.json to the app data dir after every snapshot (CLI / status bars). */
+  exportSnapshot: boolean;
+  /** Skip automatic provider polling (local log ingestion keeps running). */
+  pollingPaused: boolean;
   alwaysOnTop: boolean;
 }
 
@@ -473,6 +477,17 @@ export interface PriceUpdateStatus {
   error: string | null;
   /** The active table was manually edited and must not be overwritten implicitly. */
   customPricing: boolean;
+}
+
+/** What a backup folder holds (backup_data / restore_data). */
+export interface BackupInfo {
+  /** the backup folder that was validated */
+  path: string;
+  createdAt: string | null;
+  appVersion: string | null;
+  schemaVersion: number | null;
+  hasDatabase: boolean;
+  hasSettings: boolean;
 }
 
 export interface AppInfo {

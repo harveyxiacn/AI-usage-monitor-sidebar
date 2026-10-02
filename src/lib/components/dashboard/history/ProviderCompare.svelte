@@ -3,6 +3,7 @@
   for each provider in the current range. [FRONTEND]
 -->
 <script lang="ts">
+  import CostNote from '$lib/components/CostNote.svelte';
   import { formatEstimatedCost, formatInt, formatTokens } from '$lib/format';
   import { t } from '$lib/i18n/i18n.svelte';
   import type { ProviderId, TokenTotals } from '$lib/types';
@@ -37,7 +38,7 @@
           <div><dt>{t('history.requests')}</dt><dd>{formatInt(p.totals.requests)}</dd></div>
           <div><dt>{t('history.estCost')}</dt><dd>{formatEstimatedCost(p.totals)}</dd></div>
         </dl>
-        <p class="note">{t('history.costNote')}</p>
+        <p class="note"><CostNote /></p>
         {#if p.totals.estimatedCostUsd == null && p.totals.knownCostUsd != null}
           <p class="note">{t('history.partialCostNote', { count: formatInt(p.totals.unpricedRequests ?? 0) })}</p>
         {:else if p.totals.estimatedCostUsd == null}
