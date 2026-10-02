@@ -261,6 +261,17 @@ pub enum PercentPosition {
     Center,
 }
 
+/// What the tray icon itself shows: only the glyph, or the busiest window's
+/// percentage as well (menu-bar title on macOS, rendered into the icon on
+/// Windows and Linux).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayDisplay {
+    #[default]
+    Icon,
+    Percent,
+}
+
 /// What the label next to / under each ring says. `Percent` is the original
 /// behaviour; `Reset` is the countdown ("1h12"); `Both` shows both.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -521,6 +532,10 @@ pub struct Settings {
     /// Skip the *automatic* provider polling (ingestion of local logs keeps
     /// running). An explicit refresh still polls. Persisted on purpose.
     pub polling_paused: bool,
+    /// `icon` (default) keeps the plain tray glyph; `percent` adds the busiest
+    /// visible window's percentage (see `window/tray_status.rs`).
+    #[serde(default)]
+    pub tray_display: TrayDisplay,
     pub always_on_top: bool,
     /// The user's own presets, name → partial settings patch (at most 10).
     /// A patch goes through the normal merge when applied, so it is only
@@ -599,6 +614,7 @@ impl Default for Settings {
             hide_account_email: false,
             export_snapshot: false,
             polling_paused: false,
+            tray_display: TrayDisplay::default(),
             always_on_top: true,
             custom_presets: BTreeMap::new(),
         }

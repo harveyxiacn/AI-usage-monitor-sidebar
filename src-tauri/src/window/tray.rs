@@ -5,7 +5,8 @@
 //! asset stays a build-time concern.
 
 use crate::model::{windows, AppSnapshot, Settings};
-use crate::window::tray_status::{self, Severity};
+use crate::window::tray_presets;
+use crate::window::tray_status::{self, IconState};
 use crate::window::{self, dashboard, sidebar};
 use anyhow::anyhow;
 use parking_lot::Mutex;
@@ -24,8 +25,11 @@ struct UsageCache {
     shown: Vec<String>,
     texts: Vec<String>,
     tooltip: String,
-    severity: Option<Severity>,
+    /// The icon / menu-bar title last applied (dot or percentage).
+    icon: Option<IconState>,
     focus_title: String,
+    /// [`tray_presets::signature`] of the Presets submenu as it is built now.
+    presets_sig: String,
 }
 
 #[derive(Clone)]
@@ -38,6 +42,9 @@ pub struct MenuItems {
     focus: Submenu<tauri::Wry>,
     /// 1 hour, until tomorrow, until turned off, off (see `focus_labels`).
     focus_items: Vec<MenuItem<tauri::Wry>>,
+    /// Built-in and custom presets; its entries are rebuilt only when the
+    /// list of presets (or the language) changes.
+    presets: Submenu<tauri::Wry>,
     cache: Arc<Mutex<UsageCache>>,
     toggle: MenuItem<tauri::Wry>,
     always_show: CheckMenuItem<tauri::Wry>,
@@ -67,6 +74,7 @@ mod ids {
     pub const FOCUS_MORNING: &str = "focus_morning";
     pub const FOCUS_FOREVER: &str = "focus_forever";
     pub const FOCUS_OFF: &str = "focus_off";
+    pub const PRESETS: &str = "presets";
 }
 
 /// Tray labels in the user's language (see [`prefers_chinese`]).
@@ -84,6 +92,7 @@ struct Labels {
     pricing_available: &'static str,
     quit: &'static str,
     focus: &'static str,
+    presets: &'static str,
     /// `{time}` is replaced with the local `HH:MM` the focus ends.
     focus_until_time: &'static str,
     focus_until_off: &'static str,
@@ -117,6 +126,7 @@ fn labels(settings: &Settings) -> Labels {
             pricing_available: "有价格表更新…",
             quit: "退出",
             focus: "专注模式",
+            presets: "预设",
             focus_until_time: "专注模式 · 至 {time}",
             focus_until_off: "专注模式 · 已开启",
             focus_choices: ["1 小时", "到明天 08:00", "直到手动关闭", "关闭"],
@@ -135,6 +145,7 @@ fn labels(settings: &Settings) -> Labels {
             pricing_available: "Pricing update available…",
             quit: "Quit",
             focus: "Focus mode",
+            presets: "Presets",
             focus_until_time: "Focus mode · until {time}",
             focus_until_off: "Focus mode · on",
             focus_choices: [
@@ -252,6 +263,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             &focus_items[3],
         ],
     )?;
+    let presets = Submenu::with_id(app, ids::PRESETS, l.presets, true)?;
     let mut usage = Vec::new();
     for id in crate::commands::providers::DEFAULT_PROVIDER_ORDER {
         let item = MenuItem::with_id(app, format!("usage_{id}"), *id, false, None::<&str>)?;
@@ -271,6 +283,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             &update,
             &pricing_update,
             &focus,
+            &presets,
             &separator,
             &quit,
         ],
@@ -320,6 +333,7 @@ pub fn build(app: &AppHandle) -> anyhow::Result<()> {
             usage_sep,
             focus,
             focus_items,
+            presets,
             cache: Arc::new(Mutex::new(UsageCache::default())),
             toggle,
             always_show,
@@ -398,8 +412,61 @@ fn on_menu(app: &AppHandle, id: &str) {
             log::info!("quit from tray");
             app.exit(0);
         }
+        preset if preset.starts_with(tray_presets::ID_PREFIX) => apply_preset(app, preset),
         other => log::debug!("unhandled tray menu id `{other}`"),
     }
+}
+
+/// Apply a preset entry through the same write path as the dashboard
+/// (`settings::update`); the resulting `settings-updated` event re-applies the
+/// window and tray state, exactly as for a change made in the Settings tab.
+fn apply_preset(app: &AppHandle, id: &str) {
+    let settings = window::settings_of(app);
+    let Some(patch) = tray_presets::patch_for(&settings, id) else {
+        log::warn!("tray preset `{id}` no longer exists");
+        return;
+    };
+    log::info!("applying tray preset `{id}`");
+    if let Err(e) = crate::commands::settings::update(app, &patch) {
+        log::error!("could not apply tray preset: {e:#}");
+    }
+}
+
+/// Rebuild the Presets submenu when (and only when) its entries changed.
+fn sync_presets(app: &AppHandle, items: &MenuItems, settings: &Settings) {
+    let chinese = prefers_chinese(settings);
+    if let Err(e) = items.presets.set_text(labels(settings).presets) {
+        log::debug!("tray presets title failed: {e}");
+    }
+    let signature = tray_presets::signature(settings, chinese);
+    let mut cache = items.cache.lock();
+    if cache.presets_sig == signature {
+        return;
+    }
+    if let Ok(existing) = items.presets.items() {
+        for item in existing {
+            let _ = items.presets.remove(&item);
+        }
+    }
+    let (builtin, custom) = tray_presets::entries(settings, chinese);
+    let append = |entries: &[tray_presets::Entry]| {
+        for entry in entries {
+            match MenuItem::with_id(app, &entry.id, &entry.label, true, None::<&str>) {
+                Ok(item) => {
+                    let _ = items.presets.append(&item);
+                }
+                Err(e) => log::debug!("tray preset item failed: {e}"),
+            }
+        }
+    };
+    append(&builtin);
+    if !custom.is_empty() {
+        if let Ok(sep) = PredefinedMenuItem::separator(app) {
+            let _ = items.presets.append(&sep);
+        }
+        append(&custom);
+    }
+    cache.presets_sig = signature;
 }
 
 /// Show or hide the whole bar window (different from collapse/expand).
@@ -513,6 +580,9 @@ pub fn sync(app: &AppHandle, settings: &Settings) {
                 log::debug!("tray focus label failed: {e}");
             }
         }
+    }
+    if let Some(items) = state.tray_items.lock().clone() {
+        sync_presets(app, &items, settings);
     }
     sync_focus(app, settings);
     let snapshot = match app.try_state::<crate::state::AppState>() {
@@ -646,7 +716,7 @@ fn sync_usage_with(app: &AppHandle, settings: &Settings, snapshot: &AppSnapshot)
         cache.texts = texts;
     }
 
-    let (severity, busiest) = tray_status::worst(snapshot, settings);
+    let (_, busiest) = tray_status::worst(snapshot, settings);
     let focus_on = crate::focus::is_active(settings.focus_until, now);
     let tip = tray_status::tooltip(busiest.as_ref(), settings, focus_on, chinese);
     let tray = app.tray_by_id(TRAY_ID);
@@ -658,19 +728,22 @@ fn sync_usage_with(app: &AppHandle, settings: &Settings, snapshot: &AppSnapshot)
             cache.tooltip = tip;
         }
     }
-    // The dot also depends on the colours, so re-key on severity only and let
-    // a colour change show up at the next severity change.
-    if cache.severity != Some(severity) {
+    // The dot / number also depends on the colours, so re-key on the state
+    // only and let a colour change show up at the next state change. The
+    // native icon is touched only when that state differs from the last one.
+    let state = tray_status::icon_state(snapshot, settings);
+    if cache.icon != Some(state) {
         if let Some(tray) = &tray {
-            apply_severity_icon(tray, severity, settings);
+            apply_icon_state(tray, state, settings);
         }
-        cache.severity = Some(severity);
+        cache.icon = Some(state);
     }
 }
 
-/// Plain icon, or the icon with a severity dot. Windows and Linux only: the
-/// macOS glyph is a monochrome template image that cannot carry a colour.
-fn apply_severity_icon(tray: &tauri::tray::TrayIcon, severity: Severity, settings: &Settings) {
+/// Plain icon, icon with a severity dot, or the number. Windows and Linux
+/// draw into the bitmap; macOS keeps its monochrome template glyph (it cannot
+/// carry a colour) and shows the number as the menu-bar title instead.
+fn apply_icon_state(tray: &tauri::tray::TrayIcon, state: IconState, settings: &Settings) {
     #[cfg(not(target_os = "macos"))]
     {
         #[cfg(target_os = "windows")]
@@ -684,20 +757,36 @@ fn apply_severity_icon(tray: &tauri::tray::TrayIcon, severity: Severity, setting
                 return;
             }
         };
-        let icon = match tray_status::dot_color(severity, settings) {
-            Some(color) => {
-                let rgba =
-                    tray_status::overlay_dot(base.rgba(), base.width(), base.height(), color);
-                tauri::image::Image::new_owned(rgba, base.width(), base.height())
+        let icon = match state {
+            IconState::Percent { value, severity } => {
+                let size = base.width().min(base.height());
+                let rgba = tray_status::render_percent_icon(
+                    value,
+                    size,
+                    tray_status::percent_background(severity, settings),
+                );
+                tauri::image::Image::new_owned(rgba, size, size)
             }
-            None => base,
+            IconState::Dot(severity) => match tray_status::dot_color(severity, settings) {
+                Some(color) => {
+                    let rgba =
+                        tray_status::overlay_dot(base.rgba(), base.width(), base.height(), color);
+                    tauri::image::Image::new_owned(rgba, base.width(), base.height())
+                }
+                None => base,
+            },
         };
         if let Err(e) = tray.set_icon(Some(icon)) {
             log::debug!("tray set_icon: {e}");
         }
     }
     #[cfg(target_os = "macos")]
-    let _ = (tray, severity, settings);
+    {
+        let _ = settings;
+        if let Err(e) = tray.set_title(tray_status::title_text(state)) {
+            log::debug!("tray set_title: {e}");
+        }
+    }
 }
 
 /// Re-label the update item after a check. Separate from [`sync`] because the

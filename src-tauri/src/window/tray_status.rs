@@ -2,7 +2,9 @@
 //! lines, the worst-severity summary and the severity dot drawn onto the icon.
 //! Nothing here touches Tauri, so it is all unit-tested. [PLATFORM]
 
-use crate::model::{AppSnapshot, PercentMode, ProviderQuota, ProviderStatus, Settings};
+use crate::model::{
+    AppSnapshot, PercentMode, ProviderQuota, ProviderStatus, Settings, TrayDisplay,
+};
 
 // ---------- language ----------
 
@@ -320,6 +322,137 @@ pub fn overlay_dot(rgba: &[u8], width: u32, height: u32, color: [u8; 3]) -> Vec<
     out
 }
 
+// ---------- percentage in the tray icon ----------
+
+/// What the tray icon should look like right now. Compared with the previous
+/// value so the native icon / title is only touched when something changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconState {
+    /// The plain glyph, with a severity dot where the platform can draw one.
+    Dot(Severity),
+    /// `trayDisplay = "percent"`: the busiest visible window's number.
+    Percent { value: u8, severity: Severity },
+}
+
+/// The number the tray shows in `percent` mode: the busiest window across the
+/// providers on the bar, as "used" or "remaining" per `percentMode`, rounded
+/// and clamped to 0..=100. `None` while there is no window to talk about.
+pub fn tray_percent(busiest: Option<&Busiest>, settings: &Settings) -> Option<u8> {
+    let used = busiest?.2;
+    let used = if used.is_finite() {
+        used.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let shown = match settings.percent_mode {
+        PercentMode::Used => used,
+        PercentMode::Remaining => 100.0 - used,
+    };
+    Some(shown.round() as u8)
+}
+
+/// Icon state for a snapshot. Without data (or in `icon` mode) this is the
+/// ordinary severity dot, so a fresh install never shows an empty number.
+pub fn icon_state(snapshot: &AppSnapshot, settings: &Settings) -> IconState {
+    let (severity, busiest) = worst(snapshot, settings);
+    match (
+        settings.tray_display,
+        tray_percent(busiest.as_ref(), settings),
+    ) {
+        (TrayDisplay::Percent, Some(value)) => IconState::Percent { value, severity },
+        _ => IconState::Dot(severity),
+    }
+}
+
+/// macOS menu-bar title next to the icon ("73%"); `None` clears it.
+pub fn title_text(state: IconState) -> Option<String> {
+    match state {
+        IconState::Percent { value, .. } => Some(format!("{value}%")),
+        IconState::Dot(_) => None,
+    }
+}
+
+/// 3x5 digit glyphs, one row per entry, bit 2 = left column.
+const GLYPHS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b001, 0b001],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+/// Background of the percent icon: the severity colour, so the state reads at
+/// a glance on a light and on a dark taskbar. `Ok` is a calm green.
+pub fn percent_background(severity: Severity, settings: &Settings) -> [u8; 3] {
+    dot_color(severity, settings).unwrap_or([52, 199, 89])
+}
+
+/// Dark digits on the coloured square: high contrast on every severity colour.
+const PERCENT_INK: [u8; 3] = [18, 18, 22];
+
+/// Render `value` (0..=100, up to three digits) as a `size`x`size` RGBA icon:
+/// a rounded square in `background` with the number knocked out in dark ink,
+/// built from the 3x5 font scaled to the largest integer factor that fits.
+pub fn render_percent_icon(value: u8, size: u32, background: [u8; 3]) -> Vec<u8> {
+    let size = size.max(8);
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    let radius = size as f32 * 0.2;
+    for y in 0..size {
+        for x in 0..size {
+            // distance outside the rounded-square body (corner circles only)
+            let cx = (x as f32 + 0.5).clamp(radius, size as f32 - radius);
+            let cy = (y as f32 + 0.5).clamp(radius, size as f32 - radius);
+            let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+            if (dx * dx + dy * dy).sqrt() <= radius {
+                let px = (y * size + x) as usize * 4;
+                out[px..px + 3].copy_from_slice(&background);
+                out[px + 3] = 255;
+            }
+        }
+    }
+    let digits: Vec<usize> = value
+        .min(100)
+        .to_string()
+        .bytes()
+        .map(|b| (b - b'0') as usize)
+        .collect();
+    let n = digits.len() as u32;
+    let columns = 4 * n - 1; // glyphs are 3 wide with a 1 column gap
+    let inner = size.saturating_sub(size / 8).max(1); // keep a margin
+    let scale = (inner / columns).min(inner / 5).max(1);
+    let (text_w, text_h) = (columns * scale, 5 * scale);
+    let (left, top) = (
+        size.saturating_sub(text_w) / 2,
+        size.saturating_sub(text_h) / 2,
+    );
+    for (i, digit) in digits.iter().enumerate() {
+        for (row, bits) in GLYPHS[*digit].iter().enumerate() {
+            for col in 0..3u32 {
+                if bits & (0b100 >> col) == 0 {
+                    continue;
+                }
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let x = left + (i as u32 * 4 + col) * scale + sx;
+                        let y = top + row as u32 * scale + sy;
+                        if x < size && y < size {
+                            let px = (y * size + x) as usize * 4;
+                            out[px..px + 3].copy_from_slice(&PERCENT_INK);
+                            out[px + 3] = 255;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +622,145 @@ mod tests {
         assert_eq!(dot_color(Severity::Critical, &s), Some([255, 0, 0]));
         s.colors.critical = "nonsense".into();
         assert_eq!(dot_color(Severity::Critical, &s), Some([255, 59, 48]));
+    }
+
+    fn one_window_snapshot(used: f64) -> AppSnapshot {
+        AppSnapshot {
+            providers: vec![quota(
+                "claude",
+                "Claude",
+                ProviderStatus::Ok,
+                vec![window("5h", used, true, None)],
+            )],
+            generated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn percent_value_is_the_busiest_visible_window_in_the_chosen_mode() {
+        let mut s = Settings {
+            tray_display: TrayDisplay::Percent,
+            ..Settings::default()
+        };
+        let snap = AppSnapshot {
+            providers: vec![
+                quota(
+                    "claude",
+                    "Claude",
+                    ProviderStatus::Ok,
+                    vec![
+                        window("5h", 41.4, true, None),
+                        window("7d", 72.6, false, None),
+                    ],
+                ),
+                quota(
+                    "codex",
+                    "Codex",
+                    ProviderStatus::Ok,
+                    vec![window("5h", 95.0, true, None)],
+                ),
+            ],
+            generated_at: String::new(),
+        };
+        assert_eq!(
+            icon_state(&snap, &s),
+            IconState::Percent {
+                value: 95,
+                severity: Severity::Critical
+            }
+        );
+        // a provider hidden from the bar no longer counts
+        s.providers.get_mut("codex").unwrap().show_in_sidebar = false;
+        assert_eq!(
+            icon_state(&snap, &s),
+            IconState::Percent {
+                value: 73,
+                severity: Severity::Warn
+            }
+        );
+        s.percent_mode = PercentMode::Remaining;
+        assert_eq!(
+            tray_percent(worst(&snap, &s).1.as_ref(), &s),
+            Some(27),
+            "remaining mode shows what is left of the busiest window"
+        );
+    }
+
+    #[test]
+    fn icon_mode_and_missing_data_keep_the_plain_icon() {
+        let mut s = Settings::default();
+        let snap = one_window_snapshot(80.0);
+        assert_eq!(icon_state(&snap, &s), IconState::Dot(Severity::Warn));
+        s.tray_display = TrayDisplay::Percent;
+        assert_eq!(
+            icon_state(&AppSnapshot::default(), &s),
+            IconState::Dot(Severity::Ok),
+            "no window, no number"
+        );
+        assert_eq!(tray_percent(None, &s), None);
+        let wild = ("x".to_string(), "y".to_string(), f64::NAN);
+        assert_eq!(tray_percent(Some(&wild), &s), Some(0));
+        let over = ("x".to_string(), "y".to_string(), 250.0);
+        assert_eq!(tray_percent(Some(&over), &s), Some(100));
+    }
+
+    #[test]
+    fn macos_title_is_the_number_with_a_percent_sign() {
+        let on = IconState::Percent {
+            value: 73,
+            severity: Severity::Warn,
+        };
+        assert_eq!(title_text(on), Some("73%".to_string()));
+        assert_eq!(title_text(IconState::Dot(Severity::Ok)), None);
+    }
+
+    fn ink_pixels(icon: &[u8]) -> usize {
+        icon.chunks(4).filter(|p| p[..3] == PERCENT_INK).count()
+    }
+
+    #[test]
+    fn the_rasterizer_scales_the_font_to_the_icon() {
+        let bg = [52, 199, 89];
+        // "7" has 7 lit cells; a 32 px icon scales the 3x5 font by 5
+        let seven = render_percent_icon(7, 32, bg);
+        assert_eq!(seven.len(), 32 * 32 * 4);
+        assert_eq!(ink_pixels(&seven), 7 * 25);
+        // "100" needs three glyphs: 8 + 12 + 12 cells at scale 2
+        assert_eq!(ink_pixels(&render_percent_icon(100, 32, bg)), 32 * 4);
+        // two digits fit at scale 4
+        assert_eq!(ink_pixels(&render_percent_icon(88, 32, bg)), 26 * 16);
+        // values above 100 clamp instead of growing a fourth digit
+        assert_eq!(
+            render_percent_icon(255, 32, bg),
+            render_percent_icon(100, 32, bg)
+        );
+    }
+
+    #[test]
+    fn every_digit_has_its_own_shape_and_the_corners_stay_transparent() {
+        let bg = [255, 59, 48];
+        let shapes: Vec<Vec<u8>> = (0..10).map(|d| render_percent_icon(d, 32, bg)).collect();
+        for (i, a) in shapes.iter().enumerate() {
+            for b in &shapes[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        let icon = render_percent_icon(42, 32, bg);
+        assert_eq!(&icon[..4], &[0, 0, 0, 0], "rounded corner is transparent");
+        let centre = (16 * 32 + 1) as usize * 4;
+        assert_eq!(
+            &icon[centre..centre + 4],
+            &[255, 59, 48, 255],
+            "body is the severity colour"
+        );
+        // a tiny size must not panic or index out of range
+        assert_eq!(render_percent_icon(100, 1, bg).len(), 8 * 8 * 4);
+    }
+
+    #[test]
+    fn percent_background_follows_severity() {
+        let s = Settings::default();
+        assert_eq!(percent_background(Severity::Ok, &s), [52, 199, 89]);
+        assert_eq!(percent_background(Severity::Critical, &s), [255, 59, 48]);
     }
 }

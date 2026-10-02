@@ -140,6 +140,7 @@ pub fn run() {
             commands::settings_io::get_settings_history,
             commands::settings_io::restore_settings_version,
             export::export_usage_csv,
+            export::save_share_card,
             backup::backup_data,
             backup::restore_data,
             backup::restart_app,
