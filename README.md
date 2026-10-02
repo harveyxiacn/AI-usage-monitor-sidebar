@@ -67,7 +67,7 @@ quota is left, and when does it reset?*
 | | |
 |---|---|
 | Menu | Show/hide the bar, always-show toggle, refresh, open the dashboard or Settings, check for updates, pause polling, quit. On Linux the icon has a menu only (a left click is not delivered) |
-| Usage lines | One line per provider and account at the top of the menu (`Claude · 5h 73% · resets in 51 min`), a tooltip naming the busiest window, and a severity dot on the icon (Windows / Linux) |
+| Usage lines | One line per provider and account at the top of the menu (`Claude · 5h 73% · resets in 51 min`), a tooltip naming the busiest window (not on Linux), and a severity dot on the icon (Windows / Linux) |
 | Percent mode | `trayDisplay: "percent"` puts the busiest window's number in the tray: the menu-bar title on macOS, drawn into the icon on Windows and Linux |
 | Presets and focus mode | A Presets submenu (four built-in presets plus your own) and a Focus submenu (1 hour, until tomorrow 08:00, until turned off) that silences every notification channel and can hide the bar |
 
@@ -130,8 +130,8 @@ windows are present. The table describes observed payloads, not guaranteed plan 
 (a personal and a work account, say): add them under Settings → Accounts, up to 6,
 each pointing at that login's CLI config directory (`CLAUDE_CONFIG_DIR` /
 `CODEX_HOME`). Extra accounts get their own rings, popover rows, quota history and
-forecast, but **quota only**: local session logs, token history, budget alerts and
-the weekly summary cover the primary account. On macOS an extra Claude account is
+forecast, but **quota only**: local session logs, token history, the budget alerts
+and the weekly summary's token and cost figures cover the primary account. On macOS an extra Claude account is
 read from `<dir>/.credentials.json` only, because the Keychain item of a
 non-default config directory could not be verified.
 
@@ -504,7 +504,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | | |
 |---|---|
 | 菜单 | 显示/隐藏侧栏、常驻显示开关、立即刷新、打开仪表盘或设置、检查更新、暂停轮询、退出。Linux 下图标只有菜单（左键点击不会送达应用） |
-| 用量行 | 菜单顶部按服务商与账号各一行（`Claude · 5h 73% · 51 分钟后重置`），提示文字给出最忙的窗口，图标上带严重度圆点（Windows / Linux） |
+| 用量行 | 菜单顶部按服务商与账号各一行（`Claude · 5h 73% · 51 分钟后重置`），提示文字给出最忙的窗口（Linux 上无），图标上带严重度圆点（Windows / Linux） |
 | 百分比模式 | `trayDisplay: "percent"` 把最忙窗口的数字放进托盘：macOS 为菜单栏标题，Windows 与 Linux 画入图标 |
 | 预设与专注模式 | “预设”子菜单（四个内置预设加你自己的）；“专注”子菜单（1 小时、到明天 08:00、直到手动关闭）会静默所有通知渠道，也可同时隐藏侧栏 |
 
@@ -564,7 +564,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 **多个账号**：Claude Code 与 Codex 可以同时跟踪多个登录（例如个人与工作账号）：在“设置 → 账号”中添加，
 最多 6 个，各自指向该登录的 CLI 配置目录（`CLAUDE_CONFIG_DIR` / `CODEX_HOME`）。额外账号有独立的圆环、弹层行、
-配额历史与预测，但**只有配额**：本地会话日志、token 历史、预算提醒与每周摘要只覆盖主账号。
+配额历史与预测，但**只有配额**：本地会话日志、token 历史、预算提醒与每周摘要中的 token 与费用只覆盖主账号。
 macOS 上额外的 Claude 账号只读取 `<目录>/.credentials.json`，因为非默认配置目录对应的钥匙串条目无法验证。
 
 **关于“实验性”**：Claude 与 Codex 两个服务商是对着真实账号的真实响应写出来的；

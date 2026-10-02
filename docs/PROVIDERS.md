@@ -1,11 +1,14 @@
 # Provider research — candidates beyond Claude Code and Codex
 
-Researched 2026-09-21 for v0.2.0. **Nothing in this file was tested against a
-live account**: the research machine has none of these tools installed or
-signed in (`~/.gemini`, `~/.cursor`, `~/.config/github-copilot` do not exist).
-Every factual claim below is a citation to published source code or official
-documentation that was actually fetched; where a claim could not be backed by a
-source it says **NOT VERIFIED**.
+Researched 2026-09-21 for v0.2.0 (§1–§3), extended for v0.6 with OpenRouter (§4)
+and multiple accounts (§5). **Nothing about Copilot, Gemini, Cursor or OpenRouter
+was tested against a live account**: the research machine has none of these tools
+installed or signed in (`~/.gemini`, `~/.cursor`, `~/.config/github-copilot` do
+not exist, there is no OpenRouter key). Every factual claim below is a citation to
+published source code or official documentation that was actually fetched; where a
+claim could not be backed by a source it says **NOT VERIFIED**. Only Claude Code
+and Codex (the baseline, and the two providers that support extra accounts) were
+built against real responses.
 
 ## The bar a candidate has to clear
 
@@ -476,8 +479,11 @@ retention thinning are per account.
   (`usage_events`, sessions, token/cost history and the token-based forecast
   fallback exist for the primary account only). Ingestion roots, the sessions
   tables and the evaluation features all key on the provider, and generalising
-  them would change rows existing users already have. Budget alerts and the
-  weekly summary therefore also describe the primary accounts.
+  them would change rows existing users already have. Cost-based features
+  (the monthly budget alerts, the weekly summary's tokens and cost) therefore
+  describe the primary accounts only; quota features (rings, forecasts,
+  threshold and forecast alerts, quota history, the weekly "limits hit" count)
+  cover every account.
 * **macOS and Claude Code.** On macOS the login of the *default* config dir is
   in the Keychain item `Claude Code-credentials`. Claude Code files the login of
   a non-default `CLAUDE_CONFIG_DIR` under a **different** Keychain service name,
@@ -488,3 +494,5 @@ retention thinning are per account.
   credentials file exists" message, and the Settings card says the same.
   Codex accounts are file based on every platform.
 * The tray shows one usage line per account (up to 6 extra ones).
+* Only Claude Code and Codex support extra accounts; an `accounts` entry for
+  another provider is dropped.
