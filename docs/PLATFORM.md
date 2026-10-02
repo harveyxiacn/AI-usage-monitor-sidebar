@@ -12,8 +12,12 @@ src-tauri/src/window/
   sidebar.rs    placement, expand/collapse, first reveal, geometry watchdog
   popover.rs    anchoring, show without focus, relayout, pinning
   hover.rs      the hover state machine and its cancellable timers
+  drag.rs       drag-to-move and edge snapping
   dashboard.rs  show / focus / navigate, close-to-hide
-  tray.rs       tray icon menu (localised), autoHide toggle
+  tray.rs       tray icon + menu (localised): usage lines, presets, focus, pause polling
+  tray_status.rs pure tray content: usage lines, tooltip, severity dot, percent icon, system language
+  tray_presets.rs pure helpers behind the Presets submenu
+  shortcuts.rs  optional global shortcuts and their registration status
   linux.rs      Wayland layer-shell docking + the KDE X11 blur hint
 ```
 
@@ -113,8 +117,9 @@ Two more Linux quirks handled in `main.rs` / `window/mod.rs`:
 
 ### Native translucency
 
-`Settings.surfaceStyle` (`glass` | `solid`) asks for a real blurred backdrop
-behind the overlay windows. `window::apply_surface_style()` implements it with
+`Settings.surfaceStyle` = `glass` asks for a real blurred backdrop behind the
+overlay windows; `solid` and `cyber` (a HUD painted entirely by the frontend)
+ask for none and clear it. `window::apply_surface_style()` implements it with
 the `window-vibrancy` crate, cfg-gated:
 
 | OS | Effect |
@@ -247,9 +252,15 @@ popover_set_pinned(false)      → start idle timers if the pointer is away
 
 idle timers (one task):
   +250 ms                      → popover_hide()          unless pinned
+                                 (a pinned popover: +8 s, PINNED_POPOVER_HIDE_DELAY_MS)
   +autoHideDelayMs             → sidebar collapse        unless pinned / re-hovered,
                                                           and only if autoHide is on
 ```
+
+Separately, a popover that has outlived `popoverTimeoutSec` (default 10 s, 0 =
+never, ×6 while pinned) without pointer activity on the bar or the popover is
+closed whatever the hover flags say (`hover::away_at_generation`), so a pointer
+that left while an event was lost cannot leave it open for good.
 
 Timers are `tauri::async_runtime::spawn` + `tokio::time::sleep`. There are no
 `JoinHandle`s to keep: every hover transition bumps a **generation counter**, and
@@ -276,9 +287,11 @@ menu:
 | Show/Hide sidebar | Hides or shows the whole bar window (different from collapse) |
 | Always show sidebar | Check item; checked == `autoHide: false`. Writes through `commands::settings::set_auto_hide` |
 | Refresh now | Emits `refresh-requested`, which the scheduler consumes |
+| Pause polling | Check item bound to `pollingPaused`: the scheduler skips automatic polling (log ingestion continues); an explicit refresh still polls |
 | Open dashboard | `open_dashboard(None)` |
 | Settings… | `open_dashboard(Some("settings"))` |
 | Check for updates / Update x.y.z available… | One item with two faces (`tray::update_label`): a manual `updater::check()` while nothing is on offer, and `open_dashboard(Some("settings"))` once there is |
+| Price update | A second item with the same two faces for the price table (`pricing_update_label`) |
 | Quit | `app.exit(0)` |
 
 Labels follow `settings.language` (English / 简体中文). `auto` follows the OS
@@ -293,13 +306,15 @@ Beyond the actions above the menu carries:
 
 * **Usage lines** at the top: one disabled item per enabled provider, e.g.
   `Claude · 5h 73% · resets in 51 min`, refreshed after every snapshot
-  (`tray::sync_usage`; the native menu is only touched when a line changes).
-  The tooltip names the busiest window.
+  (`tray::sync_usage`; the native menu is only touched when a line changes). An
+  extra account (`accounts`) gets a line of its own. The tooltip names the
+  busiest window; on Linux it is not shown, because the tray library has no
+  tooltip support there.
 * **Severity dot** on the icon (Windows, Linux): warn / critical / error, from
   the worst window of the providers shown on the bar and the `thresholds`
   setting. The icon is only swapped when the severity changes. macOS keeps
   the monochrome template glyph; it has no coloured overlay.
-* **Percentage in the icon** (`trayDisplay = "percent"`): the busiest window of
+* **Percentage in the icon** (`trayDisplay = "percent"`; macOS, Windows and Linux): the busiest window of
   the providers shown on the bar (`tray_status::icon_state`, honouring
   `percentMode`). macOS sets the menu-bar title ("73%") beside the template
   glyph (`TrayIcon::set_title`); Windows and Linux replace the icon with a
@@ -314,9 +329,10 @@ Beyond the actions above the menu carries:
   submenu is rebuilt only when its entries or the language change
   (`tray_presets::signature`).
 * **Focus mode** submenu (1 hour, until tomorrow 08:00, until turned off, off)
-  writing `focusUntil`. While active, `scheduler::notify_forecasts` shows
-  nothing (`focus::notifications_allowed`) and, with `focusHidesSidebar`, the
-  bar is hidden; a 30 s timer clears an expired deadline and restores the bar.
+  writing `focusUntil`. While active, `alerts::notifier::deliver` sends nothing
+  on any channel, native or webhook (`focus::notifications_allowed`) and, with
+  `focusHidesSidebar`, the bar is hidden; a 30 s timer clears an expired
+  deadline and restores the bar.
 
 ## 4b. Global shortcuts (`window/shortcuts.rs`)
 
@@ -335,7 +351,8 @@ business taking a key combination the user did not ask it to take. They are
 every `settings-updated`. `shortcuts::parse` refuses a combination without a
 modifier — a bare `U` would be swallowed in every application on the desktop —
 and whatever fails to parse or to register is reported through the
-`get_shortcut_status` command and shown under the field in Settings.
+`get_shortcut_status` / `get_shortcut_registrations` commands (per shortcut
+`off | registered | failed | unsupported`) and shown under the field in Settings.
 
 **Where this works.** The plugin uses `global-hotkey`, which grabs keys with
 `XGrabKey` on X11, `RegisterHotKey` on Windows and a Carbon event handler on
