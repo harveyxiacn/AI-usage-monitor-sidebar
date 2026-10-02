@@ -11,7 +11,9 @@
 //! for an X11 client to grab a global key, and only some compositors offer
 //! one at all.
 
-use crate::model::{Settings, ShortcutStatus};
+use crate::model::{
+    RegistrationState, Settings, ShortcutRegistration, ShortcutRegistrations, ShortcutStatus,
+};
 use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -27,6 +29,7 @@ struct Registered {
     toggle_sidebar: Option<Shortcut>,
     open_dashboard: Option<Shortcut>,
     status: ShortcutStatus,
+    registrations: ShortcutRegistrations,
 }
 
 /// The actions a global shortcut can trigger.
@@ -56,6 +59,35 @@ pub fn parse(value: &str) -> Result<Option<Shortcut>, String> {
         ));
     }
     Ok(Some(shortcut))
+}
+
+/// Registration outcome of one setting.
+///
+/// * empty value → `off`;
+/// * a native Wayland session cannot grab global keys (no protocol for an X11
+///   client, see `docs/PLATFORM.md`), so whatever the value is: `unsupported`;
+/// * a recorded failure (unparsable, or the OS refused it) → `failed`;
+/// * otherwise `registered`.
+pub fn classify(value: &str, failure: Option<&str>, wayland: bool) -> ShortcutRegistration {
+    if value.trim().is_empty() {
+        return ShortcutRegistration::default();
+    }
+    if wayland {
+        return ShortcutRegistration {
+            state: RegistrationState::Unsupported,
+            message: Some("native Wayland sessions do not allow global shortcuts".into()),
+        };
+    }
+    match failure {
+        Some(message) => ShortcutRegistration {
+            state: RegistrationState::Failed,
+            message: Some(message.to_string()),
+        },
+        None => ShortcutRegistration {
+            state: RegistrationState::Registered,
+            message: None,
+        },
+    }
 }
 
 /// The plugin, with the handler that maps a pressed shortcut to its action.
@@ -135,6 +167,20 @@ pub fn apply(app: &AppHandle, settings: &Settings) {
         }
     }
 
+    let wayland = cfg!(target_os = "linux") && super::backend_name() == "wayland";
+    next.registrations = ShortcutRegistrations {
+        toggle_sidebar: classify(
+            &settings.shortcut_toggle_sidebar,
+            next.status.toggle_sidebar.as_deref(),
+            wayland,
+        ),
+        open_dashboard: classify(
+            &settings.shortcut_open_dashboard,
+            next.status.open_dashboard.as_deref(),
+            wayland,
+        ),
+    };
+
     if let Some(state) = app.try_state::<Shortcuts>() {
         *state.inner.lock() = next;
     }
@@ -153,9 +199,57 @@ pub async fn get_shortcut_status(app: AppHandle) -> Result<ShortcutStatus, Strin
     Ok(status(&app))
 }
 
+/// Per shortcut: off / registered / failed / unsupported, for the recorder.
+#[tauri::command]
+pub async fn get_shortcut_registrations(app: AppHandle) -> Result<ShortcutRegistrations, String> {
+    Ok(match app.try_state::<Shortcuts>() {
+        Some(state) => state.inner.lock().registrations.clone(),
+        None => ShortcutRegistrations::default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_state_follows_value_failure_and_session() {
+        assert_eq!(classify("", None, false).state, RegistrationState::Off);
+        assert_eq!(classify(" ", Some("x"), true).state, RegistrationState::Off);
+        assert_eq!(
+            classify("Ctrl+Alt+U", None, false).state,
+            RegistrationState::Registered
+        );
+        let failed = classify("Ctrl+Alt+U", Some("already registered"), false);
+        assert_eq!(failed.state, RegistrationState::Failed);
+        assert_eq!(failed.message.as_deref(), Some("already registered"));
+        assert_eq!(
+            classify("Ctrl+Alt+U", None, true).state,
+            RegistrationState::Unsupported
+        );
+    }
+
+    /// Every key name the dashboard's recorder can produce
+    /// (`shortcut-recorder.ts`) must parse here, or a recorded shortcut would
+    /// be refused.
+    #[test]
+    fn every_recorder_key_name_parses() {
+        let mut keys: Vec<String> = ('A'..='Z').map(String::from).collect();
+        keys.extend((0..=9).map(|d| d.to_string()));
+        keys.extend((1..=24).map(|n| format!("F{n}")));
+        keys.extend(
+            [
+                "Space", "Enter", "Tab", "Up", "Down", "Left", "Right", "Home", "End", "PageUp",
+                "PageDown", "Insert", "Delete",
+            ]
+            .map(String::from),
+        );
+        for key in keys {
+            for combo in [format!("Ctrl+Alt+Shift+Super+{key}"), format!("Ctrl+{key}")] {
+                assert!(parse(&combo).unwrap().is_some(), "{combo}");
+            }
+        }
+    }
 
     #[test]
     fn an_empty_setting_disables_the_shortcut() {

@@ -487,6 +487,10 @@ pub struct Settings {
     /// Mask account e-mails everywhere they render (screen sharing).
     pub hide_account_email: bool,
     pub always_on_top: bool,
+    /// The user's own presets, name → partial settings patch (at most 10).
+    /// A patch goes through the normal merge when applied, so it is only
+    /// stored shape-checked here (see `settings::clamp`).
+    pub custom_presets: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Settings {
@@ -556,6 +560,7 @@ impl Default for Settings {
             focus_hides_sidebar: false,
             hide_account_email: false,
             always_on_top: true,
+            custom_presets: BTreeMap::new(),
         }
     }
 }
@@ -875,6 +880,35 @@ pub struct UpdateStatus {
 pub struct ShortcutStatus {
     pub toggle_sidebar: Option<String>,
     pub open_dashboard: Option<String>,
+}
+
+/// What became of one configured global shortcut.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationState {
+    /// Nothing configured.
+    #[default]
+    Off,
+    Registered,
+    /// Invalid, or the OS refused it (usually: another program owns the keys).
+    Failed,
+    /// This session cannot grab global keys at all (native Wayland).
+    Unsupported,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutRegistration {
+    pub state: RegistrationState,
+    /// Why, for `failed` and `unsupported`.
+    pub message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutRegistrations {
+    pub toggle_sidebar: ShortcutRegistration,
+    pub open_dashboard: ShortcutRegistration,
 }
 
 // ---------- platform / window ----------

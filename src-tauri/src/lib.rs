@@ -126,6 +126,12 @@ pub fn run() {
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,
+            commands::diagnostics::get_diagnostics,
+            commands::diagnostics::open_folder,
+            commands::settings_io::export_settings,
+            commands::settings_io::import_settings,
+            commands::settings_io::get_settings_history,
+            commands::settings_io::restore_settings_version,
             export::export_usage_csv,
             // updater
             updater::get_update_status,
@@ -133,6 +139,7 @@ pub fn run() {
             updater::install_update,
             // platform
             window::shortcuts::get_shortcut_status,
+            window::shortcuts::get_shortcut_registrations,
             window::sidebar_set_expanded,
             window::sidebar_relayout,
             window::sidebar_drag,
