@@ -23,17 +23,24 @@ pub fn check(provider: &str, config_dir: &str, macos: bool) -> AccountCheck {
     };
     let dir_found = absolute && dir.is_dir();
     let credentials_found = absolute && credentials_file.is_file();
-    // An extra Claude account is read from its credentials file only (the
-    // Keychain item of a non-default dir is not known), so on macOS a missing
-    // file is a hard "not supported", not just "not signed in yet".
-    let keychain_only =
-        macos && provider == crate::commands::providers::CLAUDE_ID && !credentials_found;
+    // macOS Claude: without a credentials file the login can only be in the
+    // Keychain item Claude Code files for that config dir (a suffixed service
+    // name derived from the dir). Its existence is probed without reading it.
+    let claude_macos = macos && provider == crate::commands::providers::CLAUDE_ID;
+    let keychain_only = claude_macos && !credentials_found;
+    let keychain_service = (claude_macos && absolute)
+        .then(|| crate::commands::providers::claude::keychain_service_for(dir));
+    let keychain_found = keychain_only
+        && absolute
+        && crate::commands::providers::claude::keychain_item_exists_for_dir(dir);
     AccountCheck {
         absolute,
         dir_found,
         credentials_found,
         credentials_file: credentials_file.display().to_string(),
         keychain_only,
+        keychain_service,
+        keychain_found,
     }
 }
 
@@ -98,10 +105,15 @@ mod tests {
     }
 
     #[test]
-    fn macos_extra_claude_accounts_need_a_credentials_file() {
+    fn macos_extra_claude_accounts_fall_back_to_their_keychain_item() {
         let root = crate::commands::test_support::tempdir();
         let dir = root.display().to_string();
-        assert!(check("claude", &dir, true).keychain_only);
+        let mac = check("claude", &dir, true);
+        assert!(mac.keychain_only && !mac.keychain_found);
+        let service = mac.keychain_service.expect("a service name is offered");
+        assert!(service.starts_with("Claude Code-credentials-") && service.len() == 32);
+        assert!(check("claude", &dir, false).keychain_service.is_none());
+        assert!(check("codex", &dir, true).keychain_service.is_none());
         assert!(!check("claude", &dir, false).keychain_only);
         assert!(!check("codex", &dir, true).keychain_only);
         std::fs::remove_dir_all(&root).ok();
