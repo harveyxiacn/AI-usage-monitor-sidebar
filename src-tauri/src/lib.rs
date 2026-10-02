@@ -162,6 +162,7 @@ pub fn run() {
             window::open_dashboard,
             window::apply_window_settings,
             window::get_monitors,
+            window::toggle_sidebar,
             window::quit_app,
             window::debug_log,
         ])

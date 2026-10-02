@@ -14,6 +14,8 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { VIEW_REQUEST_EVENT, type ViewRequest } from '$lib/palette-nav';
+  import { overlays } from '$lib/stores/overlays.svelte';
   import { historyViewState, initialHistoryView, rememberHistoryView, type HistoryView } from '$lib/history-view-state';
   import BudgetChart from '$lib/components/BudgetChart.svelte';
   import CostNote from '$lib/components/CostNote.svelte';
@@ -208,6 +210,9 @@
   });
 
   onMount(() => {
+    // the command palette asks an already mounted tab to switch sub-view
+    const onViewRequest = (e: Event) => { const r = (e as CustomEvent<ViewRequest>).detail; if (r.tab === 'history') view = r.view; };
+    window.addEventListener(VIEW_REQUEST_EVENT, onViewRequest);
     let un: Unlisten | null = null;
     void onIngestProgress((stats) => {
       ingest = stats;
@@ -229,6 +234,7 @@
       un?.();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener(VIEW_REQUEST_EVENT, onViewRequest);
     };
   });
 
@@ -392,6 +398,8 @@
         </label>
 
         <Segmented options={metricOptions} value={metric} label={t('history.metric')} onchange={(v) => (metric = v)} />
+
+        <button class="btn share" type="button" onclick={() => (overlays.share = true)}>{t('share.open')}</button>
       </div>
     </div>
 
@@ -558,6 +566,10 @@
 
   .usage-controls {
     padding: 0.625rem 1rem;
+  }
+
+  .share {
+    margin-left: auto;
   }
 
   .group {

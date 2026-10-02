@@ -608,6 +608,13 @@ pub async fn debug_log(msg: String) -> Result<(), String> {
     Ok(())
 }
 
+/// The tray's "Show/Hide sidebar", for the dashboard's command palette.
+#[tauri::command]
+pub async fn toggle_sidebar(app: AppHandle) -> Result<(), String> {
+    tray::toggle_sidebar(&app);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn quit_app(app: AppHandle) -> Result<(), String> {
     log::info!("quit requested");

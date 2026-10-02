@@ -45,6 +45,9 @@ quota is left, and when does it reset?*
 | Drag to move | Drag the bar anywhere: it snaps to the nearest screen edge of the monitor you drop it on and remembers its position along that edge |
 | Auto-hide | The bar collapses to a thin handle when you move the pointer away and expands on hover |
 | Percent placement | Show the quota percentage below each ring, or place it in the centre instead of the provider logo (`percentPosition`) |
+| Command palette | `Ctrl+K` / `Cmd+K` in the dashboard: jump to any page or Settings card, refresh, rescan, pause polling, start focus mode, apply a preset, copy diagnostics, export CSV, or flip a setting by name |
+| Share card | Dashboard header or History: renders this month's rings, tokens, estimated cost (labelled an estimate, optionally hidden) and top model as a 1200x630 PNG; copy it or save it. No account e-mail is ever drawn |
+| Tray percentage | `trayDisplay: "percent"` puts the busiest window's number in the tray icon (menu-bar title on macOS); the tray also has a Presets submenu |
 | Pinning | Click a ring to pin the popover open while you read it; click again to close it. A pinned popover closes by itself 8 s after the pointer left |
 | Always on top | Re-asserted after every map on X11, visible on all workspaces |
 | Glass surface | `surfaceStyle: "glass"` uses a real blurred backdrop where the OS has one (macOS vibrancy, Windows acrylic); `"solid"` turns it off |

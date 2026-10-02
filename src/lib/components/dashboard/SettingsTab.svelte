@@ -27,30 +27,12 @@
   import UpdatesCard from './settings/UpdatesCard.svelte';
   import { t } from '$lib/i18n/i18n.svelte';
   import { resetAllPatch } from '$lib/settings-cards';
+  import { SECTIONS } from '$lib/settings-sections';
   import { SettingsSearch, provideSettingsSearch } from '$lib/settings-scope.svelte';
   import { defaultSettings, settings } from '$lib/stores/settings.svelte';
 
   const search = new SettingsSearch();
   provideSettingsSearch(search);
-
-  /** The sections, in page order; `title` is an i18n key. */
-  const SECTIONS = [
-    { id: 'appearance', title: 'settings.appearance' },
-    { id: 'presets', title: 'settings.card.presets' },
-    { id: 'sidebarItems', title: 'settings.sidebarItems' },
-    { id: 'sizeColour', title: 'settings.sizeColour' },
-    { id: 'position', title: 'settings.position' },
-    { id: 'behaviour', title: 'settings.behaviour' },
-    { id: 'notifications', title: 'settings.card.notifications' },
-    { id: 'shortcuts', title: 'settings.card.shortcuts' },
-    { id: 'providers', title: 'settings.providers' },
-    { id: 'data', title: 'settings.data' },
-    { id: 'integrations', title: 'integrations.title' },
-    { id: 'updates', title: 'settings.card.updates' },
-    { id: 'privacy', title: 'settings.card.privacy' },
-    { id: 'backup', title: 'settings.card.backup' },
-    { id: 'about', title: 'settings.about' },
-  ] as const;
 
   const shown = $derived(SECTIONS.filter((section) => !search.active || search.cards.get(section.id) !== false));
 
