@@ -80,8 +80,27 @@ a {
   outline-offset: 2px;
 }
 
+/* The sidebar and popover windows are transparent, so the ring has to carry its
+   own contrast: a --focus outline over a gap filled with the widget's own
+   background, readable on glass, solid and cyber alike. The pill keeps >= 10px
+   of padding, so the 4px reach never gets clipped by the window edge. */
 html:not([data-win='dashboard']) :focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgb(var(--bar-bg-rgb) / 0.9);
+}
+
+/* visually hidden, still read by screen readers (live regions, meter labels) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
