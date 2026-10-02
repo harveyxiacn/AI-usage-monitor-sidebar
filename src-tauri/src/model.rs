@@ -903,3 +903,43 @@ pub mod windows {
     pub const POPOVER: &str = "popover";
     pub const DASHBOARD: &str = "dashboard";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_json_fills_every_missing_key_with_its_default() {
+        let s: Settings = serde_json::from_str(r#"{"edge":"left"}"#).unwrap();
+        assert_eq!(s.edge, Edge::Left);
+        let d = Settings::default();
+        assert_eq!(s.refresh_interval_sec, d.refresh_interval_sec);
+        assert_eq!(s.quota_retention_days, 365);
+        assert_eq!(s.providers, d.providers);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, d);
+    }
+
+    #[test]
+    fn unknown_keys_from_a_newer_or_older_build_are_ignored() {
+        let s: Settings = serde_json::from_str(
+            r#"{"theme":"light","someFutureSetting":{"a":1},"removedLongAgo":true}"#,
+        )
+        .unwrap();
+        assert_eq!(s.theme, Theme::Light);
+        assert_eq!(s.edge, Settings::default().edge);
+    }
+
+    #[test]
+    fn a_settings_value_survives_a_json_round_trip() {
+        let s = Settings {
+            quota_retention_days: 0,
+            monthly_budget_usd: 12.5,
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!(value["quotaRetentionDays"], 0, "keys are camelCase");
+    }
+}
