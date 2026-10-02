@@ -26,14 +26,16 @@
     openDashboard,
     popoverHide,
     popoverRelayout,
+    getQuotaHistory,
     type Unlisten,
   } from '$lib/api';
+  import { SPARK_SPAN_MS, SparkCache } from '$lib/quota-spark';
   import { nextTickDelay } from '$lib/countdown';
   import { t } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
-  import type { PopoverRequest } from '$lib/types';
+  import type { PopoverRequest, QuotaSample } from '$lib/types';
 
   // stamped before the first applyTheme() effect so the theme store knows
   // which window it is (the custom text colour is widget-only)
@@ -53,6 +55,38 @@
     if (target) return providers.find((p) => p.provider === target!.provider) ?? null;
     // browser preview / first paint before the platform picked a target
     return isTauri() ? null : providers[0];
+  });
+
+  /**
+   * ~24 h of quota samples for the row sparklines. Fetched when the popover is
+   * shown for a provider (every `popover-target` event), not on snapshot
+   * updates, and cached for a minute so hovering back and forth costs nothing.
+   */
+  const sparkCache = new SparkCache();
+  let history = $state<QuotaSample[]>([]);
+  const provider = $derived(quota?.provider ?? null);
+  $effect(() => {
+    void target; // a fresh show request re-checks the cache
+    const id = provider;
+    if (!id) {
+      history = [];
+      return;
+    }
+    let cancelled = false;
+    const at = Date.now();
+    sparkCache
+      .get(id, () =>
+        getQuotaHistory({ from: new Date(at - SPARK_SPAN_MS).toISOString(), to: new Date(at + 60_000).toISOString(), provider: id })
+      )
+      .then((samples) => {
+        if (!cancelled) history = samples;
+      })
+      .catch(() => {
+        if (!cancelled) history = [];
+      });
+    return () => {
+      cancelled = true;
+    };
   });
 
   onMount(() => {
@@ -134,6 +168,7 @@
       percentMode={s.percentMode}
       highlightKind={target?.windowKind ?? null}
       {now}
+      {history}
       {pinned}
       onClose={() => void popoverHide()}
       onDetails={() => void openDashboard('history')}
@@ -147,7 +182,7 @@
   .stage {
     width: max-content;
     height: max-content;
-    max-width: 23rem; /* 360px bubble + the 8px tail gutter */
+    max-width: 45rem; /* the bubble limits itself: 360px + tail, 44rem when two columns */
   }
 
   .placeholder {
