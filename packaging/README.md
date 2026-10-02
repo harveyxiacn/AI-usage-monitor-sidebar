@@ -1,138 +1,92 @@
 # Packaging manifests
 
-Ready-made manifests for the three third-party package repositories people ask
-for most. **Nothing here has been submitted anywhere** — they are drafts kept
-in the repository so a release can be published without writing them from
-scratch, and so reviewers can see exactly what would be submitted.
+Templates for the third-party package repositories. The files ending in `.in`
+contain `@@PLACEHOLDER@@` markers (version, tag, release date, SHA-256 of each
+asset); `scripts/gen-packaging.py` renders them from a release tag and the
+published assets, and `.github/workflows/distribute.yml` runs that after every
+published release and pushes each channel whose token is configured. With no
+tokens, the rendered files are only uploaded as a workflow artifact. Setup and
+secrets: `docs/RELEASING.md` §6.
 
-Every file has a checksum placeholder that must be replaced before submission.
-Checksums cannot be filled in here because they are computed from the actual
-release assets, which only exist after the release workflow ran.
+```sh
+python scripts/gen-packaging.py --tag v0.6.0 --assets <dir with the assets> --out <out dir>
+```
 
-Release asset names (they contain the product name with spaces replaced by
-dots, which is what GitHub does):
+| Template | Rendered to |
+|---|---|
+| `winget/templates/*.yaml.in` | `winget/<version>/*.yaml` (version, installer, en-US and zh-CN locales) |
+| `homebrew/ai-usage-sidebar.rb.in` | `homebrew/ai-usage-sidebar.rb` (cask, arm + intel) |
+| `scoop/ai-usage-sidebar.json.in` | `scoop/ai-usage-sidebar.json` (experimental: 7-Zip unpack of the NSIS exe) |
+| `aur/ai-usage-sidebar-bin/PKGBUILD.in` | `aur/ai-usage-sidebar-bin/PKGBUILD`; `.SRCINFO` comes from `makepkg --printsrcinfo` in CI |
+
+`aur/ai-usage-sidebar/` (build from source) is a hand-maintained recipe and is
+not touched by the pipeline.
+
+Release asset names (GitHub turns the spaces of the product name into dots):
 
 | Platform | Asset |
 |---|---|
-| Debian/Ubuntu | `AI.Usage.Sidebar_<version>_amd64.deb` |
+| Debian/Ubuntu (used by the AUR `-bin` package) | `AI.Usage.Sidebar_<version>_amd64.deb` |
 | Fedora/openSUSE | `AI.Usage.Sidebar-<version>-1.x86_64.rpm` |
 | Portable Linux | `AI.Usage.Sidebar_<version>_amd64.AppImage` |
 | macOS Apple Silicon | `AI.Usage.Sidebar_<version>_aarch64.dmg` |
 | macOS Intel | `AI.Usage.Sidebar_<version>_x64.dmg` |
-| Windows (NSIS) | `AI.Usage.Sidebar_<version>_x64-setup.exe` |
-| Windows (MSI) | `AI.Usage.Sidebar_<version>_x64_en-US.msi` |
+| Windows (NSIS, per user) | `AI.Usage.Sidebar_<version>_x64-setup.exe` |
+| Windows (MSI, per machine) | `AI.Usage.Sidebar_<version>_x64_en-US.msi` |
 
-All builds are **unsigned and un-notarised**. Say so in every store listing;
-do not paste Gatekeeper/SmartScreen bypass instructions without telling the
-user what they do.
+Whether the builds are signed depends on the release (`docs/RELEASING.md`
+§6.1/§6.2). Do not claim a signature in a store listing unless that release
+was built with the signing secrets, and do not paste Gatekeeper/SmartScreen
+bypass instructions without telling the user what they do.
 
 ---
 
-## AUR (`aur/`)
+## AUR
 
-Two packages, deliberately:
-
-| Directory | Package | What it does |
-|---|---|---|
-| `aur/ai-usage-sidebar-bin/` | `ai-usage-sidebar-bin` | Repackages the release `.deb`. No compiler needed, x86_64 only. |
-| `aur/ai-usage-sidebar/` | `ai-usage-sidebar` | Builds from the tagged source, doing what `scripts/install-linux.sh` does. x86_64 + aarch64. |
-
-They `conflict` with each other, and `-bin` `provides` the plain name.
-
-**Filling in and validating**
+`aur/ai-usage-sidebar-bin/` repackages the release `.deb` (x86_64, no
+compiler). Dependencies: `webkit2gtk-4.1`, `libayatana-appindicator`,
+`librsvg`, `gtk3`. `aur/ai-usage-sidebar/` builds from source; the two
+`conflict`, and `-bin` `provides` the plain name. Manual validation of a
+rendered recipe:
 
 ```sh
-cd packaging/aur/ai-usage-sidebar-bin
-# bump pkgver first, then:
-updpkgsums                       # pacman-contrib; replaces the SKIP checksums
+cd <out>/aur/ai-usage-sidebar-bin
 makepkg --printsrcinfo > .SRCINFO
-namcap PKGBUILD                  # namcap package (lints the recipe)
-makepkg -f                       # optional: build it once
-namcap ./*.pkg.tar.zst           # lints the built package
+namcap PKGBUILD
+makepkg -f
 ```
 
-The `.SRCINFO` files checked in here were generated with
-`makepkg --printsrcinfo` and are therefore correct for the current PKGBUILDs —
-but they still carry the `SKIP` checksums, so regenerate them after
-`updpkgsums`.
+Known caveat for the source package: `build()` downloads npm and crates.io
+dependencies, so a clean-chroot build needs network access.
 
-**Submitting** (only when the maintainer decides to): clone
-`ssh://aur@aur.archlinux.org/<pkgname>.git`, copy `PKGBUILD` and `.SRCINFO`
-into it, commit, push. The AUR only accepts those two files plus any
-`.install` script; it does not accept this README.
+## Homebrew
 
-Known caveat for the source package: `build()` downloads the npm and crates.io
-dependencies, so a clean-chroot build (`extra-x86_64-build`) needs network
-access or a pre-populated cache. This is common for Node/Rust AUR packages but
-worth knowing before a reviewer asks.
+A **cask** (a prebuilt `.app`), not a formula, pushed to the tap
+`harveyxiacn/homebrew-tap` (`Casks/`). Local check:
+`brew audit --cask --new <out>/homebrew/ai-usage-sidebar.rb`. homebrew-cask
+proper has rules about unsigned software and little usage history; a personal
+tap is the friction-free route.
 
----
+## winget
 
-## Homebrew (`homebrew/ai-usage-sidebar.rb`)
+Rendered to the layout `microsoft/winget-pkgs` expects
+(`manifests/h/harveyxiacn/AIUsageSidebar/<version>/`). Two installers: NSIS
+(per user, matching `bundle.windows.nsis.installMode: currentUser`) and MSI
+(per machine). Local check: `winget validate --manifest <out>\winget\<version>`.
+`PackageIdentifier` (`harveyxiacn.AIUsageSidebar`) must never change.
 
-A **cask** (a prebuilt `.app`), not a formula. Both architectures are covered
-with `on_arm` / `on_intel` blocks.
+## Scoop
 
-**Filling in**
-
-```sh
-shasum -a 256 AI.Usage.Sidebar_<version>_aarch64.dmg
-shasum -a 256 AI.Usage.Sidebar_<version>_x64.dmg
-# paste both into the two `sha256` lines
-brew audit --cask --new ./packaging/homebrew/ai-usage-sidebar.rb
-brew install --cask ./packaging/homebrew/ai-usage-sidebar.rb   # local test
-```
-
-**Submitting**: fork `Homebrew/homebrew-cask`, drop the file in
-`Casks/a/ai-usage-sidebar.rb`, open a PR. Note that homebrew-cask has rules
-about software with no code signature and little usage history; a personal tap
-(`brew tap harveyxiacn/tap`) is the friction-free alternative and needs the
-identical file in a `Casks/` directory of that tap repository.
-
-Later releases: `brew bump-cask-pr --version <new> ai-usage-sidebar`.
-
----
-
-## winget (`winget/<version>/`)
-
-Three manifests, the layout the community repository expects. In
-`microsoft/winget-pkgs` they go to
-`manifests/h/harveyxiacn/AIUsageSidebar/<version>/`.
-
-Two installers are listed: the NSIS `-setup.exe` (per **user**, matching
-`bundle.windows.nsis.installMode: currentUser`) and the MSI (per **machine**,
-for managed fleets).
-
-**Filling in and validating**
-
-```powershell
-(Get-FileHash .\AI.Usage.Sidebar_<version>_x64-setup.exe -Algorithm SHA256).Hash
-(Get-FileHash .\AI.Usage.Sidebar_<version>_x64_en-US.msi -Algorithm SHA256).Hash
-# paste both into harveyxiacn.AIUsageSidebar.installer.yaml
-winget validate --manifest .\packaging\winget\<version>\
-winget install --manifest .\packaging\winget\<version>\   # local test
-```
-
-**Submitting**: fork `microsoft/winget-pkgs`, copy the three files into the
-path above, open a PR. `wingetcreate` automates all of it:
-
-```powershell
-wingetcreate update harveyxiacn.AIUsageSidebar --version <new> `
-  --urls <setup-exe-url> <msi-url> --submit
-```
-
-`PackageIdentifier` (`harveyxiacn.AIUsageSidebar`) must never change once the
-package is accepted — the whole update history hangs off it.
-
----
+Experimental and untested: the manifest unpacks the NSIS installer with 7-Zip
+(`#/dl.7z`) instead of running it. Test with
+`scoop install <out>\scoop\ai-usage-sidebar.json` before enabling the bucket.
 
 ## Not covered here
 
-* **Flatpak / Snap** — both sandbox the filesystem, and the app has to read
-  `~/.claude/` and `~/.codex/`. That needs `--filesystem=home` style holes
-  which defeat the point; not attempted.
-* **Debian/Fedora repositories** — the release `.deb`/`.rpm` are installed
+* **Flatpak / Snap**: both sandbox the filesystem and the app has to read
+  `~/.claude/` and `~/.codex/`; not attempted.
+* **Debian/Fedora repositories**: the release `.deb`/`.rpm` are installed
   directly (see `AGENTS.md` §2); no apt/dnf repository is hosted.
-* **In-app updates** for packages installed from any of these repositories are
-  deliberately disabled: the app shows "update available" with a link instead
-  of replacing files the package manager owns. See `docs/RELEASING.md`.
+* **In-app updates** for package-manager installs are deliberately disabled:
+  the app shows "update available" with a link instead of replacing files the
+  package manager owns. See `docs/RELEASING.md`.

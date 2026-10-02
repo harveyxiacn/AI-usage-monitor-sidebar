@@ -1,0 +1,186 @@
+name: Distribute
+
+# Renders the winget / Homebrew / Scoop / AUR manifests from the PUBLISHED
+# release assets and, per channel, pushes them only when that channel's token
+# exists. Without any token the run just uploads the rendered manifests as a
+# workflow artifact. Nothing here is triggered by a draft release.
+# See docs/RELEASING.md "Signing & distribution".
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published release tag to distribute (for example v0.7.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribute-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  render:
+    name: Render manifests
+    # Pre-releases are not offered through package managers.
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected a final version tag such as v0.7.0, got '$TAG'"; exit 1; }
+
+      # Templates and the renderer come from the default branch so a re-run
+      # for an old tag still gets today's templates.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download release assets
+        run: |
+          mkdir -p assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            -p '*.deb' -p '*.dmg' -p '*-setup.exe' -p '*.msi'
+          ls -l assets
+          date="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json publishedAt -q '.publishedAt[:10]')"
+          echo "RELEASE_DATE=$date" >> "$GITHUB_ENV"
+
+      - name: Render manifests
+        run: python3 scripts/gen-packaging.py --tag "$TAG" --assets assets --out out --release-date "$RELEASE_DATE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaging-${{ env.TAG }}
+          path: out
+          if-no-files-found: error
+
+  aur:
+    name: AUR (ai-usage-sidebar-bin)
+    needs: render
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      HAS_AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaging-${{ env.TAG }}
+          path: out
+
+      # makepkg refuses to run as root, so use a throw-away user.
+      - name: Generate .SRCINFO
+        run: |
+          pacman -Sy --noconfirm --needed git openssh
+          useradd -m builder
+          cp -r out/aur/ai-usage-sidebar-bin /home/builder/pkg
+          chown -R builder /home/builder/pkg
+          su builder -c 'cd ~/pkg && makepkg --printsrcinfo > .SRCINFO'
+          cat /home/builder/pkg/.SRCINFO
+          mkdir -p aur-out
+          cp /home/builder/pkg/PKGBUILD /home/builder/pkg/.SRCINFO aur-out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur-${{ env.TAG }}
+          path: aur-out
+          include-hidden-files: true
+
+      - name: Push to the AUR
+        if: env.HAS_AUR_KEY == 'true'
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes'
+          git clone ssh://aur@aur.archlinux.org/ai-usage-sidebar-bin.git aur-repo
+          cp aur-out/PKGBUILD aur-out/.SRCINFO aur-repo/
+          cd aur-repo
+          git config user.name "${AUR_GIT_NAME:-Harvey Xia}"
+          git config user.email "${AUR_GIT_EMAIL:-noreply@users.noreply.github.com}"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then echo "AUR already up to date"; exit 0; fi
+          git commit -m "Update to ${TAG#v}"
+          git push origin HEAD:master
+
+  winget:
+    name: winget
+    needs: render
+    runs-on: windows-latest
+    env:
+      HAS_WINGET_TOKEN: ${{ secrets.WINGET_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaging-${{ env.TAG }}
+          path: out
+
+      # Submits a pull request to microsoft/winget-pkgs from the token owner's
+      # fork. The token needs the public_repo scope.
+      - name: Submit to winget-pkgs
+        if: env.HAS_WINGET_TOKEN == 'true'
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $dir = (Get-ChildItem out/winget -Directory | Select-Object -First 1).FullName
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          ./wingetcreate.exe submit --token $env:WINGET_TOKEN $dir
+          if ($LASTEXITCODE -ne 0) { throw 'wingetcreate submit failed' }
+
+  taps:
+    name: Homebrew tap and Scoop bucket
+    needs: render
+    runs-on: ubuntu-24.04
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+      HAS_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'harveyxiacn/homebrew-tap' }}
+      BUCKET_REPO: ${{ vars.SCOOP_BUCKET_REPO || 'harveyxiacn/scoop-bucket' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packaging-${{ env.TAG }}
+          path: out
+
+      - name: Push cask to the Homebrew tap
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" tap
+          mkdir -p tap/Casks
+          cp out/homebrew/ai-usage-sidebar.rb tap/Casks/ai-usage-sidebar.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/ai-usage-sidebar.rb
+          if git diff --cached --quiet; then echo "tap already up to date"; exit 0; fi
+          git commit -m "ai-usage-sidebar ${TAG#v}"
+          git push
+
+      - name: Push manifest to the Scoop bucket
+        if: env.HAS_BUCKET_TOKEN == 'true'
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${SCOOP_BUCKET_TOKEN}@github.com/${BUCKET_REPO}.git" bucket
+          mkdir -p bucket/bucket
+          cp out/scoop/ai-usage-sidebar.json bucket/bucket/ai-usage-sidebar.json
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/ai-usage-sidebar.json
+          if git diff --cached --quiet; then echo "bucket already up to date"; exit 0; fi
+          git commit -m "ai-usage-sidebar ${TAG#v}"
+          git push

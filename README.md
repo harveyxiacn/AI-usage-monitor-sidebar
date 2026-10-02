@@ -221,9 +221,24 @@ Only the primary Claude Code and Codex accounts are ingested; extra accounts are
 Download the installer for your platform from the
 [latest release](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/latest):
 `.deb` / `.rpm` / `.AppImage` (Linux x86_64), `.dmg` (macOS, Apple Silicon and
-Intel), `-setup.exe` / `.msi` (Windows x64). These builds are unsigned: macOS
-needs `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`,
-Windows shows a SmartScreen warning.
+Intel), `-setup.exe` / `.msi` (Windows x64).
+
+Package managers (**once published** — see
+[`docs/RELEASING.md`](docs/RELEASING.md); until a channel is enabled, use the
+release assets above):
+
+```sh
+winget install harveyxiacn.AIUsageSidebar              # Windows
+scoop bucket add harveyxiacn https://github.com/harveyxiacn/scoop-bucket && scoop install ai-usage-sidebar
+brew install --cask harveyxiacn/tap/ai-usage-sidebar   # macOS
+yay -S ai-usage-sidebar-bin                            # Arch / CachyOS / Manjaro
+```
+
+Unless a release says otherwise, builds are unsigned: macOS needs
+`xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"` and
+Windows shows a SmartScreen warning. Releases built with signing secrets
+configured (Authenticode, Developer ID + notarization) do not need either
+step; the release notes say which kind you are getting.
 
 ### Staying up to date
 
@@ -234,8 +249,8 @@ and an *Updates* row under Settings → About, where "Install and restart" is a
 deliberate click. Copies installed from a `.deb`/`.rpm` or by
 `scripts/install-linux.sh` are owned by the package manager, so they get a
 link to the release page instead of an in-place install. Maintainers: see
-[`docs/RELEASING.md`](docs/RELEASING.md). Draft manifests for AUR, Homebrew
-and winget live in [`packaging/`](packaging/README.md).
+[`docs/RELEASING.md`](docs/RELEASING.md). Manifest templates for winget, Homebrew, Scoop
+and the AUR live in [`packaging/`](packaging/README.md).
 
 ### Build prerequisites
 
@@ -636,8 +651,20 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 
 从[最新发布](https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/latest)下载对应平台的安装包：
 Linux x86_64 的 `.deb` / `.rpm` / `.AppImage`，macOS 的 `.dmg`（Apple Silicon 与 Intel 各一个），
-Windows x64 的 `-setup.exe` / `.msi`。这些构建尚未签名：macOS 需执行
+Windows x64 的 `-setup.exe` / `.msi`。
+
+包管理器（**发布后可用**，见 [`docs/RELEASING.md`](docs/RELEASING.md)；渠道启用之前请使用上面的发布包）：
+
+```sh
+winget install harveyxiacn.AIUsageSidebar              # Windows
+scoop bucket add harveyxiacn https://github.com/harveyxiacn/scoop-bucket && scoop install ai-usage-sidebar
+brew install --cask harveyxiacn/tap/ai-usage-sidebar   # macOS
+yay -S ai-usage-sidebar-bin                            # Arch / CachyOS / Manjaro
+```
+
+除非发布说明另有说明，构建默认未签名：macOS 需执行
 `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`，Windows 会出现 SmartScreen 提示。
+配置了签名密钥后发布的版本（Authenticode、Developer ID 与公证）则无需这些步骤，发布说明会注明。
 
 ### 保持更新
 
@@ -645,7 +672,7 @@ Windows x64 的 `-setup.exe` / `.msi`。这些构建尚未签名：macOS 需执�
 但从不自动安装：有新版本时，托盘菜单、仪表盘顶部的一行提示以及“设置 → 关于 → 更新”
 都会显示，安装始终需要你点击“安装并重启”。通过 `.deb` / `.rpm` 或
 `scripts/install-linux.sh` 安装的副本由包管理器接管，只会给出发布页链接，不做原地替换。
-维护者请看 [`docs/RELEASING.md`](docs/RELEASING.md)；AUR、Homebrew 与 winget 的打包草稿在
+维护者请看 [`docs/RELEASING.md`](docs/RELEASING.md)；winget、Homebrew、Scoop 与 AUR 的清单模板在
 [`packaging/`](packaging/README.md)。
 
 ### 自行构建所需依赖

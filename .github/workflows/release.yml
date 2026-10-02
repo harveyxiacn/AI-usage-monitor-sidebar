@@ -128,6 +128,111 @@ jobs:
             echo "::warning title=Updater artifacts disabled::TAURI_SIGNING_PRIVATE_KEY is not set, so this release has no latest.json and installed copies will not be offered an in-app update. See docs/RELEASING.md."
           fi
 
+      # ---- Code signing (all optional) --------------------------------------
+      # Every block below is a no-op unless its secrets exist, so a repository
+      # without certificates produces exactly the unsigned release it always
+      # did. See docs/RELEASING.md "Signing & distribution". The updater
+      # (minisign) signature above is a separate mechanism and is unaffected.
+
+      # Windows. (a) PFX certificate in WINDOWS_CERTIFICATE (base64) +
+      # WINDOWS_CERTIFICATE_PASSWORD, imported into the runner's user store; or
+      # (b) Azure Trusted Signing through a signCommand, only when (a) is
+      # absent. Either way the Tauri signing settings are written to an
+      # untracked --config override at build time, never committed.
+      - name: Windows code signing setup
+        id: winsign
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          $confPath = 'src-tauri/windows-signing.conf.json'
+          if ($env:WINDOWS_CERTIFICATE) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $pw = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+            Remove-Item $pfx -Force
+            $ts = if ($env:WINDOWS_TIMESTAMP_URL) { $env:WINDOWS_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
+            @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = $ts } } } |
+              ConvertTo-Json -Depth 5 | Set-Content -Path $confPath -Encoding utf8
+            "config=--config $confPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host 'Windows: signing with the imported PFX certificate.'
+          }
+          elseif ($env:AZURE_TENANT_ID -and $env:AZURE_CLIENT_ID -and $env:AZURE_CLIENT_SECRET -and
+                  $env:AZURE_SIGNING_ENDPOINT -and $env:AZURE_SIGNING_ACCOUNT -and $env:AZURE_SIGNING_PROFILE) {
+            # Tauri's docs name the tool artifact-signing-cli (formerly
+            # trusted-signing-cli; same flags). It reads AZURE_TENANT_ID,
+            # AZURE_CLIENT_ID and AZURE_CLIENT_SECRET from the environment.
+            cargo install artifact-signing-cli --locked
+            if ($LASTEXITCODE -ne 0) { throw 'could not install artifact-signing-cli' }
+            $cmd = "artifact-signing-cli -e $($env:AZURE_SIGNING_ENDPOINT) -a $($env:AZURE_SIGNING_ACCOUNT) -c $($env:AZURE_SIGNING_PROFILE) -d AIUsageSidebar %1"
+            @{ bundle = @{ windows = @{ signCommand = $cmd } } } |
+              ConvertTo-Json -Depth 5 | Set-Content -Path $confPath -Encoding utf8
+            "config=--config $confPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host 'Windows: signing with Azure Trusted Signing.'
+          }
+          else {
+            'config=' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host 'Windows: no signing secrets, building unsigned (SmartScreen will warn).'
+          }
+
+      # macOS. The Apple variables must not exist at all when unset: the Tauri
+      # CLI treats an empty APPLE_CERTIFICATE as "import this certificate" and
+      # fails. So they are exported through GITHUB_ENV only when complete.
+      # Signing needs the certificate set; notarization additionally needs
+      # either the Apple ID trio or the App Store Connect API key trio.
+      - name: macOS code signing setup
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          S_CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          S_CERT_PW: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          S_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          S_ID: ${{ secrets.APPLE_ID }}
+          S_PW: ${{ secrets.APPLE_PASSWORD }}
+          S_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          S_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          S_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          S_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [ -z "$S_CERT" ] || [ -z "$S_CERT_PW" ] || [ -z "$S_IDENTITY" ]; then
+            echo "macOS: no signing secrets, building unsigned (Gatekeeper will warn)."
+            exit 0
+          fi
+          {
+            echo "APPLE_CERTIFICATE=$S_CERT"
+            echo "APPLE_CERTIFICATE_PASSWORD=$S_CERT_PW"
+            echo "APPLE_SIGNING_IDENTITY=$S_IDENTITY"
+          } >> "$GITHUB_ENV"
+          if [ -n "$S_ID" ] && [ -n "$S_PW" ] && [ -n "$S_TEAM" ]; then
+            {
+              echo "APPLE_ID=$S_ID"
+              echo "APPLE_PASSWORD=$S_PW"
+              echo "APPLE_TEAM_ID=$S_TEAM"
+            } >> "$GITHUB_ENV"
+            echo "macOS: signing and notarizing with an Apple ID."
+          elif [ -n "$S_API_ISSUER" ] && [ -n "$S_API_KEY" ] && [ -n "$S_API_PRIVATE_KEY" ]; then
+            key_path="$RUNNER_TEMP/AuthKey_$S_API_KEY.p8"
+            printf '%s\n' "$S_API_PRIVATE_KEY" > "$key_path"
+            {
+              echo "APPLE_API_ISSUER=$S_API_ISSUER"
+              echo "APPLE_API_KEY=$S_API_KEY"
+              echo "APPLE_API_KEY_PATH=$key_path"
+            } >> "$GITHUB_ENV"
+            echo "macOS: signing and notarizing with an App Store Connect API key."
+          else
+            echo "::warning title=macOS not notarized::The signing certificate is set but no notarization credentials are, so the build is signed but not notarized."
+          fi
+
       - name: Build and draft the release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -136,6 +241,10 @@ jobs:
           # updater artifacts, so the bundler never looks at them.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Read only by the Azure Trusted Signing signCommand (Windows).
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'AI Usage Sidebar ${{ github.event.inputs.tag || github.ref_name }}'
@@ -145,4 +254,4 @@ jobs:
           # Each matrix job merges its platforms into the latest.json already
           # attached to the release, so all four builds end up in one file.
           uploadUpdaterJson: ${{ steps.updater.outputs.enabled }}
-          args: ${{ steps.updater.outputs.config }} ${{ matrix.args }} -- --locked
+          args: ${{ steps.updater.outputs.config }} ${{ steps.winsign.outputs.config }} ${{ matrix.args }} -- --locked
