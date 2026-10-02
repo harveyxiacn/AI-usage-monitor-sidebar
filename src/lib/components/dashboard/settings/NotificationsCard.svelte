@@ -9,6 +9,7 @@
   import NotificationsPanel from './NotificationsPanel.svelte';
   import SettingsCard from './SettingsCard.svelte';
   import { t } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { settings } from '$lib/stores/settings.svelte';
 
   const s = $derived(settings.value);
@@ -69,7 +70,7 @@
     </select>
   </Field>
 
-  <Field label={t('settings.focusHidesSidebar')}>
+  <Field advanced={isAdvanced('focusHidesSidebar')} label={t('settings.focusHidesSidebar')}>
     <Toggle
       checked={s.focusHidesSidebar}
       label={t('settings.focusHidesSidebar')}

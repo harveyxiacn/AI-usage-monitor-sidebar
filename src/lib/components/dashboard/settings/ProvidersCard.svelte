@@ -8,6 +8,7 @@
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import { getProviders } from '$lib/api';
   import { t } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { providerDisplayName } from '$lib/providers';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -90,7 +91,7 @@
     {/each}
     <p class="note">{t('settings.providers.hint')}</p>
     {#if s.providers.openrouter}
-      <Field label={t('settings.openrouterKeyEnv')} hint={t('settings.openrouterKeyEnv.hint')}>
+      <Field advanced={isAdvanced('openrouterKeyEnv')} label={t('settings.openrouterKeyEnv')} hint={t('settings.openrouterKeyEnv.hint')}>
         <input
           class="field"
           type="text"

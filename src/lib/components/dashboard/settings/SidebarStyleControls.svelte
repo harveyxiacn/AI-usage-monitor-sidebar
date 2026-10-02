@@ -14,6 +14,7 @@
   import Field from '../Field.svelte';
   import Toggle from '../Toggle.svelte';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { isAdvanced } from '$lib/settings-tiers';
   import { settings } from '$lib/stores/settings.svelte';
   import type { LabelContent, RingStyle } from '$lib/types';
 
@@ -23,7 +24,7 @@
   const s = $derived(settings.value);
 </script>
 
-<Field label={t('settings.ringStyle')} hint={t('settings.ringStyle.hint')}>
+<Field advanced={isAdvanced('ringStyle')} label={t('settings.ringStyle')} hint={t('settings.ringStyle.hint')}>
   <select
     aria-label={t('settings.ringStyle')}
     class="field"
@@ -34,7 +35,7 @@
   </select>
 </Field>
 
-<Field label={t('settings.labelContent')} hint={t('settings.labelContent.hint')}>
+<Field advanced={isAdvanced('labelContent')} label={t('settings.labelContent')} hint={t('settings.labelContent.hint')}>
   <select
     aria-label={t('settings.labelContent')}
     class="field"
@@ -46,7 +47,7 @@
   </select>
 </Field>
 
-<Field label={t('settings.sidebarAnimations')} hint={t('settings.sidebarAnimations.hint')}>
+<Field advanced={isAdvanced('sidebarAnimations')} label={t('settings.sidebarAnimations')} hint={t('settings.sidebarAnimations.hint')}>
   <Toggle
     checked={s.sidebarAnimations}
     label={t('settings.sidebarAnimations')}

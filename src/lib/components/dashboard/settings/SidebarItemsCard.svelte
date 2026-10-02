@@ -4,6 +4,7 @@
   import Toggle from '../Toggle.svelte';
   import SettingsCard from './SettingsCard.svelte';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
+  import { ADVANCED_SIDEBAR_ITEMS } from '$lib/settings-tiers';
   import { defaultSidebarItems, settings } from '$lib/stores/settings.svelte';
   import type { SidebarItems } from '$lib/types';
 
@@ -16,7 +17,7 @@
 <SettingsCard id="sidebarItems" title={t('settings.sidebarItems')} reset="sidebarItems" keywords={t('settings.sidebarItems.hint')}>
   <p class="note">{t('settings.sidebarItems.hint')}</p>
   {#each SIDEBAR_ITEM_KEYS as key (key)}
-    <Field label={tDyn(`settings.sidebarItems.${key}`)}>
+    <Field advanced={ADVANCED_SIDEBAR_ITEMS.includes(key)} label={tDyn(`settings.sidebarItems.${key}`)}>
       <Toggle
         checked={s.sidebarItems[key]}
         label={tDyn(`settings.sidebarItems.${key}`)}

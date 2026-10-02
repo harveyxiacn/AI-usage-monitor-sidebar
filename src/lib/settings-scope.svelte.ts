@@ -8,6 +8,8 @@
 import { getContext, setContext } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { normalizeQuery } from './settings-search';
+export { controlShown } from './settings-search';
+import { advancedSettings } from './stores/advanced.svelte';
 
 export class SettingsSearch {
   query = $state('');
@@ -16,13 +18,22 @@ export class SettingsSearch {
   active = $derived(normalizeQuery(this.query) !== '');
   /** False only when a search is active and no card matches it. */
   anyVisible = $derived(!this.active || [...this.cards.values()].some(Boolean));
+  /** "Show advanced settings" is on. */
+  showAdvanced = $derived(advancedSettings.on);
+  /**
+   * Advanced controls are in play: the switch is on, or a search is active (a
+   * search always finds them; they then carry an "advanced" badge).
+   */
+  revealsAdvanced = $derived(advancedSettings.on || this.active);
 }
 
 /** What a card tells its controls. */
 export interface CardScope {
   /** The card's own title/keywords match the search, so every control shows. */
   readonly headMatches: boolean;
-  /** control → does it match? Controls register here; the card hides when none does. */
+  /** Every control of the card is advanced (see `cardAdvancedOnly`). */
+  readonly advanced: boolean;
+  /** control → does it show? Controls register here; the card hides when none does. */
   readonly fields: SvelteMap<symbol, boolean>;
 }
 
