@@ -121,6 +121,10 @@ export type RingMode = 'concentric' | 'primary' | 'all';
 export type PercentMode = 'used' | 'remaining';
 /** Whether a ring's percentage sits below it or replaces its centre logo. */
 export type PercentPosition = 'below' | 'center';
+/** What the sidebar label says: the percentage, the reset countdown, or both. */
+export type LabelContent = 'percent' | 'reset' | 'both';
+/** ring: concentric arcs per provider; bar: compact slim progress bars. */
+export type RingStyle = 'ring' | 'bar';
 export type Theme = 'dark' | 'light' | 'auto';
 export type Language = 'auto' | 'en' | 'zh-CN';
 /** glass: translucent "liquid glass" surface with specular highlights; solid: opaque dark/light pill */
@@ -222,6 +226,12 @@ export interface Settings {
   percentMode: PercentMode;
   /** `below` preserves the original label; `center` replaces the provider logo. */
   percentPosition: PercentPosition;
+  /** `percent` (default), `reset` countdown or `both`; centre position always shows the percent */
+  labelContent: LabelContent;
+  /** `ring` (default) or compact `bar` */
+  ringStyle: RingStyle;
+  /** one-shot pulse on threshold crossings and flash on resets */
+  sidebarAnimations: boolean;
   /** @deprecated mirror of `sidebarItems.percentLabel` */
   showPercentLabel: boolean;
   /** what the floating bar may draw; hidden items are still tracked */

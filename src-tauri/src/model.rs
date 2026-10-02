@@ -261,6 +261,26 @@ pub enum PercentPosition {
     Center,
 }
 
+/// What the label next to / under each ring says. `Percent` is the original
+/// behaviour; `Reset` is the countdown ("1h12"); `Both` shows both.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelContent {
+    #[default]
+    Percent,
+    Reset,
+    Both,
+}
+
+/// How a provider is drawn on the bar: concentric rings, or slim mini-bars.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RingStyle {
+    #[default]
+    Ring,
+    Bar,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Theme {
@@ -438,6 +458,15 @@ pub struct Settings {
     /// Render the percentage below the ring (legacy layout) or in its center.
     #[serde(default)]
     pub percent_position: PercentPosition,
+    /// Percent, reset countdown or both in the sidebar label.
+    #[serde(default)]
+    pub label_content: LabelContent,
+    /// Concentric rings (default) or compact mini-bars.
+    #[serde(default)]
+    pub ring_style: RingStyle,
+    /// One-shot pulse / flash on threshold crossings and resets.
+    #[serde(default = "default_true")]
+    pub sidebar_animations: bool,
     /// Deprecated, mirrors `sidebar_items.percent_label`.
     pub show_percent_label: bool,
     pub sidebar_items: SidebarItems,
@@ -524,6 +553,9 @@ impl Default for Settings {
             show_scoped_ring: true,
             percent_mode: PercentMode::Used,
             percent_position: PercentPosition::default(),
+            label_content: LabelContent::default(),
+            ring_style: RingStyle::default(),
+            sidebar_animations: true,
             show_percent_label: true,
             sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
