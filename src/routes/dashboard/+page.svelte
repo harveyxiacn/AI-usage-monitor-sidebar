@@ -10,6 +10,7 @@
   import OverviewTab from '$lib/components/dashboard/OverviewTab.svelte';
   import { st } from '$lib/session-labels.svelte';
   import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
+  import { DASHBOARD_TAB_EVENT } from '$lib/dashboard-nav';
   import { t } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -48,7 +49,9 @@
   onMount(() => {
     const requestedTab = new URLSearchParams(window.location.search).get('tab') as DashboardTab;
     if (TABS.includes(requestedTab)) tab = requestedTab;
-    const disposers: Array<() => void> = [settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
+    const onTabRequest = (e: Event) => { const next = (e as CustomEvent<DashboardTab>).detail; if (TABS.includes(next)) tab = next; };
+    window.addEventListener(DASHBOARD_TAB_EVENT, onTabRequest);
+    const disposers: Array<() => void> = [() => window.removeEventListener(DASHBOARD_TAB_EVENT, onTabRequest), settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
 
     // applyTheme() writes data-theme on <html>; watching the attribute also
     // catches the prefers-color-scheme listener firing under theme 'auto'.

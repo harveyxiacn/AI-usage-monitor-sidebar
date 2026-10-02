@@ -1,4 +1,5 @@
 import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionListQuery, SessionMessage, SessionSummary } from './session-types';
+import { buildInsights } from './session-insights';
 import { analysisDefaults, previewBudget, sessionIdentity } from './sessions';
 
 let config = structuredClone(analysisDefaults);
@@ -11,8 +12,8 @@ const rows: SessionSummary[] = Array.from({ length: 83 }, (_, i) => ({
   firstTs: new Date(now - (i + 1) * 3600000).toISOString(), lastTs: new Date(now - i * 3600000).toISOString(),
   durationMs: 3600000, models: [i % 2 ? 'claude-example' : 'codex-example'], parentSessionId: i === 2 ? 'demo-1' : null,
   inputTokens: 7000 + i * 123, outputTokens: 1600, cacheReadTokens: 3000, cacheWriteTokens: 0, reasoningTokens: 500,
-  totalTokens: 11600 + i * 123, requests: 6, estimatedCostUsd: 0.18, userTurns: 3, toolCalls: 4,
-  toolFailures: i % 5 === 0 ? 1 : 0, repeatedToolCalls: 1, activeDurationMs: 180000, transcriptAvailable: true,
+  totalTokens: 11600 + i * 123, requests: 6, estimatedCostUsd: Math.round((0.02 + ((i * 37) % 53) ** 2 / 90) * 100) / 100, userTurns: 1 + (i * 7) % 13, toolCalls: 3 + (i * 5) % 31,
+  toolFailures: i % 5 === 0 ? 1 + (i % 4) : 0, repeatedToolCalls: i % 7, activeDurationMs: 60000 + ((i * 29) % 41) ** 2 * 6000, transcriptAvailable: true,
 }));
 function summary(row: SessionSummary): SessionSummary {
   const alias = aliases.get(sessionIdentity(row.provider, row.sessionId));
@@ -38,6 +39,17 @@ export async function sessionMockInvoke(cmd: string, args: Record<string, unknow
         && (!q.search || `${r.title} ${r.sessionId} ${r.project}`.toLowerCase().includes(q.search.toLowerCase())));
       filtered.sort((a, b) => q.sort === 'tokens' ? b.totalTokens - a.totalTokens : q.sort === 'title' ? a.title.localeCompare(b.title) : b.lastTs.localeCompare(a.lastTs));
       return { rows: filtered.slice(offset, offset + limit), total: filtered.length, offset, limit };
+    }
+    case 'get_session_insights': {
+      const q = (args.query ?? {}) as SessionListQuery;
+      const matching = rows.map(summary).filter(r => (!q.provider || r.provider === q.provider) && (!q.project || r.project === q.project)
+        && (!q.from || r.lastTs >= q.from) && (!q.to || r.firstTs < q.to)
+        && (!q.search || `${r.title} ${r.sessionId} ${r.project}`.toLowerCase().includes(q.search.toLowerCase())));
+      const tools = ['run_tests', 'read_file', 'shell', 'apply_patch'].map((tool, n) => {
+        const calls = matching.length * (6 - n); const failures = Math.floor(calls / (8 + n * 3));
+        return { tool, calls, failures, failureRate: calls ? failures / calls : 0, sessions: matching.length };
+      }).filter(t => t.calls > 0);
+      return buildInsights(matching, tools);
     }
     case 'get_session_detail': {
       if (!row) throw new Error('Session not found');
