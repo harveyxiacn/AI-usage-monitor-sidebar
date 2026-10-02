@@ -305,6 +305,9 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
 | `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
+| `backup_data` | `dest?: string` | `string | null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
+| `restore_data` | `src?: string` | `BackupInfo | null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
+| `restart_app` | – | – (relaunches the app) |
 
 ### Updater commands — `src-tauri/src/updater.rs`
 | command | args | returns |

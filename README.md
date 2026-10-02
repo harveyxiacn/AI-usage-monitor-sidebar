@@ -252,6 +252,15 @@ Details, including the geometry maths and the hover state machine, are in
 [`docs/PLATFORM.md`](docs/PLATFORM.md). The module and command contracts are in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Status lines and scripts
+
+Turn on *Settings -> Integrations -> Export snapshot file* and
+`ai-usage-sidebar --print [--format json|line|statusline]` prints your quotas
+from the terminal (exit code 2 when the data is missing or stale). That makes
+them usable in Claude Code's `statusLine`, tmux, polybar or waybar — see
+[`docs/STATUSLINE.md`](docs/STATUSLINE.md). The same page also offers *Pause
+polling* and a backup / restore of your settings and history.
+
 ## Keeping prices up to date
 
 The cost column is an *estimate* for comparing providers and plans —
@@ -572,6 +581,14 @@ pnpm tauri build   # 产物在 src-tauri/target/release/bundle/
 
 更多细节（几何计算、悬停状态机）见 [`docs/PLATFORM.md`](docs/PLATFORM.md)；
 模块与命令契约见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 状态栏与脚本
+
+在 *设置 -> 集成* 中开启“导出快照文件”后，可以在终端运行
+`ai-usage-sidebar --print [--format json|line|statusline]` 输出当前额度
+（数据缺失或过期时退出码为 2），用于 Claude Code 的 `statusLine`、tmux、
+polybar、waybar，详见 [`docs/STATUSLINE.md`](docs/STATUSLINE.md)。该页面还提供
+“暂停轮询”以及设置与历史数据的备份 / 恢复。
 
 ## 让价格保持最新
 
