@@ -508,3 +508,157 @@ fn delayed_streaming_completion_keeps_the_original_user_turn() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[allow(clippy::too_many_arguments)]
+fn tool_ref(
+    db: &Db,
+    session: &str,
+    n: usize,
+    ts: i64,
+    tool: &str,
+    is_call: bool,
+    is_error: bool,
+    fingerprint: &str,
+) {
+    db.lock()
+        .execute(
+            "INSERT INTO session_message_refs(provider,session_id,message_id,path,byte_offset,byte_len,line_hash,message_index,
+            role,turn_id,ts,tool_name,is_error,is_call,call_fingerprint,content_chars)
+            VALUES('codex',?1,?2,'p',0,1,'h',?3,'tool',NULL,?4,?5,?6,?7,?8,0)",
+            rusqlite::params![
+                session,
+                format!("m{n}"),
+                n as i64,
+                ts,
+                tool,
+                is_error as i64,
+                is_call as i64,
+                is_call.then_some(fingerprint)
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn insights_aggregate_metrics_tools_and_flags_without_content() {
+    let db = Db::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    insert_usage_events(
+        &db,
+        &[
+            usage("a", "cheap", 1_000, 1_000),
+            usage("b", "pricey", 2_000, 2_000_000),
+            usage("c", "", 3_000, 5),
+        ],
+    )
+    .unwrap();
+    // "cheap": 2 distinct calls. "pricey": 8 calls, 4 failures, 6 repeats of one signature.
+    tool_ref(&db, "cheap", 1, 1_000, "shell", true, false, "x");
+    tool_ref(&db, "cheap", 2, 2_000, "read", true, false, "y");
+    for i in 0..8 {
+        let ts = 2_000 + i as i64 * 60_000;
+        tool_ref(
+            &db,
+            "pricey",
+            10 + i,
+            ts,
+            "shell",
+            true,
+            false,
+            if i < 3 { "same" } else { "f" },
+        );
+    }
+    for i in 0..4 {
+        tool_ref(&db, "pricey", 30 + i, 700_000, "shell", false, true, "");
+    }
+    let q = SessionListQuery::default();
+    let result = insights(&db, &q, &pricing::default_table()).unwrap();
+    assert_eq!(
+        result.total_sessions, 2,
+        "the unassigned bucket is not a session"
+    );
+    assert!(!result.truncated);
+    assert_eq!(result.kpis.sessions, 2);
+    assert_eq!(result.kpis.tool_calls, 10);
+    assert_eq!(result.kpis.tool_failures, 4);
+    assert_eq!(result.kpis.failure_rate, Some(0.4));
+    assert_eq!(result.kpis.median_turns, Some(0.0));
+    let pricey = result
+        .points
+        .iter()
+        .find(|p| p.session_id == "pricey")
+        .unwrap();
+    assert_eq!(pricey.tool_calls, 8);
+    assert_eq!(pricey.tool_failures, 4);
+    assert!(pricey.flags.contains(&"failures".to_string()));
+    assert!(
+        pricey.cost_usd.unwrap()
+            > result
+                .points
+                .iter()
+                .find(|p| p.session_id == "cheap")
+                .unwrap()
+                .cost_usd
+                .unwrap()
+    );
+    assert_eq!(result.top_cost[0].session_id, "pricey");
+    assert_eq!(result.top_failures[0].session_id, "pricey");
+    assert_eq!(result.tools[0].tool, "shell");
+    assert_eq!(result.tools[0].calls, 9);
+    assert_eq!(result.tools[0].failures, 4);
+    assert_eq!(result.tools[0].sessions, 2);
+    assert_eq!(result.tools[1].tool, "read");
+    assert_eq!(result.cost_histogram.sample, 2);
+    let filtered = insights(
+        &db,
+        &SessionListQuery {
+            provider: Some("claude".into()),
+            ..Default::default()
+        },
+        &pricing::default_table(),
+    )
+    .unwrap();
+    assert_eq!(filtered.kpis.sessions, 0);
+    assert!(filtered.tools.is_empty());
+    assert_eq!(filtered.kpis.median_cost_usd, None);
+}
+
+#[test]
+fn insights_cap_reports_truncation_and_keeps_newest() {
+    let db = Db::open_in_memory().unwrap();
+    ensure_schema(&db).unwrap();
+    let rows = (0..1005)
+        .map(|i| usage(&format!("r{i}"), &format!("s{i:04}"), 1_000 + i, 10))
+        .collect::<Vec<_>>();
+    insert_usage_events(&db, &rows).unwrap();
+    let result = insights(&db, &SessionListQuery::default(), &pricing::default_table()).unwrap();
+    assert_eq!(result.total_sessions, 1005);
+    assert!(result.truncated);
+    assert_eq!(result.points.len(), 1000);
+    assert!(result.points.iter().any(|p| p.session_id == "s1004"));
+    assert!(!result.points.iter().any(|p| p.session_id == "s0000"));
+}
+
+#[test]
+fn percentiles_and_log_histogram_bins_are_correct() {
+    use super::insights::{log_histogram, percentile};
+    assert_eq!(percentile(&[], 0.5), None);
+    assert_eq!(percentile(&[4.0], 0.9), Some(4.0));
+    assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0], 0.5), Some(2.5));
+    assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0, 5.0], 0.9), Some(4.6));
+    let empty = log_histogram(&[]);
+    assert!(empty.bins.is_empty() && empty.median.is_none());
+    let h = log_histogram(&[0.0, 0.011, 0.5, 0.9, 12.0]);
+    assert_eq!(h.zero_count, 1);
+    assert_eq!(h.sample, 5);
+    assert_eq!(h.bins.iter().map(|b| b.count).sum::<i64>(), 4);
+    let first = h.bins.first().unwrap();
+    let last = h.bins.last().unwrap();
+    assert!(first.from <= 0.011 && 0.011 < first.to);
+    assert!(last.from <= 12.0 && 12.0 < last.to);
+    assert!(h
+        .bins
+        .windows(2)
+        .all(|w| (w[0].to - w[1].from).abs() < 1e-9));
+    assert_eq!(h.median, Some(0.5));
+}

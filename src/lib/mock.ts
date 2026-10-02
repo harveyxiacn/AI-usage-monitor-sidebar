@@ -834,7 +834,7 @@ function jitterSnapshot(provider?: ProviderId | null) {
 }
 
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (['list_sessions', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
+  if (['list_sessions', 'get_session_insights', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
     return (await import('./session-mock')).sessionMockInvoke(cmd, args) as Promise<T>;
   }
   switch (cmd) {

@@ -28,7 +28,7 @@ import type {
   UpdateStatus,
   WindowUsageQuery,
 } from './types';
-import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionListQuery, SessionListResult } from './session-types';
+import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionInsights, SessionListQuery, SessionListResult } from './session-types';
 import type { SettingsPatch } from './settings-writer';
 
 export const isTauri = (): boolean =>
@@ -61,6 +61,7 @@ export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('g
 export const getUsageCalendar = (query: CalendarQuery) => invoke<CalendarResult>('get_usage_calendar', { query });
 export const getUsageSessions = (query: SessionQuery) => invoke<SessionsResult>('get_usage_sessions', { query });
 export const listSessions = (query: SessionListQuery) => invoke<SessionListResult>('list_sessions', { query });
+export const getSessionInsights = (query: SessionListQuery) => invoke<SessionInsights>('get_session_insights', { query });
 export const getSessionDetail = (provider: string, sessionId: string, offset = 0, limit = 40) => invoke<SessionDetail>('get_session_detail', { provider, sessionId, offset, limit });
 export const setSessionAlias = (provider: string, sessionId: string, alias: string) => invoke<void>('set_session_alias', { provider, sessionId, alias });
 export const getAnalysisSettings = () => invoke<AnalysisSettings>('get_analysis_settings');

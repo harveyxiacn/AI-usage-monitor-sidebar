@@ -308,13 +308,13 @@ pub fn index_file(db: &Db, provider: &str, path: &Path) -> Result<()> {
 }
 
 #[derive(Default)]
-struct Range {
-    from: Option<i64>,
-    to: Option<i64>,
-    project: Option<String>,
+pub(super) struct Range {
+    pub(super) from: Option<i64>,
+    pub(super) to: Option<i64>,
+    pub(super) project: Option<String>,
 }
 impl Range {
-    fn query(q: &SessionListQuery) -> Result<Self> {
+    pub(super) fn query(q: &SessionListQuery) -> Result<Self> {
         let parse = |v: &Option<String>| -> Result<Option<i64>> {
             v.as_ref()
                 .map(|s| parse_time_ms(s).ok_or_else(|| anyhow::anyhow!("invalid session date")))
@@ -334,6 +334,19 @@ impl Range {
     }
 }
 
+/// Shared by the paged list and the insights aggregate so both see the same
+/// sessions for the same filters. Binds ?1 from, ?2 to, ?3 provider, ?4 project, ?5 search.
+pub(super) const CANDIDATES_CTE: &str = "WITH usage AS (SELECT provider,COALESCE(session_id,'') session_id,MAX(ts) last_ts,SUM(total_tokens) tokens,MAX(COALESCE(cwd,'')) project
+        FROM usage_events WHERE (?1 IS NULL OR ts>=?1) AND (?2 IS NULL OR ts<?2) AND (?3 IS NULL OR provider=?3) AND (?4 IS NULL OR COALESCE(cwd,'')=?4)
+        GROUP BY provider,COALESCE(session_id,'')),
+        keys AS (SELECT provider,session_id FROM usage UNION SELECT provider,session_id FROM session_metadata
+        WHERE (?1 IS NULL OR last_ts>=?1) AND (?2 IS NULL OR first_ts<?2) AND (?3 IS NULL OR provider=?3) AND (?4 IS NULL OR project=?4)),
+        candidates AS (SELECT k.provider,k.session_id,CASE WHEN ?1 IS NULL AND ?2 IS NULL THEN MAX(COALESCE(u.last_ts,0),COALESCE(m.last_ts,0)) ELSE COALESCE(u.last_ts,m.last_ts,0) END last_ts,COALESCE(u.tokens,0) tokens,
+        COALESCE(a.alias,m.native_title,NULLIF(m.project,''),NULLIF(u.project,''),k.session_id) sort_title,
+        COALESCE(NULLIF(m.project,''),u.project,'') project FROM keys k LEFT JOIN usage u USING(provider,session_id)
+        LEFT JOIN session_metadata m USING(provider,session_id) LEFT JOIN session_aliases a USING(provider,session_id)),
+        filtered AS (SELECT * FROM candidates WHERE ?5='' OR instr(lower(sort_title||' '||session_id||' '||project),lower(?5))>0) ";
+
 pub fn list(
     db: &Db,
     q: &SessionListQuery,
@@ -351,16 +364,7 @@ pub fn list(
     };
     // The filtering and LIMIT/OFFSET run in SQLite before loading any detail
     // or transcript. A recent low-token session can never be lost to Top-200.
-    let cte="WITH usage AS (SELECT provider,COALESCE(session_id,'') session_id,MAX(ts) last_ts,SUM(total_tokens) tokens,MAX(COALESCE(cwd,'')) project
-        FROM usage_events WHERE (?1 IS NULL OR ts>=?1) AND (?2 IS NULL OR ts<?2) AND (?3 IS NULL OR provider=?3) AND (?4 IS NULL OR COALESCE(cwd,'')=?4)
-        GROUP BY provider,COALESCE(session_id,'')),
-        keys AS (SELECT provider,session_id FROM usage UNION SELECT provider,session_id FROM session_metadata
-        WHERE (?1 IS NULL OR last_ts>=?1) AND (?2 IS NULL OR first_ts<?2) AND (?3 IS NULL OR provider=?3) AND (?4 IS NULL OR project=?4)),
-        candidates AS (SELECT k.provider,k.session_id,CASE WHEN ?1 IS NULL AND ?2 IS NULL THEN MAX(COALESCE(u.last_ts,0),COALESCE(m.last_ts,0)) ELSE COALESCE(u.last_ts,m.last_ts,0) END last_ts,COALESCE(u.tokens,0) tokens,
-        COALESCE(a.alias,m.native_title,NULLIF(m.project,''),NULLIF(u.project,''),k.session_id) sort_title,
-        COALESCE(NULLIF(m.project,''),u.project,'') project FROM keys k LEFT JOIN usage u USING(provider,session_id)
-        LEFT JOIN session_metadata m USING(provider,session_id) LEFT JOIN session_aliases a USING(provider,session_id)),
-        filtered AS (SELECT * FROM candidates WHERE ?5='' OR instr(lower(sort_title||' '||session_id||' '||project),lower(?5))>0) ";
+    let cte = CANDIDATES_CTE;
     let search = q.search.as_deref().unwrap_or("").trim();
     anyhow::ensure!(search.len() <= 512, "session search is too long");
     let params = params![
@@ -483,7 +487,7 @@ fn usage(
     Ok((totals, variants, first, last, project))
 }
 
-fn summary(
+pub(super) fn summary(
     db: &Db,
     provider: &str,
     session: &str,

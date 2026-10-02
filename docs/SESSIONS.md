@@ -18,6 +18,19 @@ CLI. Clearing an alias restores the next available title. Codex thread metadata
 and session_index.jsonl names and Claude custom-title/summary records are read
 when available; unknown/older formats fall back gracefully.
 
+## Insights
+
+The **Insights** segment of the Sessions tab summarises the sessions matching the
+tab's date, project, provider and search filters: median cost, active time and
+turns, tool failure and repeated-call rates, log-scale distributions with median
+and P90, a turns-versus-cost scatter (point size is tool failures), ranked lists
+and tool usage. It is computed from usage, timing and tool-name metadata only, so
+it works with local content off. At most the newest 1000 matching sessions are
+analysed. A session is flagged when it has at least 3 failed calls and 20% or
+more of its calls fail, or at least 5 repeated calls and 30% or more repeated;
+these are prompts to look, not proof of waste. History's Sessions table is a
+summary that opens this tab with the same filters.
+
 ## Local content and evidence
 
 Local content is **off by default**, including on upgrades. The background index
@@ -92,6 +105,8 @@ session's assessments and alias; turning local content off removes all reports.
 Neither action deletes provider logs or token history.
 
 ## 中文使用说明
+
+“洞察”视图汇总符合当前筛选的会话：费用、活跃时间、轮次的中位数，工具失败率与重复调用率，对数分布（含中位数和 P90），轮次与费用散点图（点大小为工具失败数），排行榜与工具使用情况。仅使用用量、时间和工具名称元数据，不读取对话内容；最多分析最近 1000 个会话。标记条件为失败至少 3 次且占 20% 以上，或重复至少 5 次且占 30% 以上，仅作提示。历史页的“会话”表现为摘要，并带着相同筛选跳转到会话页。
 
 “会话”页面将 Token 消耗关联到具体任务，支持真正的后端分页、日期/项目/服务商筛选、已保存名称与标识搜索，
 以及最近活动、消耗、已保存名称排序。名称会区分本地别名、原生标题、首条需求摘录与默认名称；本地别名不修改 CLI。

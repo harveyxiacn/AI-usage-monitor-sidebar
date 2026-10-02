@@ -1,13 +1,17 @@
 <!--
-  History → Usage: the bucket / session table with sorting, paging, CSV copy
-  and export. Owns its own sort, page and session-drill-down state; the page
-  hands it the already-loaded bucket rows. [FRONTEND]
+  History → Usage: the bucket table with sorting, paging, CSV copy and export.
+  Its "Sessions" view is only a lightweight summary of the same range; the full
+  session table, search and efficiency insights live in the Sessions tab, which
+  it deep-links to with the same range / provider / project. [FRONTEND]
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { exportUsageCsv, getUsageSessions } from '$lib/api';
-  import { formatBucket, formatDuration, formatEstimatedCost, formatInt, formatTokens } from '$lib/format';
-  import { historyCsv, localDateInput, modelVariantLabel, sessionModelVariants, sessionsCsv, type HistoryRange } from '$lib/history';
+  import { formatBucket, formatEstimatedCost, formatInt, formatTokens } from '$lib/format';
+  import { historyCsv, localDateInput, modelVariantLabel, sessionsCsv, type HistoryRange } from '$lib/history';
+  import { requestDashboardTab } from '$lib/dashboard-nav';
+  import { sessionFilters } from '$lib/session-insights';
+  import { sessionViewState } from '$lib/session-ui-state';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { st } from '$lib/session-labels.svelte';
   import type { Bucket, HistoryRow, ProviderId, SessionRow, SessionsResult, TokenTotals } from '$lib/types';
@@ -42,8 +46,6 @@
   let sessionsError = $state<string | null>(null);
   let sessionsId = 0;
   let sessionsFilterKey = '';
-  let sessionSortKey = $state<'sessionId' | 'provider' | 'project' | 'firstTs' | 'lastTs' | 'durationMs' | keyof TokenTotals>('totalTokens');
-  let sessionSortDir = $state<1 | -1>(-1);
 
   let copied = $state(false);
   let exported = $state<string | null>(null);
@@ -137,46 +139,28 @@
     }
   }
 
-  const TEXT_SESSION_KEYS: readonly string[] = ['sessionId', 'provider', 'project'];
-  // offsets move across a DST change, so timestamps are compared as instants
-  const TIME_SESSION_KEYS: readonly string[] = ['firstTs', 'lastTs'];
-
-  /** Sorted copy of the (already capped) session rows. */
-  const sortedSessions = $derived.by(() => {
-    const list = [...(sessions?.rows ?? [])];
-    const key = sessionSortKey;
-    const dir = sessionSortDir;
-    list.sort((a, b) => {
-      let cmp: number;
-      if (TEXT_SESSION_KEYS.includes(key)) cmp = String(a[key as 'sessionId']).localeCompare(String(b[key as 'sessionId']));
-      else if (TIME_SESSION_KEYS.includes(key)) cmp = Date.parse(a[key as 'firstTs']) - Date.parse(b[key as 'firstTs']);
-      else if (key === 'estimatedCostUsd') cmp = (a.estimatedCostUsd ?? a.knownCostUsd ?? 0) - (b.estimatedCostUsd ?? b.knownCostUsd ?? 0);
-      else cmp = ((a[key as 'totalTokens'] ?? 0) as number) - ((b[key as 'totalTokens'] ?? 0) as number);
-      return cmp * dir || b.totalTokens - a.totalTokens || a.sessionId.localeCompare(b.sessionId);
-    });
-    return list;
-  });
-  const tableCount = $derived(tableView === 'sessions' ? sortedSessions.length : sortedRows.length);
-  $effect(() => { void [range, provider, project, bucket, tableView, sortKey, sortDir, sessionSortKey, sessionSortDir]; tablePage = 0; });
+  /** The server already orders sessions by tokens; the summary shows the head of that list. */
+  const SUMMARY_ROWS = 5;
+  const topSessions = $derived((sessions?.rows ?? []).slice(0, SUMMARY_ROWS));
+  const tableCount = $derived(tableView === 'sessions' ? 0 : sortedRows.length);
+  $effect(() => { void [range, provider, project, bucket, tableView, sortKey, sortDir]; tablePage = 0; });
   $effect(() => { if (tablePage * TABLE_PAGE_SIZE >= tableCount) tablePage = Math.max(0, Math.ceil(tableCount / TABLE_PAGE_SIZE) - 1); });
-
-  function sortSessionsBy(key: typeof sessionSortKey) {
-    if (sessionSortKey === key) sessionSortDir = sessionSortDir === 1 ? -1 : 1;
-    else {
-      sessionSortKey = key;
-      sessionSortDir = TEXT_SESSION_KEYS.includes(key) ? 1 : -1;
-    }
-  }
 
   const sessionLabel = (row: SessionRow) => row.sessionId || t('history.sessions.unassigned');
   const modelLabel = (model: string | null, effort?: string | null) =>
     modelVariantLabel(model, effort, t('history.modelUnknown'), t('history.effortUnknown'));
-  const sessionModels = (row: SessionRow) => sessionModelVariants(row)
-    .map((variant) => modelLabel(variant.model, variant.reasoningEffort)).join(', ');
+
+  /** Hand the current History filters to the Sessions tab, optionally opening one session. */
+  function openSessions(view: 'browse' | 'insights', target?: SessionRow) {
+    sessionViewState.query = sessionFilters(range, provider, project);
+    sessionViewState.view = view;
+    if (target && target.sessionId) sessionViewState.selected = { provider: target.provider, sessionId: target.sessionId };
+    requestDashboardTab('sessions');
+  }
 
   /** The active table view decides what "copy" and "export" produce. */
-  const csvText = () => (tableView === 'sessions' ? sessionsCsv(sortedSessions) : historyCsv(sortedRows));
-  const csvEmpty = $derived(tableView === 'sessions' ? sortedSessions.length === 0 : sortedRows.length === 0);
+  const csvText = () => (tableView === 'sessions' ? sessionsCsv(sessions?.rows ?? []) : historyCsv(sortedRows));
+  const csvEmpty = $derived(tableView === 'sessions' ? (sessions?.rows.length ?? 0) === 0 : sortedRows.length === 0);
   const csvBusy = $derived(tableView === 'sessions' ? sessionsLoading : loading);
 
   async function copyCsv() {
@@ -254,7 +238,7 @@
       </div>
     {:else if sessionsLoading && !sessions}
       <p class="muted">{t('common.loading')}</p>
-    {:else if sessions && sortedSessions.length === 0}
+    {:else if sessions && sessions.rows.length === 0}
       <p class="muted">{t('history.sessions.none')}</p>
     {:else if sessions}
       <p class="muted small">
@@ -262,41 +246,27 @@
           ? t('history.sessions.capped', { shown: formatInt(sessions.rows.length), total: formatInt(sessions.totalSessions) })
           : t('history.sessions.count', { n: formatInt(sessions.totalSessions) })}
       </p>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              {#each [['sessionId', 'history.sessions.id'], ['provider', 'history.table.provider'], ['project', 'history.project'], ['firstTs', 'history.sessions.start'], ['lastTs', 'history.sessions.end'], ['durationMs', 'history.sessions.duration'], ['requests', 'history.requests'], ['totalTokens', 'history.table.total'], ['estimatedCostUsd', 'history.estCost']] as [key, label] (key)}
-                <th
-                  class:num={key === 'durationMs' || key === 'requests' || key === 'totalTokens' || key === 'estimatedCostUsd'}
-                  aria-sort={sessionSortKey === key ? (sessionSortDir === 1 ? 'ascending' : 'descending') : 'none'}
-                >
-                  <button onclick={() => sortSessionsBy(key as typeof sessionSortKey)}>
-                    {tDyn(label)}
-                    {#if sessionSortKey === key}<span class="caret">{sessionSortDir === 1 ? '▲' : '▼'}</span>{/if}
-                  </button>
-                </th>
-              {/each}
-              <th>{t('history.sessions.models')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each sortedSessions.slice(tablePage * TABLE_PAGE_SIZE, (tablePage + 1) * TABLE_PAGE_SIZE) as s (JSON.stringify([s.provider, s.sessionId]))}
-              <tr>
-                <td class="session-id" title={s.sessionId}>{sessionLabel(s)}</td>
-                <td>{providerName(s.provider)}</td>
-                <td class="project-name" title={s.project || t('history.project.unassigned')}>{projectLabel(s.project)}</td>
-                <td class="mono">{new Date(s.firstTs).toLocaleString()}</td>
-                <td class="mono">{new Date(s.lastTs).toLocaleString()}</td>
-                <td class="num mono">{formatDuration(s.durationMs)}</td>
-                <td class="num mono">{formatInt(s.requests)}</td>
-                <td class="num mono strong">{formatTokens(s.totalTokens)}</td>
-                <td class="num mono">{formatEstimatedCost(s)}</td>
-                <td class="model" title={sessionModels(s)}>{sessionModels(s)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      <dl class="totals" aria-label={t('history.sessions.summary')}>
+        <div><dt>{t('history.sessions.title')}</dt><dd class="mono">{formatInt(sessions.totalSessions)}</dd></div>
+        <div><dt>{t('history.table.total')}</dt><dd class="mono">{formatTokens(sessions.totals.totalTokens)}</dd></div>
+        <div><dt>{t('history.estCost')}</dt><dd class="mono">{formatEstimatedCost(sessions.totals)}</dd></div>
+      </dl>
+      <h4>{t('history.sessions.largest')}</h4>
+      <ol class="top-sessions">
+        {#each topSessions as s (JSON.stringify([s.provider, s.sessionId]))}
+          <li>
+            <button class="link" disabled={!s.sessionId} onclick={() => openSessions('browse', s)}>
+              <span class="session-id" title={s.sessionId}>{sessionLabel(s)}</span>
+              <span class="muted">{providerName(s.provider)} · {projectLabel(s.project)}</span>
+              <span class="mono num">{formatTokens(s.totalTokens)} · {formatEstimatedCost(s)}</span>
+            </button>
+          </li>
+        {/each}
+      </ol>
+      <p class="muted small">{t('history.sessions.linkNote')}</p>
+      <div class="export-actions">
+        <button class="btn btn-primary" onclick={() => openSessions('browse')}>{t('history.sessions.open')}</button>
+        <button class="btn" onclick={() => openSessions('insights')}>{t('history.sessions.insights')}</button>
       </div>
     {/if}
   {:else if loading && !hasResult}
@@ -416,6 +386,63 @@
 
   .clear-project {
     align-self: flex-start;
+  }
+
+  h4 {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .totals {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 2rem;
+    margin: 0;
+  }
+
+  .totals dt {
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .totals dd {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+
+  .top-sessions {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .top-sessions li + li {
+    border-top: 1px solid var(--border);
+  }
+
+  .top-sessions .link {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.4rem 0.25rem;
+    text-align: left;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .top-sessions .link:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .top-sessions .muted {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.75rem;
   }
 
   .project-name {

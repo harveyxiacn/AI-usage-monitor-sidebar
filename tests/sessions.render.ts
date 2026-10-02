@@ -98,3 +98,34 @@ test('long redacted preview renders within a narrow viewport', async ({ page }) 
   expect((await page.locator('textarea').inputValue()).length).toBeGreaterThan(10000);
   await page.screenshot({ path: 'test-results/sessions-preview.png', fullPage: true });
 });
+
+// Insights deep link: no pointer or keyboard input, only observation.
+for (const theme of ['dark', 'light']) {
+  test(`session insights render ${theme} with charts, ranked lists and tool usage`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const settings = encodeURIComponent(JSON.stringify({ theme, language: 'en' }));
+    await page.goto(`/dashboard?tab=sessions&view=insights&provider=codex&settings=${settings}`);
+    await expect(page.getByText('Median cost / session', { exact: true })).toBeVisible();
+    await expect(page.getByText('Tool failure rate', { exact: true }).first()).toBeVisible();
+    await expect(page.locator('canvas')).toHaveCount(3);
+    await expect(page.getByRole('heading', { name: 'Most expensive sessions', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Tool usage', exact: true })).toBeVisible();
+    await expect(page.locator('.chip').first()).toBeVisible();
+    await expect(page.locator('.session-row')).toHaveCount(0);
+    expect(errors).toEqual([]);
+    await page.screenshot({ path: `test-results/session-insights-${theme}.png`, fullPage: true });
+  });
+}
+test('Chinese session insights render at narrow width without horizontal overflow', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.setViewportSize({ width: 700, height: 850 });
+  const settings = encodeURIComponent(JSON.stringify({ language: 'zh-CN' }));
+  await page.goto(`/dashboard?tab=sessions&view=insights&settings=${settings}`);
+  await expect(page.getByText('会话费用中位数', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '工具使用', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: 'test-results/session-insights-zh.png', fullPage: true });
+});
