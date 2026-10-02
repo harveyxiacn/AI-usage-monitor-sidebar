@@ -31,7 +31,12 @@ or database written by an *older* version. The harness in
   `{}` is a valid file and resets preferences by design; the app-owned records
   (`onboarded`, `lastSeenVersion`, `skippedVersion`) are kept regardless.
 
-Run just these with `cargo test --locked upgrade_tests` in `src-tauri`.
+The downgrade-safety rules (migration table, `min_reader_version`, the
+pre-migration backup and its rotation, refusing a too-new database) are unit
+tests in `store/mod.rs` and `store/compat.rs`; the `--restore-pre-upgrade`
+argument parser is tested in `cli.rs`.
+
+Run just the harness with `cargo test --locked upgrade_tests` in `src-tauri`.
 
 ### When the schema or the settings change
 
@@ -115,8 +120,11 @@ not claim hands-on installation on every platform or a live paid AI evaluation.
 ```sh
 pnpm install --frozen-lockfile
 pnpm check
+pnpm check:i18n      # en / zh-CN keys and placeholders in step
+pnpm check:agents    # AGENTS.md section 5 vs settings-defaults.ts, model.rs, settings-tiers.ts
 pnpm test
 pnpm exec playwright install chromium
+pnpm test:e2e
 pnpm exec playwright test --config=tests/render.config.ts
 pnpm build
 cd src-tauri
