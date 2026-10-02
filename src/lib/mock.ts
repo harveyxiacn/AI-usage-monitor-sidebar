@@ -31,6 +31,7 @@ import type {
   ShortcutStatus,
   TokenTotals,
   UpdateStatus,
+  WindowUsageQuery,
 } from './types';
 import { localDateInput } from './history';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
@@ -133,6 +134,7 @@ export const mockSettings: Settings = {
   ingestEnabled: true,
   pricingUrl: '',
   monthlyBudgetUsd: 0,
+  subscriptionUsd: { claude: 0, codex: 0 },
   autostart: false,
   autoUpdateCheck: true,
   autoPricingCheck: true,
@@ -699,6 +701,23 @@ function runSessions(q: SessionQuery): SessionsResult {
 }
 
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */
+function runWindowUsage(q: WindowUsageQuery): TokenTotals[] {
+  return q.windows.map((w) => {
+    const from = Date.parse(w.from);
+    const to = Date.parse(w.to);
+    const totals = emptyTotals();
+    let cost: number | null = 0;
+    for (const e of events) {
+      if (e.provider !== q.provider || e.ts < from || e.ts >= to) continue;
+      addInto(totals, e);
+      const c = eventCost(e);
+      cost = cost == null || c == null ? null : cost + c;
+    }
+    totals.estimatedCostUsd = totals.requests > 0 ? cost : null;
+    return totals;
+  });
+}
+
 function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
   const from = Date.parse(q.from);
   const to = Date.parse(q.to);
@@ -836,6 +855,8 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return runCalendar(args?.query as CalendarQuery) as T;
     case 'get_usage_sessions':
       return runSessions(args?.query as SessionQuery) as T;
+    case 'get_window_usage':
+      return runWindowUsage(args?.query as WindowUsageQuery) as T;
     case 'get_quota_history':
       return runQuotaHistory(args?.query as QuotaHistoryQuery) as T;
     case 'get_pricing':
