@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import Field from '../Field.svelte';
   import SettingsCard from './SettingsCard.svelte';
+  import WhatsNew from '../WhatsNew.svelte';
   import { getAppInfo, getDiagnostics, openExternal, openFolder, quitApp } from '$lib/api';
   import { formatDiagnostics } from '$lib/diagnostics-format';
   import { t } from '$lib/i18n/i18n.svelte';
@@ -18,6 +19,7 @@
   let error = $state<string | null>(null);
   let message = $state<string | null>(null);
   let copiedPath = $state<string | null>(null);
+  let showWhatsNew = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   onMount(() => {
@@ -85,11 +87,13 @@
   {#if message}<p class="ok" role="status">{message}</p>{/if}
 
   <div class="actions">
+    <button class="btn" aria-expanded={showWhatsNew} onclick={() => (showWhatsNew = !showWhatsNew)}>{t('whatsnew.open')}</button>
     <button class="btn" onclick={() => void run(() => openFolder('log'))}>{t('settings.about.openLogs')}</button>
     <button class="btn" onclick={() => void run(() => openFolder('config'))}>{t('settings.about.openConfig')}</button>
     <button class="btn" onclick={() => void run(() => openExternal(GITHUB_URL))}>{t('settings.about.github')}</button>
     <button class="btn danger" onclick={() => void run(quitApp)}>{t('settings.about.quit')}</button>
   </div>
+  {#if showWhatsNew}<WhatsNew forced ondismiss={() => (showWhatsNew = false)} />{/if}
 </SettingsCard>
 
 <style>
