@@ -149,6 +149,24 @@ OS keychain, with an AES-256-GCM-obfuscated file as the fallback) and Cursor
 are written up with sources in **docs/PROVIDERS.md** §2 and §3 so the question
 is not re-opened without new information.
 
+### OpenRouter (experimental, unverified — 2026-10)
+
+Also built from published documentation only (`ProviderInfo.experimental` is
+`true`, off by default and absent from the snapshot until switched on). There
+is no CLI login to borrow: the key comes from the environment variable named by
+`openrouterKeyEnv` and is never stored. `GET /api/v1/key` yields a "Credits"
+window when the key has a limit, otherwise `/api/v1/credits` (management keys
+only) gives an informational balance. No local logs, so no history of tokens.
+Details and mapping: **docs/PROVIDERS.md §4**.
+
+### Multiple accounts (Claude Code, Codex)
+
+The primary account of each provider is implicit; extra accounts come from
+`Settings.accounts` (at most 6). Each is its own provider instance addressed by
+the registry key `claude@work` (`model::split_key`), with its own cache, backoff and
+poll clock; Claude's 120 s floor applies per account. Extra accounts are quota
+only. See **docs/PROVIDERS.md §5**.
+
 ## 3. Repository layout & ownership
 
 ```
@@ -158,25 +176,46 @@ src/                      SvelteKit frontend                     [FRONTEND]
   routes/popover/         window "popover"  (route "/popover")
   routes/dashboard/       window "dashboard"(route "/dashboard")
   lib/types.ts            canonical TS types (mirror of model.rs)  [SHARED - edit only via contract]
+  lib/settings-defaults.ts contract defaults (Rust twin: impl Default for Settings)
   lib/api.ts              invoke() wrapper + browser mock         [FRONTEND owns, keep command names]
   lib/i18n/               en.json, zh-CN.json, t()
-  lib/components/         Ring.svelte, Popover.svelte, ...
-src-tauri/
-  src/lib.rs, main.rs     builder wiring, plugins, handler list   [PLATFORM]
-  src/window/             sidebar/popover/dashboard window logic, tray, autostart, monitors  [PLATFORM]
-  src/model.rs            canonical Rust types (serde camelCase)  [SHARED - edit only via contract]
-  src/commands.rs         backend commands (thin wrappers)        [BACKEND]
-  src/state.rs            AppState (settings, snapshot cache, db) [BACKEND]
-  src/settings.rs         load/save settings.json                 [BACKEND]
-  src/providers/          claude.rs, codex.rs, copilot.rs, mod.rs (trait, registry) [BACKEND]
+  lib/components/         Ring.svelte, MiniBar.svelte, Popover.svelte, dashboard/ (tabs, history/, sessions/, settings/ cards), ...
+  lib/builtin-presets.json built-in presets, shared with the tray (Rust include)
   lib/providers.ts        provider-agnostic frontend helpers      [FRONTEND]
+src-tauri/
+  src/lib.rs, main.rs     builder wiring, plugins, invoke_handler list; main.rs also handles `--print` first [PLATFORM]
+  src/cli.rs              `ai-usage-sidebar --print`: reads snapshot.json, prints, exits (no window)  [BACKEND]
+  src/window/             sidebar/popover/dashboard window logic, drag.rs, hover.rs, monitors.rs, linux.rs [PLATFORM]
+    tray.rs               tray icon + menu (usage lines, presets, focus, pause polling)
+    tray_status.rs        pure tray content: usage lines, tooltip, severity dot, percent icon, system language
+    tray_presets.rs       pure helpers behind the Presets submenu
+    shortcuts.rs          optional global shortcuts + registration status
+  src/model.rs            canonical Rust types (serde camelCase)  [SHARED - edit only via contract]
+  src/commands.rs         backend commands (thin wrappers); mounts the modules below via #[path]  [BACKEND]
+  src/state.rs            AppState (settings, snapshot cache, db), data-dir choice [BACKEND]
+  src/settings.rs         load/merge/clamp/save settings.json, file watcher [BACKEND]
+  src/settings_history.rs undo ring (settings.history.json)       [BACKEND]
+  src/settings_io.rs      export / import / history / restore commands  [BACKEND]
+  src/diagnostics.rs      get_diagnostics, open_folder (redacted)  [BACKEND]
+  src/accounts.rs         extra-account commands (check_account_dir, pick_account_folder)  [BACKEND]
+  src/onboarding.rs       get_provider_setup (existence checks only)  [BACKEND]
+  src/providers/          claude.rs, codex.rs, copilot.rs, openrouter.rs, mod.rs (trait, registry, retry, cache) [BACKEND]
+  src/alerts/             mod.rs (timer, once-only state), threshold.rs, predictive.rs, budget.rs, summary.rs, notifier.rs (native + webhook, focus gate) [BACKEND]
+  src/focus.rs            focus / do-not-disturb helpers around focusUntil [BACKEND]
+  src/forecast.rs         quota projection, token-rate fallback, backtest [BACKEND]
   src/ingest/             jsonl parsers, incremental ingestion     [BACKEND]
-  src/store/              sqlite schema + queries                  [BACKEND]
+  src/store/              sqlite schema (v3) + queries, retention   [BACKEND]
+  src/sessions/           session index, queries, insights.rs (aggregate analytics) [BACKEND]
+  src/evaluation.rs       opt-in AI assessment, redaction          [BACKEND]
   src/pricing.rs          default pricing table + cost estimation [BACKEND]
-  src/scheduler.rs        periodic refresh + ingest, emits events  [BACKEND]
+  src/export.rs           CSV save, share-card PNG save            [BACKEND]
+  src/export_snapshot.rs  snapshot.json writer (schema 1)          [BACKEND]
+  src/backup.rs           backup / staged restore / restart        [BACKEND]
+  src/scheduler.rs        periodic refresh + ingest + maintenance, emits events  [BACKEND]
   src/updater.rs          in-app update check, never auto-installs [PLATFORM]
   tauri.conf.json, capabilities/, icons/                          [PLATFORM]
-docs/                     this file, PLATFORM.md, reference images
+docs/                     this file, PLATFORM.md, PROVIDERS.md, SESSIONS.md, STATUSLINE.md, PERFORMANCE.md, reference images
+scripts/                  check-i18n.mjs, check-agents-settings.mjs, install-linux.sh, smoke-linux.sh
 .github/workflows/        CI builds for linux/macos/windows        [PLATFORM]
 ```
 
@@ -296,15 +335,18 @@ Key semantics:
 
 All commands are `async`-safe, return `Result<T, String>` on the Rust side and
 are called only through `src/lib/api.ts`. Argument names are camelCase on the
-JS side (Tauri converts to snake_case Rust parameters).
+JS side (Tauri converts to snake_case Rust parameters). Every command below is
+registered in the `invoke_handler` of `src-tauri/src/lib.rs`, and every
+registered command appears exactly once in this section (a registered command
+without a row, or a row without a registration, is a documentation bug).
 
 ### Backend (data) commands — `src-tauri/src/commands.rs`
 | command | args | returns |
 |---|---|---|
 | `get_snapshot` | – | `AppSnapshot` (cached, never blocks on network) |
-| `refresh_now` | `provider?: ProviderId` | `AppSnapshot` (forces network fetch) |
+| `refresh_now` | `provider?: ProviderId` (a registry key: `claude`, or `claude@work` for an extra account) | `AppSnapshot` (forces network fetch) |
 | `get_settings` | – | `Settings` |
-| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds`, `sidebarItems` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
+| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds`, `sidebarItems`, `subscriptionUsd`, `webhook` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
 | `get_usage_history` | `query: HistoryQuery` | `HistoryResult` |
 | `get_usage_calendar` | `query: CalendarQuery` | `CalendarResult` (local-day calendar **and** weekday × hour punch card from one scan) |
 | `get_usage_sessions` | `query: SessionQuery` | `SessionsResult` (top `limit` sessions by tokens + the full-range count/totals) |
@@ -320,11 +362,15 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
+
+### Settings tooling and diagnostics — `diagnostics.rs`, `settings_io.rs`, `settings_history.rs`
+| command | args | returns |
+|---|---|---|
 | `get_diagnostics` | – | `Diagnostics` — version, OS/arch, display backend, provider status (e-mails always masked), effective settings (`pricingUrl` stripped of credentials/query), log/config/data folders and the last 80 lines of the newest log, run through `evaluation::redact`. Never contains a token. |
-| `open_folder` | `which: "log" | "config" | "data"` | opens that folder in the file manager (a name, never a path) |
-| `export_settings` | – | `string | null` (native save dialog, writes the effective `settings.json`; null on cancel) |
-| `import_settings` | – | `ImportResult | null` (native open dialog, ≤ 1 MiB; goes through the normal `update_settings` merge so unknown/invalid values are ignored; `focusUntil` and `version` are never imported; `ignored` lists keys that were unknown, invalid or clamped) |
-| `get_settings_history` | – | `SettingsVersion[]` — the undo ring, newest first (see below) |
+| `open_folder` | `which: "log" \| "config" \| "data"` | opens that folder in the file manager (a name, never a path) |
+| `export_settings` | – | `string \| null` (native save dialog, writes the effective `settings.json`; null on cancel) |
+| `import_settings` | – | `ImportResult \| null` (native open dialog, ≤ 1 MiB; goes through the normal `update_settings` merge so unknown/invalid values are ignored; `focusUntil` and `version` are never imported; `ignored` lists keys that were unknown, invalid or clamped) |
+| `get_settings_history` | – | `SettingsVersion[]` — the undo ring, newest first (see §7) |
 | `restore_settings_version` | `index: number` | `Settings` — makes ring entry `index` live; the version it replaces is pushed into the ring, so a restore can be undone |
 
 ### Alerts and onboarding commands — `src-tauri/src/alerts/`, `onboarding.rs`
@@ -333,8 +379,6 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
 | `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
 | `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
-| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account; contents are never read) |
-| `pick_account_folder` | – | `string \| null` (native folder dialog) |
 | `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
 
 Alerts (`alerts/`): `on_snapshot` (called by the scheduler after each refresh)
@@ -345,12 +389,38 @@ month) and weekly-summary alerts. Everything goes through
 (which silences every channel), then the native notification and the optional
 webhook. Once-only bookkeeping for budget and summary lives in
 `alerts-state.json` in the data directory.
+
+### Account commands — `src-tauri/src/accounts.rs`
+| command | args | returns |
+|---|---|---|
+| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account; contents are never read) |
+| `pick_account_folder` | – | `string \| null` (native folder dialog) |
+
+### Export, sharing and backup — `export.rs`, `backup.rs`
+| command | args | returns |
+|---|---|---|
 | `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
 | `save_share_card` | `png: number[], suggestedNameHint: string` | `string \| null` (native save dialog for the dashboard's usage share card; the bytes must be a PNG of at most 8 MiB; null on cancel) |
-| `toggle_sidebar` | – | shows/hides the bar window (the tray's "Show/Hide sidebar", used by the command palette) |
-| `backup_data` | `dest?: string` | `string | null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
-| `restore_data` | `src?: string` | `BackupInfo | null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
+| `backup_data` | `dest?: string` | `string \| null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
+| `restore_data` | `src?: string` | `BackupInfo \| null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
 | `restart_app` | – | – (relaunches the app) |
+
+### Sessions and evaluation commands — `src-tauri/src/sessions/`, `evaluation.rs`
+Semantics, limits and privacy rules are in §11; the contract is the signature.
+
+| command | args | returns |
+|---|---|---|
+| `list_sessions` | `query: SessionListQuery` (`from`, `to`, `provider`, `project`, `search`, `sort`, `offset`, `limit`) | `{rows, total, offset, limit}` |
+| `get_session_insights` | the same filters (paging and sort ignored) | `SessionInsights` (one aggregate over at most the newest 1000 sessions) |
+| `get_session_detail` | `provider`, `sessionId`, `offset?`, `limit?` | summary, bounded message page, turns, children, warnings |
+| `set_session_alias` | `provider`, `sessionId`, `alias` | local display name only |
+| `get_analysis_settings` | – | `AnalysisSettings` |
+| `save_analysis_settings` | `settings` | `AnalysisSettings` |
+| `prepare_session_evaluation` | `provider`, `sessionId`, `turnIds?` | the editable preview (no network request) |
+| `evaluate_session` | `preview` | the report (the only command that sends content) |
+| `get_session_evaluations` | `provider`, `sessionId` | saved reports |
+| `save_evaluation_review` | `id`, `requirements` | the human-reviewed report |
+| `clear_session_analysis` | `provider`, `sessionId` | `()` (removes that session's assessments and alias) |
 
 ### Updater commands — `src-tauri/src/updater.rs`
 | command | args | returns |
@@ -367,15 +437,17 @@ webhook. Once-only bookkeeping for budget and summary lives in
 | `sidebar_drag` | `phase: 'start'\|'move'\|'end'\|'cancel', dx: number, dy: number` (CSS px the pointer travelled since `start`, screen space) | the bar follows the pointer; on `end` it snaps to the nearest of the four edges of the monitor it was dropped on (distances normalised by the monitor's half extent, so the zones meet at its diagonals, with a small hysteresis in favour of the current edge for corner drops) and the result is persisted as `edge` / `monitor` / `verticalOffset` (emits `settings-updated`). `cancel` puts it back. |
 | `popover_show` | `req: PopoverRequest` | position popover next to the ring and show it; emits `popover-target` to the popover window |
 | `popover_relayout` | `width: number, height: number` (CSS px the popover content needs) | resize the popover window to fit content and re-anchor it next to the ring |
-| `popover_hide` | – | hide the popover now and unpin it (second click on the pinned ring). Hover-out hides an unpinned popover after 250 ms and a pinned one after 8 s. |
-| `popover_set_pinned` | `pinned: boolean` | pinned popovers ignore hover-out |
+| `popover_hide` | – | hide the popover now and unpin it (second click on the pinned ring). Hover-out hides an unpinned popover after 250 ms and a pinned one after 8 s; independently, any popover closes after `popoverTimeoutSec` (×6 while pinned) without pointer activity. |
+| `popover_set_pinned` | `pinned: boolean` | pinned popovers ignore the short hover-out delay |
 | `hover_report` | `source: "bar" \| "popover", hovered: boolean` | Rust keeps a hover state machine. `bar/true` expands a collapsed bar and cancels timers. When neither bar nor popover is hovered: the popover hides after ~250 ms (unless pinned) and, if `autoHide`, the bar collapses after `autoHideDelayMs`. |
-| `open_dashboard` | `tab?: "overview" \| "history" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` |
+| `open_dashboard` | `tab?: "overview" \| "history" \| "sessions" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` (omitted = `overview`) |
+| `toggle_sidebar` | – | shows/hides the bar window (the tray's "Show/Hide sidebar"; used by the command palette) |
 | `apply_window_settings` | – | re-read settings (edge, monitor, vertical position, opacity, autoHide, always-on-top) and reposition windows |
 | `get_monitors` | – | `MonitorInfo[]` |
 | `get_shortcut_status` | – | `ShortcutStatus` — why a configured global shortcut is not active (`null` = registered, or disabled because the setting is empty) |
-| `get_shortcut_registrations` | – | `ShortcutRegistrations` — per shortcut `{state: "off" | "registered" | "failed" | "unsupported", message}`; `unsupported` = native Wayland session |
+| `get_shortcut_registrations` | – | `ShortcutRegistrations` — per shortcut `{state: "off" \| "registered" \| "failed" \| "unsupported", message}`; `unsupported` = native Wayland session |
 | `quit_app` | – | exit |
+| `debug_log` | `msg: string` | writes `[webview] <msg>` to the log in debug builds only; a no-op in release builds |
 
 ### Events (Rust → JS, `listen()`)
 | event | payload | emitted by |
@@ -407,8 +479,10 @@ store consumer removes the event listener, timer and lifecycle handlers.
 Linux notes: GNOME Wayland does not allow clients to position windows or stay
 on top, so on Linux the app forces `GDK_BACKEND=x11` (XWayland) unless
 `AI_USAGE_SIDEBAR_BACKEND=wayland` is set. With NVIDIA drivers WebKitGTK needs
-`WEBKIT_DISABLE_DMABUF_RENDERER=1`. Layer-shell support for wlroots/KDE is a
-follow-up.
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`. With `AI_USAGE_SIDEBAR_BACKEND=wayland` the bar
+docks natively through `wlr-layer-shell` where `gtk-layer-shell` and the compositor
+support it (unverified on real hardware; falls back to XWayland). See
+**docs/PLATFORM.md**.
 
 ## 7. Settings (`settings.json` in the app config dir)
 
@@ -420,7 +494,9 @@ end, and a positive offset moves towards the end. The two field names are kept
 as they are so existing `settings.json` files stay valid; the settings tab
 relabels the controls ("Horizontal align / offset") on a horizontal edge.
 
-See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
+See `Settings` in `types.ts`. The complete key list with defaults, ranges and meanings is
+the table in **AGENTS.md §5**, which `pnpm check:agents` keeps in step with
+`src/lib/settings-defaults.ts` and `impl Default for Settings` (the authority). Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member on, `percentMode="used"`, `percentPosition="below"`,
 `refreshIntervalSec=60`, `adaptiveRefresh=true`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90, `notifications=false` with
@@ -567,10 +643,10 @@ of these waits — the decision functions (`poll_interval_secs`,
 `next_poll_due_ms`, `should_poll`, `should_force_poll`) are pure and unit
 tested:
 
-* **floor** — Claude is never polled more often than every 120 s
-  (`CLAUDE_MIN_INTERVAL_SEC`). `/api/oauth/usage` shares its budget with
+* **floor** — every Claude account (the primary and each extra one) is never
+  polled more often than every 120 s (`CLAUDE_MIN_INTERVAL_SEC`). `/api/oauth/usage` shares its budget with
   Claude Code's own calls and a 5-hour window only moves ~1 % per 3 min, so a
-  shorter interval buys nothing and earns `HTTP 429`. Codex uses the
+  shorter interval buys nothing and earns `HTTP 429`. Every other provider uses the
   configured value (minimum 15 s).
 * **idle stretch** (`adaptiveRefresh`) — the log watcher records when each
   provider's session logs last changed; after ~10 min of quiet the interval
@@ -749,6 +825,25 @@ having passed; other decreases are labelled replenishment/correction. CSV
 exports the selected window’s observations. Token and session CSV also include
 raw reasoning effort and model variants.
 
+### Other files
+
+| File | Directory | Purpose |
+|---|---|---|
+| `settings.json` | config | the settings (watched; atomic writes) |
+| `settings.history.json` | config | undo ring, 5 versions (§7) |
+| `analysis-settings.json` | config | AI-assessment settings (§11) |
+| `pricing.json` | config | the user's saved price table, when any |
+| `usage.db` | data | SQLite database above (WAL) |
+| `snapshot.json` | data | machine-readable quota snapshot while `exportSnapshot` is on, schema 1 (`export_snapshot.rs`, docs/STATUSLINE.md); never holds e-mails or paths |
+| `alerts-state.json` | data | once-only bookkeeping for budget and weekly-summary alerts |
+| `cache/quota-<provider>[@<account>].json`, `cache/poll-state.json` | data | last-good quota per provider/account; learned poll multiplier and gates |
+| `pricing-remote.json` | data | cached source price table |
+| `restore-pending/`, `pre-restore/` | data | a staged backup restore, applied before the database opens at the next start; the replaced files (`backup::apply_pending`) |
+
+The data directory is the local app-data folder, except on Windows where an
+existing `usage.db` in the roaming folder keeps it there (`state::pick_data_dir`).
+The CLI `--print` computes the same directory without Tauri.
+
 ## 9. Cost estimation
 
 `pricing.rs` ships an API-equivalent price list (USD per 1M tokens: input,
@@ -853,12 +948,7 @@ no frontend command accepts an arbitrary file path. Parent links do not imply
 recursive summing. See [SESSIONS.md](SESSIONS.md) for metric semantics.
 
 `src-tauri/src/evaluation.rs` owns `analysis-settings.json`, preview preparation,
-explicit Chat Completions HTTP calls and the `session_evaluations` table. Commands:
-`get_analysis_settings()`, `save_analysis_settings(settings)`,
-`prepare_session_evaluation(provider,sessionId,turnIds?)`,
-`evaluate_session(preview)`, `get_session_evaluations(provider,sessionId)`,
-`save_evaluation_review(id,requirements)`, `clear_session_analysis(provider,sessionId)`.
-All are registered in `lib.rs` and wrapped in `src/lib/api.ts`.
+explicit Chat Completions HTTP calls and the `session_evaluations` table. Its commands are listed in §5.
 
 Content is opt-in, defaults off, and does not disable the metadata scanner.
 Evaluation endpoints are HTTPS or loopback HTTP, without credentials/query/fragment.
