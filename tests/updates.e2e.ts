@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('a manual check surfaces the offer in the Updates card and in the banner', async ({ page }) => {
-  await expect(page.getByText('Not checked yet')).toBeVisible();
+  await expect(page.getByText('Not checked yet', { exact: true })).toBeVisible();
   // nothing may appear before the user asks
   await expect(page.getByText(/Update 9\.9\.9 available/)).toHaveCount(0);
 

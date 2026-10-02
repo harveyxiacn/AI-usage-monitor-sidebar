@@ -101,7 +101,7 @@ test('the weekly summary card reports last week', async ({ page }) => {
 test('skipping a version hides its banner, a user can still update from About', async ({ page }) => {
   await page.goto('/dashboard');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Check program updates', exact: true }).click();
+  await page.getByRole('button', { name: 'Check for app updates', exact: true }).click();
   const banner = page.locator('.update-bar');
   await expect(banner).toContainText('Version 9.9.9 is available.');
   await banner.getByRole('button', { name: 'Skip this version' }).click();

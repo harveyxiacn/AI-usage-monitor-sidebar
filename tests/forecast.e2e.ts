@@ -58,7 +58,7 @@ test('the predictive notification toggle follows the notifications setting', asy
   await page.goto('/dashboard');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
 
-  const notify = field(page, 'Notify near the limit');
+  const notify = field(page, 'Enable notifications');
   const predict = field(page, 'Warn when on pace to run out early');
   await expect(predict.getByRole('checkbox')).toBeChecked();
   await expect(predict.getByRole('checkbox')).toBeDisabled();
