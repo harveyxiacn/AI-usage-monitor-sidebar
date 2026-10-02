@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import Field from '../Field.svelte';
   import SettingsCard from './SettingsCard.svelte';
+  import PreUpgradeBackups from './PreUpgradeBackups.svelte';
   import Toggle from '../Toggle.svelte';
   import { backupData, getAppInfo, restartApp, restoreData } from '$lib/api';
   import { t } from '$lib/i18n/i18n.svelte';
@@ -147,6 +148,7 @@
   {#if error}
     <p class="err" role="alert">{t('common.error', { message: error })}</p>
   {/if}
+  <PreUpgradeBackups />
 </SettingsCard>
 
 <style>
