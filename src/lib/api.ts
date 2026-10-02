@@ -7,6 +7,8 @@ import type {
   AppInfo,
   AppSnapshot,
   BackupInfo,
+  DbStatus,
+  PreUpgradeBackup,
   CalendarQuery,
   CalendarResult,
   DashboardTab,
@@ -110,6 +112,12 @@ export const backupData = (dest?: string) => invoke<string | null>('backup_data'
 /** Validates a backup and stages it; it is swapped in at the next start (`restartApp`). null = cancelled. */
 export const restoreData = (src?: string) => invoke<BackupInfo | null>('restore_data', { src: src ?? null });
 export const restartApp = () => invoke<void>('restart_app');
+/** Whether the usage database is open, and if not why (drives a dashboard banner). */
+export const getDbStatus = () => invoke<DbStatus>('get_db_status');
+/** Automatic backups taken before database upgrades, newest first. */
+export const listPreUpgradeBackups = () => invoke<PreUpgradeBackup[]>('list_pre_upgrade_backups');
+/** Shows one of them (by listed file name) in the file manager. */
+export const revealPreUpgradeBackup = (name: string) => invoke<void>('reveal_pre_upgrade_backup', { name });
 /** Everything a bug report needs; nothing secret, e-mails always masked. */
 export const getDiagnostics = () => invoke<Diagnostics>('get_diagnostics');
 /** Opens one of the app's own folders in the file manager. */

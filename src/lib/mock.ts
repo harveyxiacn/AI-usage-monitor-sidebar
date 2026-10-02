@@ -9,6 +9,8 @@ import type {
   AccountSettings,
   AppInfo,
   BackupInfo,
+  DbStatus,
+  PreUpgradeBackup,
   AppSnapshot,
   Bucket,
   CalendarDay,
@@ -1227,6 +1229,22 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       };
       return info as T;
     }
+    case 'get_db_status': {
+      // `?mock=db-too-new` shows the banner for a database from a newer app.
+      const tooNew = mockScenario() === 'db-too-new';
+      const status: DbStatus = tooNew
+        ? { state: 'schemaTooNew', message: 'usage.db uses schema 5 and needs an app that understands schema 4 or newer', found: 5, minReader: 4, supported: 3 }
+        : { state: 'ok', message: '', found: null, minReader: null, supported: 3 };
+      return status as T;
+    }
+    case 'list_pre_upgrade_backups': {
+      const list: PreUpgradeBackup[] = [
+        { name: 'usage-pre-v2-to-v3-20261002-101500.db', path: '~/.local/share/ai-usage-sidebar/backups/usage-pre-v2-to-v3-20261002-101500.db', settingsPath: '~/.local/share/ai-usage-sidebar/backups/usage-pre-v2-to-v3-20261002-101500.settings.json', fromVersion: 2, toVersion: 3, stamp: '20261002-101500', sizeBytes: 482304 },
+      ];
+      return list as T;
+    }
+    case 'reveal_pre_upgrade_backup':
+      return undefined as T;
     case 'restart_app':
       return undefined as T;
     case 'get_monitors':

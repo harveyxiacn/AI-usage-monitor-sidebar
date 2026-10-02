@@ -404,6 +404,9 @@ webhook. Once-only bookkeeping for budget and summary lives in
 | `backup_data` | `dest?: string` | `string \| null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
 | `restore_data` | `src?: string` | `BackupInfo \| null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
 | `restart_app` | – | – (relaunches the app) |
+| `get_db_status` | – | `DbStatus` (`state`: `ok` / `schemaTooNew` / `migrationBackupFailed` / `unavailable`, plus `message`, `found`, `minReader`, `supported`; §8.1) |
+| `list_pre_upgrade_backups` | – | `PreUpgradeBackup[]` (newest first; the automatic backups in `<data dir>/backups/`) |
+| `reveal_pre_upgrade_backup` | `name: string` | – (shows that listed file in the file manager) |
 
 ### Sessions and evaluation commands — `src-tauri/src/sessions/`, `evaluation.rs`
 Semantics, limits and privacy rules are in §11; the contract is the signature.
@@ -782,7 +785,7 @@ version marker. Every function of `store/quota.rs` takes the registry key
 (`claude`, `claude@work`) and splits it: sample throttling, `window_samples*`
 (the forecast input), the history query, the retention thinning partition and
 the weekly "limits hit" grouping are all per account. A database written by v3
-cannot be opened by an older build (`unsupported database schema 3`).
+cannot be opened by v0.5 or older (`unsupported database schema 3`), see §8.1.
 `usage_events` and the session tables are **not** per account (extra accounts
 are quota only).
 
@@ -843,6 +846,63 @@ raw reasoning effort and model variants.
 The data directory is the local app-data folder, except on Windows where an
 existing `usage.db` in the roaming folder keeps it there (`state::pick_data_dir`).
 The CLI `--print` computes the same directory without Tauri.
+
+### 8.1 Compatibility and downgrade safety (`store/compat.rs`)
+
+`meta.schema_version` is what the file *is*; `meta.min_reader_version` is the
+oldest schema whose code can safely read **and write** it. Migrations are the
+`MIGRATIONS` table in `store/mod.rs` (each step: target version, its
+`min_reader`, an idempotent apply function). The file's `min_reader_version`
+only ever rises.
+
+- Additive change (new nullable/defaulted column, new table, new index):
+  `schema_version` goes up, `min_reader` stays.
+- Breaking change (drop/rename, changed meaning, rewritten table):
+  `min_reader` becomes the new version.
+
+On open, for a build that understands schema `S`:
+
+| database | result |
+|---|---|
+| `schema_version < S` (or no file) | back up (below), migrate, stamp both keys |
+| `== S` | open |
+| `> S` and `min_reader <= S` | open as is; never lowers the number, never touches the newer columns |
+| `> S` and `min_reader > S` | refuse with `SchemaTooNew`; `AppState.db` is `None` |
+
+A missing `min_reader_version` (all databases written before v0.7) means "equal
+to `schema_version`". A refused database is not an app failure: quota polling,
+the rings, `snapshot.json` and `--print` do not use the database; History,
+cost, sessions and budgets report "usage database is unavailable", and the
+dashboard shows a banner from `get_db_status` (state `schemaTooNew`,
+`migrationBackupFailed` or `unavailable`) that names the schema needed and the
+backups. The file itself is never modified.
+
+History: v0.5 (schema 2) and v0.6 (schema 3) refuse any newer version number
+outright (`unsupported database schema N`) and know nothing of
+`min_reader_version`. The policy therefore protects downgrades *from v0.7 on*;
+a v0.6 -> v0.5 downgrade stays impossible without a backup. Schema 2 -> 3 was
+additive, so its `min_reader` is 2.
+
+**Pre-migration backup.** Before the first migration step, `VACUUM INTO
+<data dir>/backups/usage-pre-v<from>-to-v<to>-<YYYYMMDD-HHMMSS>.db` writes a
+consistent copy, plus `<same stem>.settings.json` (a copy of `settings.json`).
+The newest 3 pairs are kept. A brand-new database is not backed up. If the
+backup cannot be written (full disk, no permission) the migration is **aborted**:
+the database stays at its old version, the app runs without it, and the banner
+says why; the cause is also in the log. A full disk is deliberately not exempt,
+since a migration that cannot copy the file will not fare better in place.
+`AI_USAGE_SIDEBAR_SKIP_MIGRATION_BACKUP=1` skips the backup for people who accept
+that risk.
+
+**Going back.** `ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]`
+(handled in `cli.rs` before Tauri starts) lists the backups or stages one (the
+newest by default) through the same `restore-pending/` mechanism as `restore_data`
+(`backup::stage_files`); the staged files are swapped in at the next start of a
+build that has `apply_pending` (v0.6+), which keeps the replaced files in
+`pre-restore/`. Starting the *newer* build instead restores and then migrates
+forward again. Settings -> Integrations lists the backups with "Reveal in folder".
+Commands: `get_db_status`, `list_pre_upgrade_backups`,
+`reveal_pre_upgrade_backup(name)`.
 
 ## 9. Cost estimation
 

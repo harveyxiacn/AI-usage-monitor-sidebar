@@ -6,6 +6,7 @@
 //! The connection lives behind a `parking_lot::Mutex`; every caller is expected
 //! to run the (blocking) queries inside `tokio::task::spawn_blocking`.
 
+pub mod compat;
 pub mod quota;
 pub mod usage;
 pub mod windows;
@@ -19,8 +20,86 @@ pub use quota::{insert_quota_sample, maintain_quota_samples, query_quota_history
 pub use usage::{insert_usage_events, query_calendar, query_history, query_sessions, UsageEvent};
 pub use windows::{query_window_usage, usage_token_events};
 
-/// Bumped whenever the schema changes; migrations live in [`migrate`].
+/// Bumped whenever the schema changes; migrations live in [`MIGRATIONS`].
 pub const SCHEMA_VERSION: i64 = 3;
+
+/// One schema step. Steps are applied in order to a database whose
+/// `schema_version` is below `to`, inside the migration transaction, and must
+/// be idempotent (an older build may have rewritten the version marker while
+/// leaving the change in place).
+///
+/// To add a schema change (checklist in docs/RELEASING.md):
+/// 1. append a `Migration` here with `to: SCHEMA_VERSION + 1`, then bump
+///    [`SCHEMA_VERSION`];
+/// 2. set `min_reader`: keep the previous value for an additive change (new
+///    nullable/defaulted column, table, index); set it to `to` only if code
+///    of the previous schema would misread or corrupt the data;
+/// 3. add the upgrade fixture/test. The pre-migration backup, the version
+///    stamps and the refusal of too-new databases need no further work.
+pub struct Migration {
+    pub to: i64,
+    /// Oldest schema version whose code may read/write the database once
+    /// this step has been applied (see `compat` for the policy).
+    pub min_reader: i64,
+    pub apply: fn(&rusqlite::Transaction<'_>) -> Result<()>,
+}
+
+pub const MIGRATIONS: &[Migration] = &[
+    // v2 (v0.5): reasoning effort column, one log replay. Additive.
+    Migration {
+        to: 2,
+        min_reader: 1,
+        apply: migrate_to_v2,
+    },
+    // v3 (v0.6, multi-account): quota_samples.account with a default. Additive.
+    Migration {
+        to: 3,
+        min_reader: 2,
+        apply: migrate_to_v3,
+    },
+];
+
+/// `meta.min_reader_version` of a database fully migrated by this build.
+pub fn min_reader_version() -> i64 {
+    MIGRATIONS.iter().map(|m| m.min_reader).max().unwrap_or(1)
+}
+
+fn migrate_to_v2(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    // An older binary can rewrite the version marker while leaving
+    // this additive column intact. Reapplying v2 is still safe.
+    let has_effort: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name='reasoning_effort')",
+        [], |row| row.get(0),
+    )?;
+    if !has_effort {
+        tx.execute_batch("ALTER TABLE usage_events ADD COLUMN reasoning_effort TEXT;")?;
+    }
+    // Previously parsed logs still exist on disk. A single replay
+    // enriches their metadata through the normal request-id upsert.
+    // Existing usage and quota rows remain intact, even if logs expired.
+    tx.execute("DELETE FROM ingest_files", [])?;
+    Ok(())
+}
+
+fn migrate_to_v3(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    // v3 (multi-account): every quota sample belongs to an account;
+    // '' is the primary one, so all existing rows migrate unchanged.
+    // Checked first because an older binary can rewrite the version
+    // marker while leaving this additive column in place.
+    let has_account: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('quota_samples') WHERE name='account')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_account {
+        tx.execute_batch("ALTER TABLE quota_samples ADD COLUMN account TEXT NOT NULL DEFAULT '';")?;
+    }
+    tx.execute_batch(
+        "DROP INDEX IF EXISTS idx_quota_ts;
+         CREATE INDEX IF NOT EXISTS idx_quota_account_ts ON quota_samples(provider, account, ts);",
+    )?;
+    Ok(())
+}
 
 /// One row of the `ingest_files` bookkeeping table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,12 +123,21 @@ pub struct Db {
 
 impl Db {
     /// Open (creating if needed) the database at `path` and run migrations.
+    /// A due migration is preceded by a backup in `<dir of path>/backups`
+    /// (see [`compat`]); settings are not copied along (use
+    /// [`Db::open_with_settings`]).
     pub fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
+        Self::open_with_settings(path, None)
+    }
+
+    /// Like [`Db::open`]; `config_dir` is where `settings.json` lives, so the
+    /// pre-migration backup can carry a copy of it.
+    pub fn open_with_settings(path: &Path, config_dir: Option<&Path>) -> Result<Self> {
+        let data_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        std::fs::create_dir_all(&data_dir).ok();
         let conn = Connection::open(path)
             .with_context(|| format!("open sqlite database {}", path.display()))?;
+        compat::guard_open(&conn, &data_dir, config_dir, SCHEMA_VERSION)?;
         Self::init(conn)
     }
 
@@ -151,42 +239,30 @@ impl Db {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        anyhow::ensure!(
-            current <= SCHEMA_VERSION,
-            "unsupported database schema {current}"
-        );
-        if current < 2 {
-            // An older binary can rewrite the version marker while leaving
-            // this additive column intact. Reapplying v2 is still safe.
-            let has_effort: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name='reasoning_effort')",
-                [], |row| row.get(0),
-            )?;
-            if !has_effort {
-                tx.execute_batch("ALTER TABLE usage_events ADD COLUMN reasoning_effort TEXT;")?;
-            }
-            // Previously parsed logs still exist on disk. A single replay
-            // enriches their metadata through the normal request-id upsert.
-            // Existing usage and quota rows remain intact, even if logs expired.
-            tx.execute("DELETE FROM ingest_files", [])?;
+        if current > SCHEMA_VERSION {
+            // `Db::open` already refused databases that need a newer app;
+            // this one is declared compatible. Leave it exactly as it is.
+            tx.commit()?;
+            return Ok(());
         }
-        if current < 3 {
-            // v3 (multi-account): every quota sample belongs to an account;
-            // '' is the primary one, so all existing rows migrate unchanged.
-            // Checked first because an older binary can rewrite the version
-            // marker while leaving this additive column in place.
-            let has_account: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('quota_samples') WHERE name='account')",
-                [], |row| row.get(0),
-            )?;
-            if !has_account {
-                tx.execute_batch(
-                    "ALTER TABLE quota_samples ADD COLUMN account TEXT NOT NULL DEFAULT '';",
-                )?;
-            }
-            tx.execute_batch(
-                "DROP INDEX IF EXISTS idx_quota_ts;
-                 CREATE INDEX IF NOT EXISTS idx_quota_account_ts ON quota_samples(provider, account, ts);",
+        for step in MIGRATIONS.iter().filter(|m| m.to > current) {
+            (step.apply)(&tx).with_context(|| format!("migrate usage.db to schema {}", step.to))?;
+        }
+        let have_min_reader: Option<i64> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key=?1",
+                [compat::MIN_READER_KEY],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|s| s.parse().ok());
+        if current < SCHEMA_VERSION || have_min_reader.is_none() {
+            // Only ever raised: a database keeps the strictest promise made.
+            let min_reader = have_min_reader.unwrap_or(0).max(min_reader_version());
+            tx.execute(
+                "INSERT INTO meta(key, value) VALUES(?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![compat::MIN_READER_KEY, min_reader.to_string()],
             )?;
         }
         if current < SCHEMA_VERSION {
@@ -645,5 +721,162 @@ mod tests {
             .query_row("SELECT account FROM quota_samples", [], |r| r.get(0))
             .unwrap();
         assert_eq!(account, "work");
+    }
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+    use crate::commands::test_support::tempdir;
+
+    fn meta(path: &Path, key: &str) -> Option<String> {
+        Connection::open(path)
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
+            .ok()
+    }
+
+    fn set(path: &Path, sql: &str) {
+        Connection::open(path).unwrap().execute_batch(sql).unwrap();
+    }
+
+    #[test]
+    fn migration_table_matches_the_schema_version() {
+        assert_eq!(MIGRATIONS.last().unwrap().to, SCHEMA_VERSION);
+        for (i, m) in MIGRATIONS.iter().enumerate() {
+            assert_eq!(m.to, i as i64 + 2, "steps are consecutive from v2");
+            assert!(m.min_reader <= m.to);
+        }
+        assert!(min_reader_version() <= SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_fresh_database_is_stamped_and_needs_no_backup() {
+        let dir = tempdir();
+        let path = dir.join("usage.db");
+        drop(Db::open(&path).unwrap());
+        assert_eq!(
+            meta(&path, "schema_version").unwrap(),
+            SCHEMA_VERSION.to_string()
+        );
+        assert_eq!(
+            meta(&path, compat::MIN_READER_KEY).unwrap(),
+            min_reader_version().to_string()
+        );
+        assert!(compat::list(&dir).is_empty());
+    }
+
+    #[test]
+    fn an_old_database_is_backed_up_before_it_is_migrated() {
+        let dir = tempdir();
+        let config = tempdir();
+        std::fs::write(
+            crate::commands::settings::settings_path(&config),
+            r#"{"edge":"left"}"#,
+        )
+        .unwrap();
+        let path = dir.join("usage.db");
+        drop(Db::open(&path).unwrap());
+        set(
+            &path,
+            "UPDATE meta SET value='2' WHERE key='schema_version';
+             DELETE FROM meta WHERE key='min_reader_version';",
+        );
+        drop(Db::open_with_settings(&path, Some(&config)).unwrap());
+        let backups = compat::list(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            (backups[0].from_version, backups[0].to_version),
+            (2, SCHEMA_VERSION)
+        );
+        assert_eq!(
+            meta(Path::new(&backups[0].path), "schema_version").unwrap(),
+            "2"
+        );
+        assert!(backups[0].settings_path.is_some());
+        assert_eq!(
+            meta(&path, "schema_version").unwrap(),
+            SCHEMA_VERSION.to_string()
+        );
+        // an up-to-date database is not backed up again
+        drop(Db::open_with_settings(&path, Some(&config)).unwrap());
+        assert_eq!(compat::list(&dir).len(), 1);
+    }
+
+    #[test]
+    fn a_failed_backup_leaves_the_database_unmigrated() {
+        let dir = tempdir();
+        let path = dir.join("usage.db");
+        drop(Db::open(&path).unwrap());
+        set(
+            &path,
+            "UPDATE meta SET value='2' WHERE key='schema_version';",
+        );
+        std::fs::write(dir.join(compat::BACKUP_DIR), "a file in the way").unwrap();
+        let e = Db::open(&path).err().expect("must refuse");
+        assert!(
+            e.downcast_ref::<compat::PreUpgradeBackupFailed>().is_some(),
+            "{e:#}"
+        );
+        assert_eq!(meta(&path, "schema_version").unwrap(), "2");
+    }
+
+    #[test]
+    fn a_newer_compatible_database_opens_and_keeps_its_version() {
+        let dir = tempdir();
+        let path = dir.join("usage.db");
+        drop(Db::open(&path).unwrap());
+        let newer = SCHEMA_VERSION + 1;
+        set(
+            &path,
+            &format!(
+                "UPDATE meta SET value='{newer}' WHERE key='schema_version';
+                 UPDATE meta SET value='{SCHEMA_VERSION}' WHERE key='min_reader_version';
+                 ALTER TABLE usage_events ADD COLUMN from_the_future TEXT;"
+            ),
+        );
+        let db = Db::open(&path).unwrap();
+        assert!(db.lock().prepare("SELECT 1 FROM usage_events").is_ok());
+        drop(db);
+        assert_eq!(meta(&path, "schema_version").unwrap(), newer.to_string());
+        assert!(compat::list(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_database_that_needs_a_newer_app_is_refused_untouched() {
+        let dir = tempdir();
+        let path = dir.join("usage.db");
+        drop(Db::open(&path).unwrap());
+        let newer = SCHEMA_VERSION + 1;
+        set(
+            &path,
+            &format!(
+                "UPDATE meta SET value='{newer}' WHERE key='schema_version';
+                 UPDATE meta SET value='{newer}' WHERE key='min_reader_version';"
+            ),
+        );
+        let e = Db::open(&path).err().expect("must refuse");
+        let too_new = e.downcast_ref::<compat::SchemaTooNew>().expect("typed");
+        assert_eq!(too_new.min_reader, newer);
+        let status = compat::DbStatus::from_error(&e, SCHEMA_VERSION);
+        assert_eq!(status.state, "schemaTooNew");
+        assert_eq!(meta(&path, "schema_version").unwrap(), newer.to_string());
+    }
+
+    #[test]
+    fn a_newer_database_without_the_key_is_refused() {
+        // what a build from before this policy would have written
+        let dir = tempdir();
+        let path = dir.join("usage.db");
+        drop(Db::open(&path).unwrap());
+        set(
+            &path,
+            &format!(
+                "UPDATE meta SET value='{}' WHERE key='schema_version';
+                 DELETE FROM meta WHERE key='min_reader_version';",
+                SCHEMA_VERSION + 1
+            ),
+        );
+        assert!(Db::open(&path).is_err());
     }
 }

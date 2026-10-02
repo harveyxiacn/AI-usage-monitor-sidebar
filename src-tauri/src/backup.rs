@@ -117,7 +117,7 @@ fn read_schema_version(conn: &Connection) -> Option<i64> {
 
 /// Open read-only and make sure this really is a usage database this build
 /// can run on. Returns its schema version.
-fn check_database(path: &Path) -> Result<i64> {
+pub(crate) fn check_database(path: &Path) -> Result<i64> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -138,9 +138,12 @@ fn check_database(path: &Path) -> Result<i64> {
         bail!("this is not an AI Usage Sidebar database");
     }
     let version = read_schema_version(&conn).context("the database has no schema version")?;
-    if version > SCHEMA_VERSION {
+    let (_, min_reader) = crate::commands::store::compat::read_versions(&conn);
+    if let crate::commands::store::compat::Compat::TooNew { found, min_reader } =
+        crate::commands::store::compat::classify(version, min_reader, SCHEMA_VERSION)
+    {
         bail!(
-            "the database uses schema {version}, newer than this version of the app understands ({SCHEMA_VERSION}); update the app first"
+            "the database uses schema {found} and needs an app that understands schema {min_reader} or newer (this build understands {SCHEMA_VERSION}); update the app first"
         );
     }
     if version < 1 {
@@ -225,27 +228,74 @@ fn pending_dir(data_dir: &Path) -> PathBuf {
 pub fn stage_restore(data_dir: &Path, src: &Path) -> Result<BackupInfo> {
     let info = validate_backup(src)?;
     let dir = PathBuf::from(&info.path);
+    let db = dir.join(DB_FILE);
+    let settings = dir.join(SETTINGS_FILE);
+    write_staging(
+        data_dir,
+        &info,
+        db.is_file().then_some(db.as_path()),
+        settings.is_file().then_some(settings.as_path()),
+    )?;
+    Ok(info)
+}
+
+/// Stage one database file (and optionally a settings file) that is not in
+/// the backup-folder layout, e.g. a pre-upgrade backup from `store::compat`.
+/// Same validation and same staging folder as [`stage_restore`].
+pub fn stage_files(
+    data_dir: &Path,
+    db: &Path,
+    settings_file: Option<&Path>,
+    created_at: Option<String>,
+) -> Result<BackupInfo> {
+    let schema_version = check_database(db)?;
+    let has_settings = match settings_file {
+        Some(p) => {
+            let text = std::fs::read_to_string(p).context("read the settings copy")?;
+            if settings::parse(&text).is_none() {
+                bail!("the settings copy next to the backup is not valid");
+            }
+            true
+        }
+        None => false,
+    };
+    let info = BackupInfo {
+        path: db.to_string_lossy().into_owned(),
+        created_at,
+        app_version: None,
+        schema_version: Some(schema_version),
+        has_database: true,
+        has_settings,
+    };
+    write_staging(data_dir, &info, Some(db), settings_file)?;
+    Ok(info)
+}
+
+fn write_staging(
+    data_dir: &Path,
+    info: &BackupInfo,
+    db: Option<&Path>,
+    settings_file: Option<&Path>,
+) -> Result<()> {
     let pending = pending_dir(data_dir);
     if pending.exists() {
         std::fs::remove_dir_all(&pending).context("remove the previous staged restore")?;
     }
     std::fs::create_dir_all(&pending).context("create the staging folder")?;
     let result = (|| -> Result<()> {
-        for name in [DB_FILE, SETTINGS_FILE] {
-            if dir.join(name).is_file() {
-                std::fs::copy(dir.join(name), pending.join(name))
-                    .with_context(|| format!("stage {name}"))?;
+        for (name, src) in [(DB_FILE, db), (SETTINGS_FILE, settings_file)] {
+            if let Some(src) = src {
+                std::fs::copy(src, pending.join(name)).with_context(|| format!("stage {name}"))?;
             }
         }
-        std::fs::write(pending.join(READY), serde_json::to_vec(&info)?)
-            .context("finish staging")?;
+        std::fs::write(pending.join(READY), serde_json::to_vec(info)?).context("finish staging")?;
         Ok(())
     })();
     if let Err(e) = result {
         std::fs::remove_dir_all(&pending).ok();
         return Err(e);
     }
-    Ok(info)
+    Ok(())
 }
 
 /// Whether a staged restore is waiting for the next start.
@@ -404,6 +454,38 @@ pub async fn restore_data(
     .map_err(|e| format!("restore failed: {e}"))?
 }
 
+/// Whether `usage.db` is open, and if not why (shown as a dashboard banner).
+#[tauri::command]
+pub fn get_db_status(
+    state: State<'_, crate::state::AppState>,
+) -> crate::commands::store::compat::DbStatus {
+    state.db_status.clone()
+}
+
+/// The automatic pre-upgrade backups, newest first.
+#[tauri::command]
+pub fn list_pre_upgrade_backups(
+    state: State<'_, crate::state::AppState>,
+) -> Vec<crate::commands::store::compat::PreUpgradeBackup> {
+    crate::commands::store::compat::list(&state.data_dir)
+}
+
+/// Show one pre-upgrade backup in the file manager. Takes the listed file
+/// name, never a path.
+#[tauri::command]
+pub fn reveal_pre_upgrade_backup(
+    app: AppHandle,
+    state: State<'_, crate::state::AppState>,
+    name: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let backup = crate::commands::store::compat::select(&state.data_dir, Some(&name))
+        .map_err(|e| format!("{e:#}"))?;
+    app.opener()
+        .reveal_item_in_dir(&backup.path)
+        .map_err(|e| e.to_string())
+}
+
 /// Relaunch the app (used after a restore was staged).
 #[tauri::command]
 pub fn restart_app(app: AppHandle) {
@@ -512,14 +594,27 @@ mod tests {
         let err = validate_backup(&other).unwrap_err().to_string();
         assert!(err.contains("not an AI Usage Sidebar database"), "{err}");
 
-        // a database from a newer app
+        // a database from a newer app that older apps cannot use
         let newer = backup_of(&config, &db, &root);
         Connection::open(newer.join(DB_FILE))
             .unwrap()
-            .execute("UPDATE meta SET value='99' WHERE key='schema_version'", [])
+            .execute_batch(
+                "UPDATE meta SET value='99' WHERE key='schema_version';
+                 INSERT OR REPLACE INTO meta VALUES('min_reader_version','99');",
+            )
             .unwrap();
         let err = validate_backup(&newer).unwrap_err().to_string();
-        assert!(err.contains("newer"), "{err}");
+        assert!(err.contains("update the app"), "{err}");
+        // ... but one declared readable from this schema is accepted
+        let compatible = backup_of(&config, &db, &root);
+        Connection::open(compatible.join(DB_FILE))
+            .unwrap()
+            .execute_batch("UPDATE meta SET value='99' WHERE key='schema_version';")
+            .unwrap();
+        assert_eq!(
+            validate_backup(&compatible).unwrap().schema_version,
+            Some(99)
+        );
 
         // invalid settings
         let bad_settings = root.join("bad-settings");

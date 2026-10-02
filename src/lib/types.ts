@@ -711,3 +711,27 @@ export interface MonitorInfo {
 }
 
 export type DashboardTab = 'overview' | 'history' | 'sessions' | 'settings';
+
+/** Why the usage database is (not) open (get_db_status). */
+export interface DbStatus {
+  state: 'ok' | 'schemaTooNew' | 'migrationBackupFailed' | 'unavailable';
+  message: string;
+  /** schema of the file on disk (schemaTooNew) */
+  found: number | null;
+  /** oldest schema whose app can use that file (schemaTooNew) */
+  minReader: number | null;
+  /** newest schema this build understands */
+  supported: number;
+}
+
+/** An automatic backup taken before a database upgrade (list_pre_upgrade_backups). */
+export interface PreUpgradeBackup {
+  name: string;
+  path: string;
+  settingsPath: string | null;
+  fromVersion: number;
+  toVersion: number;
+  /** YYYYMMDD-HHMMSS, local time */
+  stamp: string;
+  sizeBytes: number;
+}

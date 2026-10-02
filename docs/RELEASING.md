@@ -51,6 +51,31 @@ way to retry a single failed platform.
 
 ---
 
+### 1.0 Schema changes (when `usage.db` changes shape)
+
+The compatibility policy is in docs/ARCHITECTURE.md §8.1. For every release
+that touches the schema:
+
+1. Append a `Migration` to `MIGRATIONS` in `src-tauri/src/store/mod.rs`
+   (`to: SCHEMA_VERSION + 1`, idempotent apply fn) and bump `SCHEMA_VERSION`.
+   The pre-migration backup, the version stamps and the "newer database"
+   handling come for free.
+2. Decide `min_reader`. Additive (nullable/defaulted column, new table, new
+   index): keep the previous value, so the previous release still opens the
+   database. Breaking (drop, rename, changed meaning, rewritten rows): set it to
+   the new version. When unsure, ask whether the previous release, left running
+   against the new file, could misread or corrupt anything. Remember that
+   releases older than v0.7 refuse any newer `schema_version` regardless.
+3. Add the upgrade fixture: a database exactly as the previous release left it,
+   migrated to the new schema by a test (see the WP1 upgrade tests), including
+   a check that the pre-upgrade backup appears and holds the old schema.
+4. Update the schema in ARCHITECTURE.md §8 and the release notes: say whether
+   the release can be rolled back (`min_reader` unchanged) and mention
+   `ai-usage-sidebar --restore-pre-upgrade` for anyone who needs the old data
+   shape back.
+5. Windows/macOS/Linux smoke: the upgrade smoke job must log the migration and
+   leave one file in `<data dir>/backups/`.
+
 ### 1.1 Never name the integration branch like the tag
 
 `v0.2.0` was developed on a branch called `v0.2.0`. After the merge,

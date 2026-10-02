@@ -15,7 +15,7 @@
   import { st } from '$lib/session-labels.svelte';
   import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
   import { DASHBOARD_TAB_EVENT } from '$lib/dashboard-nav';
-  import { t } from '$lib/i18n/i18n.svelte';
+  import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { overlays } from '$lib/stores/overlays.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -24,6 +24,8 @@
   import { shouldShowWizard } from '$lib/onboarding';
   import { downloadPercent, formatBytes, updateBannerVisible } from '$lib/update-banner';
   import { pricingUpdate } from '$lib/stores/pricing-update.svelte';
+  import { getDbStatus } from '$lib/api';
+  import type { DbStatus } from '$lib/types';
   import type { DashboardTab } from '$lib/types';
 
   // stamped before the first applyTheme() effect so the theme store knows
@@ -52,6 +54,8 @@
   let themeKey = $state('dark');
   /** the update banner is a nudge, not a modal: one click makes it go away */
   let updateDismissed = $state(false);
+  /** why usage.db is not open (a newer app wrote it, a migration was aborted), if so */
+  let dbIssue = $state<DbStatus | null>(null);
   /** A new revision resets this acknowledgement; an update is never hidden forever. */
   let pricingUpdateDismissedRevision = $state<string | null>(null);
   const pricingRevision = $derived(pricingUpdate.value?.revision ?? 'unknown');
@@ -59,6 +63,7 @@
   onMount(() => {
     const requestedTab = new URLSearchParams(window.location.search).get('tab') as DashboardTab;
     if (TABS.includes(requestedTab)) tab = requestedTab;
+    void getDbStatus().then((s) => { if (s.state !== 'ok') dbIssue = s; }).catch(() => {});
     const onTabRequest = (e: Event) => { const next = (e as CustomEvent<DashboardTab>).detail; if (TABS.includes(next)) tab = next; };
     window.addEventListener(DASHBOARD_TAB_EVENT, onTabRequest);
     const disposers: Array<() => void> = [() => window.removeEventListener(DASHBOARD_TAB_EVENT, onTabRequest), settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
@@ -138,6 +143,12 @@
         <button class="link" onclick={() => void settings.patch({ skippedVersion: update.available ?? '' })}>{t('update.skip')}</button>
         <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
       {/if}
+    </aside>
+  {/if}
+
+  {#if dbIssue}
+    <aside class="update-bar db-issue-bar" role="alert">
+      <span>{tDyn(`dbStatus.${dbIssue.state}`, { found: dbIssue.found ?? '', supported: dbIssue.supported, minReader: dbIssue.minReader ?? '', message: dbIssue.message })}</span>
     </aside>
   {/if}
 

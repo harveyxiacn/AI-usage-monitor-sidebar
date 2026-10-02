@@ -150,6 +150,9 @@ pub fn run() {
             backup::backup_data,
             backup::restore_data,
             backup::restart_app,
+            backup::get_db_status,
+            backup::list_pre_upgrade_backups,
+            backup::reveal_pre_upgrade_backup,
             // updater
             updater::get_update_status,
             updater::check_for_updates,
