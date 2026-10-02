@@ -210,7 +210,13 @@ Key semantics:
   `confidence` (`low|medium|high`) comes from the sample count and the share of
   the estimation horizon they cover. Too few samples, too short or stale a
   history, a flat/negative slope, an already-full window or a projection within
-  one percentage point of the current value all mean "no forecast". The UI only
+  one percentage point of the current value all mean "no forecast", except that
+  a series too short/brief/flat (integer percentages plateau at a low burn rate)
+  falls back, for non-scoped windows, to the provider's token events of the
+  current period scaled by that period's tokens-per-percent ratio (needs ≥ 2 %
+  used and ≥ 3 recent events); such a forecast is one confidence step lower
+  (`low` below 5 % used). `examples/forecast_backtest.rs` replays a DB copy and
+  reports the mean absolute error of both variants. The UI only
   marks the ring for `medium`/`high`.
 * `QuotaWindow.isPrimary`: exactly one window per provider is primary (the
   5‑hour window when the plan has one, else the weekly window).

@@ -16,12 +16,15 @@
 //! * the slope is a Theil–Sen estimator (the median of all pairwise slopes),
 //!   which shrugs off a single burst and damps — rather than ignores — an idle
 //!   plateau in the middle or at the end of the series.
+//! * when the percentages are too few, too brief or flat, [`forecast_with_tokens`]
+//!   estimates the pace from token usage events instead (one confidence step
+//!   lower); `backtest` replays history to measure the error of either path.
 //! * too few samples, too short a span, stale history, a flat or negative slope,
 //!   a window that has already reset or is already full, or a projection that is
 //!   within one percentage point of the current value all yield `None`.
 
 use crate::commands::providers::{clamp_percent, rfc3339_from_unix_ms};
-use crate::commands::store::Db;
+use crate::commands::store::{self, Db};
 use crate::model::{AppSnapshot, ForecastConfidence, ProviderStatus, QuotaForecast, WindowKind};
 
 const MINUTE_MS: i64 = 60_000;
@@ -63,6 +66,13 @@ pub struct WindowSpec {
 }
 
 /// How far back the estimator looks for a window of this length.
+/// Start of the window's current period (unix ms) when both the reset time and
+/// the window length are known.
+pub fn period_start_ms(spec: &WindowSpec) -> Option<i64> {
+    let secs = spec.window_seconds?;
+    Some(spec.resets_at_ms? - (secs as i64).saturating_mul(1_000))
+}
+
 pub fn horizon_ms(kind: WindowKind, window_seconds: Option<u64>) -> i64 {
     let secs = window_seconds.unwrap_or(match kind {
         WindowKind::FiveHour => 5 * 3_600,
@@ -83,8 +93,38 @@ fn min_span_ms(horizon: i64) -> i64 {
     (horizon / 8).max(10 * MINUTE_MS)
 }
 
-/// Project `spec` forward from its stored `samples` (oldest first).
+/// One token-usage event of the provider (`usage_events`), reduced to what the
+/// token-based fallback needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TokenEvent {
+    /// unix ms
+    pub ts_ms: i64,
+    pub tokens: i64,
+}
+
+/// Project `spec` forward from its stored `samples` (oldest first), using only
+/// the quota percentages.
 pub fn forecast(samples: &[Sample], spec: &WindowSpec, now_ms: i64) -> Option<QuotaForecast> {
+    forecast_with_tokens(samples, spec, now_ms, None)
+}
+
+/// Like [`forecast`], with a fallback for the case the percentages cannot
+/// answer: the provider reports whole percent only, so at a low burn rate the
+/// value sits on a plateau for many minutes and the Theil–Sen slope is zero.
+///
+/// `tokens` are the provider's token events **since the start of the window's
+/// current period** (oldest first), only for a window that is not scoped to a
+/// model. When the percentage series is too short, too brief or flat, the burn
+/// rate is estimated from the tokens spent inside the estimation horizon,
+/// scaled by the tokens-per-percent ratio observed in this very period. Such a
+/// forecast always carries a confidence one step lower than the same
+/// sample/span evidence would earn from percentages.
+pub fn forecast_with_tokens(
+    samples: &[Sample],
+    spec: &WindowSpec,
+    now_ms: i64,
+    tokens: Option<&[TokenEvent]>,
+) -> Option<QuotaForecast> {
     let resets_at = spec.resets_at_ms?;
     if resets_at <= now_ms {
         return None; // the window is resetting right now; wait for fresh data
@@ -115,20 +155,13 @@ pub fn forecast(samples: &[Sample], spec: &WindowSpec, now_ms: i64) -> Option<Qu
             resets_at_ms: Some(resets_at),
         });
     }
-
     let series = since_last_reset(&series, Some(resets_at));
-    if series.len() < MIN_SAMPLES {
-        return None;
-    }
-    let span = series[series.len() - 1].ts_ms - series[0].ts_ms;
-    if span < min_span_ms(horizon) {
-        return None;
-    }
 
-    let rate = theil_sen(&thin(series, MAX_SAMPLES))? * HOUR_MS as f64;
-    if !rate.is_finite() || rate <= 0.0 {
-        return None;
-    }
+    let (rate, confidence) = match percent_estimate(series, horizon) {
+        PercentEstimate::Rate(rate, confidence) => (rate, confidence),
+        PercentEstimate::Falling => return None,
+        PercentEstimate::Unusable => token_estimate(tokens?, current, now_ms, horizon)?,
+    };
 
     let hours_left = (resets_at - now_ms) as f64 / HOUR_MS as f64;
     let gain = rate * hours_left;
@@ -150,8 +183,103 @@ pub fn forecast(samples: &[Sample], spec: &WindowSpec, now_ms: i64) -> Option<Qu
         projected_percent_at_reset: round2(projected),
         exhausts_at: exhausts_at.and_then(rfc3339_from_unix_ms),
         rate_percent_per_hour: round2(rate),
-        confidence: confidence_of(series.len(), span, horizon),
+        confidence,
     })
+}
+
+/// What the percentage series alone can say.
+enum PercentEstimate {
+    /// percentage points per hour (> 0) and how far to trust it
+    Rate(f64, ForecastConfidence),
+    /// a negative slope: the provider corrected itself downwards; say nothing
+    Falling,
+    /// too few points, too short a span, or a flat series
+    Unusable,
+}
+
+fn percent_estimate(series: &[Sample], horizon: i64) -> PercentEstimate {
+    if series.len() < MIN_SAMPLES {
+        return PercentEstimate::Unusable;
+    }
+    let span = series[series.len() - 1].ts_ms - series[0].ts_ms;
+    if span < min_span_ms(horizon) {
+        return PercentEstimate::Unusable;
+    }
+    let Some(slope) = theil_sen(&thin(series, MAX_SAMPLES)) else {
+        return PercentEstimate::Unusable;
+    };
+    let rate = slope * HOUR_MS as f64;
+    if !rate.is_finite() {
+        return PercentEstimate::Unusable;
+    }
+    if rate < 0.0 {
+        return PercentEstimate::Falling;
+    }
+    if rate == 0.0 {
+        return PercentEstimate::Unusable;
+    }
+    PercentEstimate::Rate(rate, confidence_of(series.len(), span, horizon))
+}
+
+/// Tokens per 1 % must come from at least this much quota, or one rounding
+/// step of the integer percentage is too large a share of the ratio.
+const MIN_RATIO_PERCENT: f64 = 2.0;
+/// Fewer recent events than this is a blip, not a pace.
+const MIN_TOKEN_EVENTS: usize = 3;
+
+/// Burn rate from token usage: the tokens spent inside the horizon, divided by
+/// the tokens-per-percent ratio of the current period.
+fn token_estimate(
+    events: &[TokenEvent],
+    current: f64,
+    now_ms: i64,
+    horizon: i64,
+) -> Option<(f64, ForecastConfidence)> {
+    if current < MIN_RATIO_PERCENT {
+        return None;
+    }
+    let events: Vec<&TokenEvent> = events
+        .iter()
+        .filter(|e| e.ts_ms <= now_ms && e.tokens > 0)
+        .collect();
+    let period_tokens: i64 = events.iter().map(|e| e.tokens).sum();
+    if period_tokens <= 0 {
+        return None;
+    }
+    let tokens_per_percent = period_tokens as f64 / current;
+
+    let recent: Vec<&&TokenEvent> = events
+        .iter()
+        .filter(|e| e.ts_ms > now_ms - horizon)
+        .collect();
+    if recent.len() < MIN_TOKEN_EVENTS {
+        return None;
+    }
+    // Like a stale sample: no activity lately means no pace to extrapolate.
+    if now_ms - recent[recent.len() - 1].ts_ms > stale_after_ms(horizon) {
+        return None;
+    }
+    // Spread over the whole horizon (the conservative reading) unless the
+    // activity only started inside it.
+    let first = recent[0].ts_ms;
+    let elapsed = (now_ms - first).clamp(min_span_ms(horizon), horizon);
+    let recent_tokens: i64 = recent.iter().map(|e| e.tokens).sum();
+    let rate = recent_tokens as f64 / tokens_per_percent / (elapsed as f64 / HOUR_MS as f64);
+    if !rate.is_finite() || rate <= 0.0 {
+        return None;
+    }
+    let mut confidence = downgrade(confidence_of(recent.len(), now_ms - first, horizon));
+    if current < 5.0 {
+        confidence = ForecastConfidence::Low; // ratio resting on a handful of points
+    }
+    Some((rate, confidence))
+}
+
+fn downgrade(c: ForecastConfidence) -> ForecastConfidence {
+    match c {
+        ForecastConfidence::High => ForecastConfidence::Medium,
+        _ => ForecastConfidence::Low,
+    }
 }
 
 /// The tail of `samples` that belongs to the window's current period.
@@ -231,6 +359,143 @@ pub fn parse_ms(rfc3339: &str) -> Option<i64> {
         .map(|d| d.timestamp_millis())
 }
 
+// ---------- backtest ----------
+
+/// What replaying recorded history says about the estimator's accuracy.
+/// `examples/forecast_backtest.rs` prints it for a real database.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BacktestReport {
+    /// distinct window periods found in the samples
+    pub periods: usize,
+    /// periods whose recorded history reached 100 %
+    pub periods_hit_limit: usize,
+    /// replayed sample points that were evaluated
+    pub points: usize,
+    /// points at which a forecast was produced
+    pub predicted_points: usize,
+    /// points whose forecast came from the token fallback
+    pub token_points: usize,
+    /// mean |projected % at reset − final %| (both capped at 100), in points
+    pub projected_mae_points: Option<f64>,
+    /// mean |predicted run-out − actual run-out| over points that predicted a
+    /// run-out in a period that really ran out, in minutes
+    pub exhaust_mae_minutes: Option<f64>,
+    /// predicted a run-out in a period that never reached 100 %
+    pub false_alarm_points: usize,
+    /// no run-out predicted although the period reached 100 % later
+    pub missed_points: usize,
+}
+
+/// Replay `samples` (oldest first, one window) and compare every forecast with
+/// what happened afterwards. Periods are split like `since_last_reset` does
+/// (new `resets_at` or a falling percentage); the last period is still running,
+/// so it only counts when it already hit the limit. `tokens` switches the token
+/// fallback on, exactly as `attach` does (events of the whole history, oldest
+/// first).
+pub fn backtest(
+    samples: &[Sample],
+    tokens: Option<&[TokenEvent]>,
+    kind: WindowKind,
+    window_seconds: Option<u64>,
+) -> BacktestReport {
+    let mut report = BacktestReport::default();
+    let mut proj_err = (0.0f64, 0usize);
+    let mut exh_err = (0.0f64, 0usize);
+
+    // period boundaries: [start, end) index ranges
+    let mut bounds: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0;
+    for i in 1..samples.len() {
+        let (prev, cur) = (&samples[i - 1], &samples[i]);
+        let new_reset = matches!((prev.resets_at_ms, cur.resets_at_ms),
+            (Some(a), Some(b)) if (a - b).abs() > MINUTE_MS);
+        if new_reset || cur.used_percent < prev.used_percent - RESET_DROP {
+            bounds.push((start, i));
+            start = i;
+        }
+    }
+    if !samples.is_empty() {
+        bounds.push((start, samples.len()));
+    }
+    let last_period = bounds.len().saturating_sub(1);
+
+    for (pi, &(from, to)) in bounds.iter().enumerate() {
+        let period = &samples[from..to];
+        let Some(resets_at) = period.iter().rev().find_map(|s| s.resets_at_ms) else {
+            continue;
+        };
+        report.periods += 1;
+        let hit_ts = period
+            .iter()
+            .find(|s| s.used_percent >= 100.0)
+            .map(|s| s.ts_ms);
+        if hit_ts.is_some() {
+            report.periods_hit_limit += 1;
+        }
+        if pi == last_period && hit_ts.is_none() {
+            continue; // still running: its outcome is not known yet
+        }
+        let final_percent = period
+            .iter()
+            .map(|s| s.used_percent)
+            .fold(0.0f64, f64::max)
+            .min(100.0);
+
+        for (offset, s) in period.iter().enumerate() {
+            if s.used_percent >= 100.0 {
+                break;
+            }
+            let spec = WindowSpec {
+                kind,
+                window_seconds,
+                used_percent: s.used_percent,
+                resets_at_ms: Some(resets_at),
+            };
+            report.points += 1;
+            let history = &samples[..from + offset + 1];
+            let token_slice: Vec<TokenEvent> = match (tokens, period_start_ms(&spec)) {
+                (Some(all), Some(since)) => all
+                    .iter()
+                    .copied()
+                    .filter(|e| e.ts_ms >= since && e.ts_ms <= s.ts_ms)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let by_tokens = tokens.is_some() && !token_slice.is_empty();
+            let by_percent = forecast(history, &spec, s.ts_ms);
+            let f = if by_percent.is_some() || !by_tokens {
+                by_percent.clone()
+            } else {
+                forecast_with_tokens(history, &spec, s.ts_ms, Some(&token_slice))
+            };
+            let Some(f) = f else {
+                if hit_ts.is_some() {
+                    report.missed_points += 1;
+                }
+                continue;
+            };
+            report.predicted_points += 1;
+            if by_percent.is_none() {
+                report.token_points += 1;
+            }
+            proj_err.0 += (f.projected_percent_at_reset.min(100.0) - final_percent).abs();
+            proj_err.1 += 1;
+            match (f.exhausts_at.as_deref().and_then(parse_ms), hit_ts) {
+                (Some(predicted), Some(actual)) => {
+                    exh_err.0 += (predicted - actual).abs() as f64 / MINUTE_MS as f64;
+                    exh_err.1 += 1;
+                }
+                (Some(_), None) => report.false_alarm_points += 1,
+                (None, Some(_)) => report.missed_points += 1,
+                (None, None) => {}
+            }
+        }
+    }
+    report.projected_mae_points = (proj_err.1 > 0).then(|| proj_err.0 / proj_err.1 as f64);
+    report.exhaust_mae_minutes = (exh_err.1 > 0).then(|| exh_err.0 / exh_err.1 as f64);
+    report
+}
+
 // ---------- snapshot integration ----------
 
 /// Fill `forecast` on every window of `snapshot` from the stored samples.
@@ -273,7 +538,24 @@ pub fn attach(db: &Db, snapshot: &mut AppSnapshot, now_ms: i64) {
     match loaded {
         Ok(all) => {
             for ((pi, wi, spec), samples) in targets.into_iter().zip(all) {
-                snapshot.providers[pi].windows[wi].forecast = forecast(&samples, &spec, now_ms);
+                let provider = &snapshot.providers[pi];
+                let scoped = provider.windows[wi].scope.is_some();
+                let mut f = forecast(&samples, &spec, now_ms);
+                // The percentages had nothing to say: try the token history of
+                // the current period (never for a model-scoped window — the
+                // provider's tokens are not that scope's tokens).
+                if f.is_none() && !scoped {
+                    if let Some(since) = period_start_ms(&spec) {
+                        match store::usage_token_events(db, &provider.provider, since) {
+                            Ok(events) if !events.is_empty() => {
+                                f = forecast_with_tokens(&samples, &spec, now_ms, Some(&events));
+                            }
+                            Ok(_) => {}
+                            Err(e) => log::debug!("forecast: cannot read token events: {e:#}"),
+                        }
+                    }
+                }
+                snapshot.providers[pi].windows[wi].forecast = f;
             }
         }
         Err(e) => log::debug!("forecast: cannot read quota samples: {e:#}"),
@@ -580,5 +862,202 @@ mod tests {
         assert_eq!(thinned[0], samples[0]);
         assert_eq!(thinned[MAX_SAMPLES - 1], samples[samples.len() - 1]);
         assert_eq!(thin(&samples[..3], MAX_SAMPLES).len(), 3);
+    }
+
+    // ---------- token-based fallback ----------
+
+    fn ev(minutes_ago: i64, tokens: i64) -> TokenEvent {
+        TokenEvent {
+            ts_ms: T0 - minutes_ago * MINUTE_MS,
+            tokens,
+        }
+    }
+
+    /// 20 % used and flat for the whole horizon (integer percentages plateau),
+    /// 5-hour window with 2 h to go.
+    fn plateau() -> (Vec<Sample>, WindowSpec) {
+        (
+            series(&[20.0; 9], 5 * MINUTE_MS),
+            spec(FIVE_HOUR, 20.0, 2 * HOUR_MS),
+        )
+    }
+
+    #[test]
+    fn a_plateau_falls_back_to_the_token_pace() {
+        let (samples, spec) = plateau();
+        assert!(
+            forecast(&samples, &spec, T0).is_none(),
+            "percent only: flat"
+        );
+        // 1.7 M tokens early in the period + 6 x 50 k inside the last 35 min:
+        // 2 M tokens for 20 % -> 100 k per point; 300 k in 35 min -> 5.14 %/h.
+        let mut events = vec![ev(120, 1_700_000)];
+        events.extend([35, 28, 21, 14, 7, 1].map(|m| ev(m, 50_000)));
+        let f = forecast_with_tokens(&samples, &spec, T0, Some(&events)).unwrap();
+        assert_eq!(f.rate_percent_per_hour, 5.14);
+        assert_eq!(f.projected_percent_at_reset, 30.29);
+        assert_eq!(f.exhausts_at, None);
+        // six events over 35 min would be Medium from percentages; one lower.
+        assert_eq!(f.confidence, ForecastConfidence::Low);
+    }
+
+    #[test]
+    fn percentages_win_when_they_can_answer() {
+        let samples = series(&[0.0, 10.0, 20.0, 30.0, 40.0], 5 * MINUTE_MS);
+        let spec = spec(FIVE_HOUR, 40.0, HOUR_MS);
+        let events = vec![ev(30, 1), ev(20, 1), ev(10, 1)];
+        assert_eq!(
+            forecast_with_tokens(&samples, &spec, T0, Some(&events)),
+            forecast(&samples, &spec, T0)
+        );
+    }
+
+    #[test]
+    fn token_confidence_is_one_step_below_the_percentage_rule() {
+        let (samples, spec) = plateau();
+        // nine events over 32 min covering > half the horizon: percentages
+        // would call that High, tokens say Medium.
+        let mut events = vec![ev(120, 1_700_000)];
+        events.extend((0..9).map(|i| ev(32 - i * 4, 30_000)));
+        let f = forecast_with_tokens(&samples, &spec, T0, Some(&events)).unwrap();
+        assert_eq!(f.confidence, ForecastConfidence::Medium);
+        // ... and a ratio resting on < 5 % of quota is always Low.
+        let samples = series(&[3.0; 9], 5 * MINUTE_MS);
+        let low = WindowSpec {
+            used_percent: 3.0,
+            ..spec
+        };
+        let mut events = vec![ev(120, 300_000)];
+        events.extend((0..9).map(|i| ev(32 - i * 4, 30_000)));
+        let f = forecast_with_tokens(&samples, &low, T0, Some(&events)).unwrap();
+        assert_eq!(f.confidence, ForecastConfidence::Low);
+    }
+
+    #[test]
+    fn a_token_burst_after_idle_is_not_over_extrapolated() {
+        let (samples, spec) = plateau();
+        // three 100 k events in the last 4 minutes, nothing before them but
+        // the early bulk: the pace is spread over at least the 10-minute floor.
+        let events = vec![
+            ev(120, 1_700_000),
+            ev(4, 100_000),
+            ev(2, 100_000),
+            ev(1, 100_000),
+        ];
+        let f = forecast_with_tokens(&samples, &spec, T0, Some(&events)).unwrap();
+        // 300 k / 100 k per point / (10 min = 1/6 h) = 18 %/h, not 45 %/h.
+        assert_eq!(f.rate_percent_per_hour, 18.0);
+    }
+
+    #[test]
+    fn token_history_that_has_gone_quiet_gives_no_forecast() {
+        let (samples, spec) = plateau();
+        // all activity ended 25 minutes ago (> the 15-minute staleness bound)
+        let events = vec![
+            ev(120, 1_700_000),
+            ev(40, 50_000),
+            ev(30, 50_000),
+            ev(25, 50_000),
+        ];
+        assert!(forecast_with_tokens(&samples, &spec, T0, Some(&events)).is_none());
+        // fewer than three recent events is a blip
+        let events = vec![ev(120, 1_700_000), ev(5, 50_000), ev(2, 50_000)];
+        assert!(forecast_with_tokens(&samples, &spec, T0, Some(&events)).is_none());
+        // no events at all / no tokens supplied
+        assert!(forecast_with_tokens(&samples, &spec, T0, Some(&[])).is_none());
+        assert!(forecast_with_tokens(&samples, &spec, T0, None).is_none());
+    }
+
+    #[test]
+    fn the_ratio_is_taken_from_the_current_period_only() {
+        // 80 -> 95 before the reset, then flat at 6 %: the caller hands over
+        // only the new period's tokens (500 k for 6 % = 83 k per point).
+        let samples = series(
+            &[80.0, 90.0, 95.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
+            5 * MINUTE_MS,
+        );
+        let spec = spec(FIVE_HOUR, 6.0, 2 * HOUR_MS);
+        let mut events = vec![ev(25, 200_000)];
+        events.extend([20, 10, 2].map(|m| ev(m, 100_000)));
+        let f = forecast_with_tokens(&samples, &spec, T0, Some(&events)).unwrap();
+        // 500 k / (500 k / 6) / (25 min) = 14.4 %/h
+        assert_eq!(f.rate_percent_per_hour, 14.4);
+        // too little quota used to trust a ratio at all
+        let tiny = WindowSpec {
+            used_percent: 1.0,
+            ..spec
+        };
+        let samples = series(&[1.0; 9], 5 * MINUTE_MS);
+        assert!(forecast_with_tokens(&samples, &tiny, T0, Some(&events)).is_none());
+    }
+
+    // ---------- backtest ----------
+
+    /// Samples every 5 minutes from `start` for `n` steps, `pct(i)` each.
+    fn ramp(start: i64, n: i64, resets_at: i64, pct: impl Fn(i64) -> f64) -> Vec<Sample> {
+        (0..n)
+            .map(|i| Sample {
+                ts_ms: start + i * 5 * MINUTE_MS,
+                used_percent: pct(i),
+                resets_at_ms: Some(resets_at),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_backtest_scores_run_out_predictions_against_what_happened() {
+        let s = T0;
+        let five_h = 5 * HOUR_MS;
+        // P1: 2 points per step -> 100 % after 250 min (a real run-out).
+        let mut samples = ramp(s, 51, s + five_h, |i| (2.0 * i as f64).min(100.0));
+        // P2: 1 point per step, 59 % at the end - never close to the limit.
+        samples.extend(ramp(s + five_h, 60, s + 2 * five_h, |i| i as f64));
+        // P3: still running - must not be scored.
+        samples.extend(ramp(s + 2 * five_h, 20, s + 3 * five_h, |i| i as f64));
+        let r = backtest(&samples, None, WindowKind::FiveHour, Some(FIVE_HOUR));
+        assert_eq!((r.periods, r.periods_hit_limit), (3, 1));
+        assert!(r.predicted_points > 10, "{r:?}");
+        let exhaust = r.exhaust_mae_minutes.expect("P1 ran out");
+        assert!(
+            exhaust < 2.0,
+            "a straight ramp is predicted to the minute, got {exhaust}"
+        );
+        assert!(r.projected_mae_points.unwrap() < 5.0, "{r:?}");
+        // P2 burns 12 %/h: it ends near 59 %, so never a run-out alarm.
+        assert_eq!(r.false_alarm_points, 0, "{r:?}");
+        assert_eq!(r.token_points, 0);
+    }
+
+    #[test]
+    fn the_backtest_counts_token_fallback_points_on_a_plateau() {
+        let s = T0;
+        let five_h = 5 * HOUR_MS;
+        // +1 point per 30 min: whole-percent plateaus the slope cannot see.
+        let mut samples = ramp(s, 55, s + five_h, |i| 10.0 + (i / 6) as f64);
+        samples.extend(ramp(s + five_h, 3, s + 2 * five_h, |i| i as f64));
+        let events: Vec<TokenEvent> = (0..55)
+            .map(|i| TokenEvent {
+                ts_ms: s + i * 5 * MINUTE_MS,
+                tokens: 10_000,
+            })
+            .collect();
+        let without = backtest(&samples, None, WindowKind::FiveHour, Some(FIVE_HOUR));
+        let with = backtest(
+            &samples,
+            Some(&events),
+            WindowKind::FiveHour,
+            Some(FIVE_HOUR),
+        );
+        assert_eq!(without.token_points, 0);
+        assert!(with.token_points > 0, "{with:?}");
+        assert!(with.predicted_points > without.predicted_points);
+    }
+
+    #[test]
+    fn the_backtest_of_an_empty_history_is_empty() {
+        assert_eq!(
+            backtest(&[], None, WindowKind::FiveHour, Some(FIVE_HOUR)),
+            BacktestReport::default()
+        );
     }
 }
