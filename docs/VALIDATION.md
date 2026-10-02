@@ -103,6 +103,31 @@ Browser captures below use sample data, not real accounts:
 | CSV file writing | Rust tests cover portable suggestions, Unicode/BOM, replacing an existing report, and preserving it when a write fails |
 | Packaged apps | GitHub CI runs checks and builds installer artifacts on Ubuntu, macOS and Windows using locked dependencies; both workflows set `AWS_LC_SYS_PREBUILT_NASM=1` because rustls' `aws-lc-sys` aborts the Windows x86_64 build when NASM is absent |
 
+## Automated start-up and upgrade smoke tests (CI)
+
+The jobs below launch the real, freshly built application. None of them
+simulates mouse or keyboard input; they read the app's own log.
+
+| Job | Runs on | What it asserts |
+|---|---|---|
+| `Linux start-up smoke test` (`scripts/smoke-linux.sh`) | every CI run | Xvfb + private XDG home; `sidebar revealed` and `platform setup:` in the log; no `panicked` / `[ERROR]` line |
+| `Windows start-up smoke test` (`scripts/smoke-windows.ps1`) | every CI run | release exe on `windows-latest`; the same lines plus `tray menu ready` within 90 s |
+| `macOS start-up smoke test` (`scripts/smoke-macos.sh`) | every CI run | the built `.app` (shipped from the build job as a tar to keep the executable bit) on `macos-latest`; same assertions. CI has no `Claude Code-credentials` Keychain item, so no prompt can block start-up |
+| `Upgrade from <tag> (<os>)` | pull requests and manual runs only | 3 OS x {`v0.5.0`, latest release}. Installs the previous published release (Windows `*_x64-setup.exe` with `/S`, macOS `*.dmg` for the runner architecture, Linux AppImage with extract-and-run), starts it, stops it, seeds a hand-written `settings.json` (UTF-8 BOM, partial keys: `edge: left`, `autoHide: true`, `language: zh-CN`), then starts the new build on the same profile |
+
+The upgrade jobs assert, from the new build's own log only (the previous run's
+log is moved away first): the new build reveals the sidebar; the
+`platform setup:` line reports `edge=Left` and `autoHide=true` (so the BOM file
+was parsed and applied at start-up); and, for `v0.5.0`, the line
+`usage.db schema 2 -> N` (the real migration). The `latest` leg does not require
+a migration line, because it is legitimately absent when the schema did not
+change. These checks would have caught both v0.6 release bugs.
+
+On failure each job uploads its logs as an artifact (`smoke-logs-*`,
+`upgrade-logs-*`, 7 days). The Windows and macOS scripts refuse to run outside
+CI unless `SMOKE_ALLOW_REAL_PROFILE=1` is set, because they use the real
+profile; `scripts/smoke-linux.sh` always uses a private one.
+
 ## Linux native smoke check
 
 The application was launched on the local XWayland desktop at 2× scale with
