@@ -63,3 +63,10 @@ cargo test --locked synthetic_ --lib -- --ignored --nocapture --test-threads=1
 | Total elapsed time for those 20 history queries | 6,476.621 ms | 1.126 ms |
 
 Both benchmarks passed their counter/result correctness assertions. Usage-byte figures exclude the separate metadata index's reads on both paths; the updated timing includes that index. Setup, cold startup, application rendering, on-disk SQLite latency and production release performance are outside this benchmark. No startup or frame-rate improvement is inferred from these numbers.
+
+## Robustness and maintenance (v0.6)
+
+- The log watcher re-evaluates its roots every 60 s with one `read_dir`/metadata check per root; no polling of file contents is added. Watcher errors and root changes queue the existing bounded full reconciliation.
+- Quota-sample maintenance runs once per day on the blocking pool: one retention `DELETE`, one hourly-peak thinning `DELETE` (window function over rows older than 14 days), a WAL checkpoint and `PRAGMA optimize`. It holds the shared connection lock for the duration of those statements; recent rows and `usage_events` are not touched. Verified by `retention_deletes_old_samples_and_zero_keeps_everything` and `old_samples_are_thinned_to_the_hourly_peak_per_series`; no timing was measured.
+- Forecast attachment takes the connection lock once per refresh instead of once per window.
+- A transient provider failure adds at most one extra request and ~1.5 s inside the same fetch.

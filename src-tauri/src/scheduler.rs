@@ -11,6 +11,8 @@
 //! * **ingest loop** — first scan 2 s after start, then every 60 s, plus a
 //!   `notify` file watcher on the log roots debounced by 3 s. The same watcher
 //!   feeds the per-provider "last activity" clock the refresh loop reads.
+//! * **maintenance loop** — daily quota-sample retention/thinning, WAL
+//!   checkpoint and `PRAGMA optimize` (`settings.quotaRetentionDays`).
 //! * **event listener** — the tray emits `refresh-requested`; opening the
 //!   dashboard cancels the adaptive stretch.
 //!
@@ -40,6 +42,8 @@ const INGEST_INTERVAL_MS: i64 = 60_000;
 /// Quiet period after the last file-system event before ingesting.
 const WATCH_DEBOUNCE_MS: i64 = 3_000;
 const TICK: Duration = Duration::from_secs(1);
+const MAINTENANCE_FIRST_DELAY: Duration = Duration::from_secs(300);
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 pub fn start(app: AppHandle) {
     let dirty = Arc::new(Mutex::new(DirtyFiles::default()));
@@ -48,6 +52,9 @@ pub fn start(app: AppHandle) {
 
     let refresh_app = app.clone();
     tauri::async_runtime::spawn(async move { refresh_loop(refresh_app).await });
+
+    let maintenance_app = app.clone();
+    tauri::async_runtime::spawn(async move { maintenance_loop(maintenance_app).await });
 
     let ingest_app = app.clone();
     tauri::async_runtime::spawn(async move { ingest_loop(ingest_app, dirty).await });
@@ -67,6 +74,35 @@ pub fn start(app: AppHandle) {
         let state = dashboard_app.state::<AppState>();
         state.poll_clocks.lock().mark_interaction(store::now_ms());
     });
+}
+
+/// Daily database housekeeping (`store::maintain_quota_samples`). The first
+/// pass runs a few minutes after start so it never competes with start-up.
+async fn maintenance_loop(app: AppHandle) {
+    tokio::time::sleep(MAINTENANCE_FIRST_DELAY).await;
+    loop {
+        let (db, retention_days) = {
+            let state = app.state::<AppState>();
+            let days = state.settings.read().quota_retention_days;
+            (state.db.clone(), days)
+        };
+        if let Some(db) = db {
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                store::maintain_quota_samples(&db, store::now_ms(), retention_days)
+            })
+            .await;
+            match result {
+                Ok(Ok(stats)) => log::info!(
+                    "maintenance: {} expired and {} thinned quota samples removed",
+                    stats.expired,
+                    stats.thinned
+                ),
+                Ok(Err(e)) => log::warn!("database maintenance failed: {e:#}"),
+                Err(e) => log::warn!("database maintenance task failed: {e}"),
+            }
+        }
+        tokio::time::sleep(MAINTENANCE_INTERVAL).await;
+    }
 }
 
 // ---------- adaptive polling ----------
@@ -558,6 +594,14 @@ impl DirtyFiles {
             self.overflow = true;
         }
     }
+    /// Request a full reconciliation (events may have been lost).
+    fn mark_overflow(&mut self, now: i64) {
+        if self.first_change == 0 {
+            self.first_change = now;
+        }
+        self.last_change = now;
+        self.overflow = true;
+    }
     fn ready(&self, now: i64) -> bool {
         self.first_change > 0
             && (now - self.last_change >= WATCH_DEBOUNCE_MS || now - self.first_change >= 10_000)
@@ -677,13 +721,58 @@ fn emit_progress(app: &AppHandle, stats: &IngestStats) {
     }
 }
 
+/// How often the watcher thread re-checks which roots exist.
+const WATCH_RETRY: Duration = Duration::from_secs(60);
+/// Minimum gap between two logged watcher errors.
+const WATCH_ERROR_LOG_MS: i64 = 300_000;
+
+/// A watched root: its path and a cheap identity (creation time in ms, when
+/// the file system reports one) so a deleted-and-recreated directory is
+/// noticed even though the path is unchanged.
+type RootIdentity = (PathBuf, Option<i64>);
+
+fn root_identity(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+}
+
+/// Compare the roots that exist now with the ones currently watched.
+/// Returns `(to_unwatch, to_watch)`: watches whose root vanished or was
+/// recreated are dropped, and every existing root that is not (or no longer)
+/// watched is added.
+fn plan_watches(
+    existing: &[RootIdentity],
+    watched: &[RootIdentity],
+) -> (Vec<PathBuf>, Vec<RootIdentity>) {
+    let stale = watched
+        .iter()
+        .filter(|w| !existing.contains(w))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let missing = existing
+        .iter()
+        .filter(|e| !watched.contains(e))
+        .cloned()
+        .collect();
+    (stale, missing)
+}
+
 /// Watch the log roots and record the time of the newest change, globally
 /// (for the ingest debounce) and per provider (for the adaptive interval).
 /// Runs on its own thread which owns the watcher for the lifetime of the app.
+/// Every `WATCH_RETRY` the set of existing roots is re-checked, so a root that
+/// appears later (CLI installed after the app) or is deleted and recreated is
+/// picked up without a restart.
 fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks>>) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
-        let roots = ingest::roots();
+        use std::sync::mpsc::RecvTimeoutError;
+        let mut roots = ingest::roots();
         seed_activity(&roots, &clocks);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = match notify::recommended_watcher(move |res| {
@@ -695,29 +784,71 @@ fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks
                 return;
             }
         };
-        let mut watched = 0;
-        for root in &roots {
-            match watcher.watch(&root.path, RecursiveMode::Recursive) {
-                Ok(()) => watched += 1,
-                Err(e) => log::debug!("cannot watch {}: {e}", root.path.display()),
+        let mut watched: Vec<RootIdentity> = Vec::new();
+        let mut last_error_log_ms = 0i64;
+        let mut next_check = std::time::Instant::now();
+        loop {
+            if std::time::Instant::now() >= next_check {
+                next_check = std::time::Instant::now() + WATCH_RETRY;
+                let fresh = ingest::roots();
+                let existing: Vec<RootIdentity> = fresh
+                    .iter()
+                    .map(|r| (r.path.clone(), root_identity(&r.path)))
+                    .collect();
+                let (stale, missing) = plan_watches(&existing, &watched);
+                for path in &stale {
+                    let _ = watcher.unwatch(path);
+                }
+                watched.retain(|w| !stale.contains(&w.0));
+                let mut changed = !stale.is_empty();
+                for root in missing {
+                    match watcher.watch(&root.0, RecursiveMode::Recursive) {
+                        Ok(()) => {
+                            log::debug!("watching {}", root.0.display());
+                            watched.push(root);
+                            changed = true;
+                        }
+                        Err(e) => log::debug!("cannot watch {}: {e}", root.0.display()),
+                    }
+                }
+                roots = fresh;
+                if changed {
+                    // Anything written while a root was unwatched is unseen.
+                    seed_activity(&roots, &clocks);
+                    dirty.lock().mark_overflow(store::now_ms());
+                }
             }
-        }
-        if watched == 0 {
-            return;
-        }
-        while let Ok(event) = rx.recv() {
-            if let Ok(ev) = event {
-                if ev.kind.is_modify() || ev.kind.is_create() {
-                    let now = store::now_ms();
-                    let mut guard = clocks.lock();
-                    for path in &ev.paths {
-                        if let Some(provider) = provider_for_path(&roots, path) {
-                            guard.last_activity_ms.insert(provider.to_string(), now);
-                            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                                dirty.lock().enqueue(provider, path.clone(), now);
+            let wait = next_check.saturating_duration_since(std::time::Instant::now());
+            let event = match rx.recv_timeout(wait) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
+            match event {
+                Ok(ev) => {
+                    if ev.kind.is_modify() || ev.kind.is_create() {
+                        let now = store::now_ms();
+                        let mut guard = clocks.lock();
+                        for path in &ev.paths {
+                            if let Some(provider) = provider_for_path(&roots, path) {
+                                guard.last_activity_ms.insert(provider.to_string(), now);
+                                if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                                    dirty.lock().enqueue(provider, path.clone(), now);
+                                }
                             }
                         }
                     }
+                }
+                Err(e) => {
+                    // The backend lost events (overflow, deleted root, ...):
+                    // rescan everything and re-check the roots right away.
+                    let now = store::now_ms();
+                    if now - last_error_log_ms >= WATCH_ERROR_LOG_MS {
+                        last_error_log_ms = now;
+                        log::warn!("log watcher error ({e}); scheduling a full rescan");
+                    }
+                    dirty.lock().mark_overflow(now);
+                    next_check = std::time::Instant::now();
                 }
             }
         }
@@ -1174,5 +1305,33 @@ mod tests {
         );
         assert!(dirty.take().1, "a bounded queue reconciles after overflow");
         assert!(dirty.paths.is_empty());
+    }
+
+    #[test]
+    fn watch_plan_adds_late_roots_and_rewatches_recreated_ones() {
+        let a = (PathBuf::from("/a"), Some(1));
+        let b = (PathBuf::from("/b"), Some(2));
+        let (stale, missing) = plan_watches(&[a.clone(), b.clone()], &[]);
+        assert!(stale.is_empty());
+        assert_eq!(missing, vec![a.clone(), b.clone()]);
+        let (stale, missing) = plan_watches(std::slice::from_ref(&a), std::slice::from_ref(&a));
+        assert!(stale.is_empty() && missing.is_empty());
+        let (stale, missing) = plan_watches(std::slice::from_ref(&a), &[a.clone(), b.clone()]);
+        assert_eq!(stale, vec![b.0.clone()]);
+        assert!(missing.is_empty());
+        // Same path, new identity (deleted and recreated): unwatch and re-add.
+        let a2 = (PathBuf::from("/a"), Some(9));
+        let (stale, missing) = plan_watches(std::slice::from_ref(&a2), std::slice::from_ref(&a));
+        assert_eq!(stale, vec![a.0.clone()]);
+        assert_eq!(missing, vec![a2]);
+    }
+
+    #[test]
+    fn a_watcher_error_requests_a_full_reconciliation() {
+        let mut dirty = DirtyFiles::default();
+        dirty.mark_overflow(1_000);
+        assert!(dirty.ready(1_000 + WATCH_DEBOUNCE_MS));
+        let (paths, overflow) = dirty.take();
+        assert!(paths.is_empty() && overflow);
     }
 }

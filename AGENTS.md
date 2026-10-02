@@ -165,6 +165,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |
 | `monthlyBudgetUsd` | `0` (0 – 1000000, 0 = off) | monthly *estimated* cost budget shown in History; never billing |
 | `subscriptionUsd` | `{"claude":0,"codex":0}` (each 0 – 10000, 0 = unknown) | what you pay per month per provider; History compares the month's API-equivalent *estimate* with it ("N× your subscription") and draws it on the budget chart. A merge keeps providers a patch does not mention |
+| `quotaRetentionDays` | `365` (0 – 3650, 0 = keep forever) | quota-history samples older than this are deleted by the daily maintenance pass; samples older than 14 days are thinned to one per hour (peak kept). Token usage events are never deleted |
 | `notifications` | `false`, `true` | warn when a window crosses a threshold |
 | `forecastNotifications` | `true`, `false` | warn when a window is on pace to run out before it resets (needs `notifications`) |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |

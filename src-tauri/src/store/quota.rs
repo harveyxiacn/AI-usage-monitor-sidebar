@@ -112,6 +112,44 @@ pub fn window_samples(
     Ok(out)
 }
 
+/// One window whose samples `window_samples_many` should load.
+pub struct WindowQuery<'a> {
+    pub provider: &'a str,
+    pub kind: WindowKind,
+    pub scope: Option<&'a str>,
+    pub since: i64,
+}
+
+/// `window_samples` for several windows under one lock acquisition and one
+/// prepared statement; the result has one entry per query, in order.
+pub fn window_samples_many(
+    db: &Db,
+    queries: &[WindowQuery<'_>],
+) -> Result<Vec<Vec<crate::commands::forecast::Sample>>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare_cached(
+        "SELECT ts, used_percent, resets_at FROM quota_samples
+         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+           AND ts >= ?4
+         ORDER BY ts, id",
+    )?;
+    let mut out = Vec::with_capacity(queries.len());
+    for q in queries {
+        let rows = stmt.query_map(
+            rusqlite::params![q.provider, q.kind.as_str(), q.scope, q.since],
+            |r| {
+                Ok(crate::commands::forecast::Sample {
+                    ts_ms: r.get(0)?,
+                    used_percent: r.get(1)?,
+                    resets_at_ms: r.get(2)?,
+                })
+            },
+        )?;
+        out.push(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    Ok(out)
+}
+
 /// Read stored samples in `[from, to)`, oldest first.
 pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSample>> {
     let (from, to) = super::usage::query_range(&q.from, &q.to)?;
@@ -139,6 +177,53 @@ pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSa
         out.push(row?);
     }
     Ok(out)
+}
+
+/// Samples older than this are thinned to one row per hour.
+const DOWNSAMPLE_AFTER_MS: i64 = 14 * 24 * 3_600_000;
+const HOUR_MS: i64 = 3_600_000;
+
+/// What one maintenance pass removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaintenanceStats {
+    pub expired: usize,
+    pub thinned: usize,
+}
+
+/// Daily housekeeping of `quota_samples`: delete rows older than
+/// `retention_days` (0 = keep forever), thin everything older than 14 days to
+/// the highest-`used_percent` row per (provider, kind, scope, hour) so cycle
+/// peaks survive, then checkpoint the WAL and let SQLite refresh its planner
+/// statistics. `usage_events` are never touched. The database's auto_vacuum
+/// mode is not changed; only an already-incremental database is vacuumed.
+pub fn maintain_quota_samples(db: &Db, now: i64, retention_days: u32) -> Result<MaintenanceStats> {
+    let conn = db.lock();
+    let mut stats = MaintenanceStats::default();
+    if retention_days > 0 {
+        let cutoff = now.saturating_sub(retention_days as i64 * 24 * HOUR_MS);
+        stats.expired = conn.execute("DELETE FROM quota_samples WHERE ts < ?1", [cutoff])?;
+    }
+    stats.thinned = conn.execute(
+        "DELETE FROM quota_samples WHERE ts < ?1 AND id NOT IN (
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (
+                      PARTITION BY provider, kind, scope, ts / ?2
+                      ORDER BY used_percent DESC, id DESC) AS rn
+             FROM quota_samples WHERE ts < ?1)
+           WHERE rn = 1)",
+        rusqlite::params![now.saturating_sub(DOWNSAMPLE_AFTER_MS), HOUR_MS],
+    )?;
+    if stats.expired + stats.thinned > 0 {
+        let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+        if mode == 2 {
+            conn.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+    }
+    // The checkpoint returns a (busy, log, checkpointed) row; a busy reader
+    // only means it could not truncate this time.
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    conn.execute_batch("PRAGMA optimize;")?;
+    Ok(stats)
 }
 
 fn ms_to_rfc3339(ms: i64) -> Option<String> {
@@ -461,5 +546,116 @@ mod tests {
                 .collect::<Vec<_>>(),
             [None, Some(""), Some("Fable")]
         );
+    }
+
+    fn raw_sample(db: &Db, provider: &str, scope: Option<&str>, pct: f64, ts: i64) {
+        db.lock()
+            .execute(
+                "INSERT INTO quota_samples(provider, kind, scope, used_percent, ts)
+                 VALUES (?1,'five_hour',?2,?3,?4)",
+                rusqlite::params![provider, scope, pct, ts],
+            )
+            .unwrap();
+    }
+
+    fn count(db: &Db) -> i64 {
+        db.lock()
+            .query_row("SELECT COUNT(*) FROM quota_samples", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn retention_deletes_old_samples_and_zero_keeps_everything() {
+        let db = Db::open_in_memory().unwrap();
+        let now = 1_789_430_400_000i64;
+        let day = 24 * HOUR_MS;
+        raw_sample(&db, "claude", None, 10.0, now - 400 * day);
+        raw_sample(&db, "claude", None, 20.0, now - 30 * day);
+        raw_sample(&db, "claude", None, 30.0, now - day);
+
+        let kept = maintain_quota_samples(&db, now, 0).unwrap();
+        assert_eq!(kept.expired, 0);
+        assert_eq!(count(&db), 3);
+
+        let stats = maintain_quota_samples(&db, now, 365).unwrap();
+        assert_eq!(stats.expired, 1);
+        assert_eq!(count(&db), 2);
+    }
+
+    #[test]
+    fn old_samples_are_thinned_to_the_hourly_peak_per_series() {
+        let db = Db::open_in_memory().unwrap();
+        let now = 1_789_430_400_000i64;
+        let hour0 = (now / HOUR_MS - 30 * 24) * HOUR_MS; // 30 days back, hour aligned
+                                                         // One hour of rising then reset samples, plus a scoped series.
+        for (i, pct) in [5.0, 40.0, 95.0, 2.0].iter().enumerate() {
+            raw_sample(&db, "claude", None, *pct, hour0 + i as i64 * 600_000);
+        }
+        raw_sample(&db, "claude", Some("Fable"), 7.0, hour0 + 1_000);
+        raw_sample(&db, "claude", Some("Fable"), 8.0, hour0 + 2_000);
+        // The next hour keeps its own peak; recent rows are untouched.
+        raw_sample(&db, "claude", None, 50.0, hour0 + HOUR_MS);
+        raw_sample(&db, "claude", None, 1.0, now - HOUR_MS);
+        raw_sample(&db, "claude", None, 2.0, now - HOUR_MS + 1);
+
+        let stats = maintain_quota_samples(&db, now, 0).unwrap();
+        assert_eq!(stats.thinned, 4);
+        assert_eq!(count(&db), 5);
+        let peak: f64 = db
+            .lock()
+            .query_row(
+                "SELECT used_percent FROM quota_samples WHERE scope IS NULL AND ts < ?1 AND ts >= ?2",
+                [hour0 + HOUR_MS, hour0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(peak, 95.0);
+        // Idempotent.
+        assert_eq!(maintain_quota_samples(&db, now, 0).unwrap().thinned, 0);
+        // The forecast window query still sees the recent rows.
+        let recent = window_samples(
+            &db,
+            "claude",
+            WindowKind::FiveHour,
+            None,
+            now - 24 * HOUR_MS,
+        )
+        .unwrap();
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn batched_window_samples_match_the_single_window_query() {
+        let db = Db::open_in_memory().unwrap();
+        let now = 1_789_430_400_000i64;
+        raw_sample(&db, "claude", None, 10.0, now - 1_000);
+        raw_sample(&db, "claude", Some("Fable"), 20.0, now - 500);
+        raw_sample(&db, "codex", None, 30.0, now - 100);
+        let queries = [
+            WindowQuery {
+                provider: "claude",
+                kind: WindowKind::FiveHour,
+                scope: None,
+                since: 0,
+            },
+            WindowQuery {
+                provider: "claude",
+                kind: WindowKind::FiveHour,
+                scope: Some("Fable"),
+                since: 0,
+            },
+            WindowQuery {
+                provider: "codex",
+                kind: WindowKind::FiveHour,
+                scope: None,
+                since: now,
+            },
+        ];
+        let many = window_samples_many(&db, &queries).unwrap();
+        assert_eq!(many.len(), 3);
+        assert_eq!(many[0].len(), 1);
+        assert_eq!(many[0][0].used_percent, 10.0);
+        assert_eq!(many[1][0].used_percent, 20.0);
+        assert!(many[2].is_empty(), "`since` still filters");
     }
 }

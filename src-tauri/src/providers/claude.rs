@@ -68,6 +68,32 @@ impl Credentials {
     }
 }
 
+/// Treat a token as expired this long before its stated expiry, so a clock
+/// that runs slightly ahead of Anthropic's does not send a dead token.
+pub const EXPIRY_SKEW_MS: i64 = 60_000;
+
+impl Credentials {
+    /// Expired, or about to be (`EXPIRY_SKEW_MS`).
+    pub fn needs_refresh(&self, now_ms: i64) -> bool {
+        self.is_expired(now_ms.saturating_add(EXPIRY_SKEW_MS))
+    }
+}
+
+/// Decide which credentials a fetch may use. Claude Code refreshes its own
+/// token in the background, so when the ones read first look expired the
+/// file/Keychain is read once more (`reload`) before giving up. `None` means
+/// the login really is expired.
+pub fn usable_credentials(
+    first: Credentials,
+    now_ms: i64,
+    reload: impl FnOnce() -> Option<Credentials>,
+) -> Option<Credentials> {
+    if !first.needs_refresh(now_ms) {
+        return Some(first);
+    }
+    reload().filter(|c| !c.needs_refresh(now_ms))
+}
+
 /// `$CLAUDE_CONFIG_DIR` or `~/.claude`.
 pub fn config_dir() -> Option<PathBuf> {
     match std::env::var("CLAUDE_CONFIG_DIR") {
@@ -503,7 +529,7 @@ impl ClaudeProvider {
             return Some(p);
         }
         let resp = http
-            .get(PROFILE_URL)
+            .get(self.ctx.endpoint(PROFILE_URL))
             .bearer_auth(token)
             .header("anthropic-beta", OAUTH_BETA)
             .header("User-Agent", self.ctx.user_agent.clone())
@@ -555,17 +581,20 @@ impl Provider for ClaudeProvider {
     }
 
     async fn fetch(&self, http: &reqwest::Client) -> ProviderQuota {
-        let Some(creds) = load_credentials() else {
+        let Some(first) = load_credentials() else {
             let mut q = empty_quota(CLAUDE_ID, DISPLAY_NAME, ProviderStatus::NotLoggedIn);
             q.error = Some("Not logged in — run `claude` to sign in".into());
             return q;
         };
         let now_ms = chrono::Utc::now().timestamp_millis();
-        if creds.is_expired(now_ms) {
-            log::info!("claude: access token expired");
+        let reload = || {
             // A stale Keychain read must not keep an expired token alive
             // after the user has re-run `claude`.
             forget_cached_credentials();
+            load_credentials()
+        };
+        let Some(creds) = usable_credentials(first, now_ms, reload) else {
+            log::info!("claude: access token expired");
             return degraded(
                 &self.ctx,
                 CLAUDE_ID,
@@ -573,16 +602,23 @@ impl Provider for ClaudeProvider {
                 ProviderStatus::TokenExpired,
                 EXPIRED_MESSAGE,
             );
-        }
+        };
+        self.fetch_usage(http, creds).await
+    }
+}
 
-        let resp = http
-            .get(USAGE_URL)
-            .bearer_auth(&creds.access_token)
-            .header("anthropic-beta", OAUTH_BETA)
-            .header("User-Agent", self.ctx.user_agent.clone())
-            .header("Accept", "application/json")
-            .send()
-            .await;
+impl ClaudeProvider {
+    /// The usage request itself, for credentials already judged usable.
+    async fn fetch_usage(&self, http: &reqwest::Client, creds: Credentials) -> ProviderQuota {
+        let url = self.ctx.endpoint(USAGE_URL);
+        let resp = super::send_with_retry(&self.ctx, || {
+            http.get(&url)
+                .bearer_auth(&creds.access_token)
+                .header("anthropic-beta", OAUTH_BETA)
+                .header("User-Agent", self.ctx.user_agent.clone())
+                .header("Accept", "application/json")
+        })
+        .await;
 
         let resp = match resp {
             Ok(r) => r,
@@ -854,5 +890,111 @@ mod tests {
         // the fixture's extra_usage is disabled, so a real response is clean
         let usage: UsageResponse = serde_json::from_str(FIXTURE).unwrap();
         assert!(map_extras(&usage).is_empty());
+    }
+
+    // ---------- expiry decision ----------
+
+    fn creds(expires_at_ms: Option<i64>) -> Credentials {
+        Credentials {
+            access_token: "tok".into(),
+            expires_at_ms,
+            ..Credentials::default()
+        }
+    }
+
+    #[test]
+    fn a_token_is_refreshed_a_minute_before_it_expires() {
+        let now = 1_000_000;
+        assert!(!creds(Some(now + EXPIRY_SKEW_MS + 1)).needs_refresh(now));
+        assert!(creds(Some(now + EXPIRY_SKEW_MS)).needs_refresh(now));
+        assert!(creds(Some(now - 1)).needs_refresh(now));
+        assert!(!creds(None).needs_refresh(now), "no expiry means valid");
+        // `is_expired` itself stays exact (it drives the "logged in" flag).
+        assert!(!creds(Some(now + 1)).is_expired(now));
+    }
+
+    #[test]
+    fn an_expired_token_gets_one_reload_before_the_login_is_declared_expired() {
+        let now = 1_000_000;
+        // Fresh credentials are used as they are; no reload happens.
+        let used = usable_credentials(creds(Some(now + 3_600_000)), now, || {
+            panic!("must not reload a valid token")
+        });
+        assert!(used.is_some());
+        // Expired on first read, refreshed by Claude Code in the meantime.
+        let mut fresh = creds(Some(now + 3_600_000));
+        fresh.access_token = "new".into();
+        let used = usable_credentials(creds(Some(now - 5)), now, || Some(fresh)).unwrap();
+        assert_eq!(used.access_token, "new");
+        // Still expired after the reload, or unreadable: the login is expired.
+        assert!(
+            usable_credentials(creds(Some(now - 5)), now, || Some(creds(Some(now - 5)))).is_none()
+        );
+        assert!(usable_credentials(creds(Some(now - 5)), now, || None).is_none());
+    }
+
+    // ---------- fetch against a local stub ----------
+
+    use crate::commands::test_support::StubServer;
+
+    fn stub_provider(server: &StubServer) -> ClaudeProvider {
+        ClaudeProvider::new(ProviderCtx {
+            api_base: Some(server.base.clone()),
+            retry_delay: Duration::from_millis(5),
+            ..ProviderCtx::default()
+        })
+    }
+
+    async fn fetch_stub(server: &StubServer) -> ProviderQuota {
+        let http = reqwest::Client::new();
+        stub_provider(server).fetch_usage(&http, creds(None)).await
+    }
+
+    #[tokio::test]
+    async fn a_200_answer_becomes_windows() {
+        let server = StubServer::start(vec![("200 OK", vec![], FIXTURE.to_string())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Ok);
+        assert!(!q.windows.is_empty());
+        assert_eq!(q.source, DataSource::Api);
+    }
+
+    #[tokio::test]
+    async fn a_401_is_final_and_reported_as_an_expired_login() {
+        let server = StubServer::start(vec![("401 Unauthorized", vec![], "{}".into())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::TokenExpired);
+        assert_eq!(server.hits(), 1, "401 is never retried");
+    }
+
+    #[tokio::test]
+    async fn a_429_keeps_retry_after_and_is_never_retried() {
+        let server = StubServer::start(vec![(
+            "429 Too Many Requests",
+            vec![("Retry-After", "120")],
+            "{}".into(),
+        )]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::RateLimited);
+        assert!(q.next_attempt_at.is_some());
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_503_is_retried_once_and_then_reported() {
+        let server = StubServer::start(vec![("503 Service Unavailable", vec![], "{}".into())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Error);
+        assert_eq!(server.hits(), 2, "exactly one retry");
+    }
+
+    #[tokio::test]
+    async fn a_transient_502_followed_by_a_200_succeeds() {
+        let server = StubServer::start(vec![
+            ("502 Bad Gateway", vec![], "{}".into()),
+            ("200 OK", vec![], FIXTURE.to_string()),
+        ]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Ok);
     }
 }

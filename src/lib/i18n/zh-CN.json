@@ -314,6 +314,8 @@
   "settings.pricingUrl.hint": "可选。留空时使用本项目官方价格表；填入 https 地址后改用你的指定来源。",
   "settings.monthlyBudgetUsd": "月度预算（美元）",
   "settings.monthlyBudgetHint": "填 0 表示不显示预算曲线。仅为估算费用 —— 订阅制不按 Token 计费。",
+  "settings.quotaRetentionDays": "额度历史保留（天）",
+  "settings.quotaRetentionHint": "0 表示永久保留。超过 14 天的额度采样会精简为每小时一条；令牌用量历史永远不会被删除。",
   "settings.pricing": "价格（每百万 Token，美元）",
   "settings.pricing.model": "模型前缀",
   "settings.pricing.input": "输入",

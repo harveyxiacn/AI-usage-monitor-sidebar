@@ -85,6 +85,7 @@ export const defaultSettings: Settings = {
   pricingUrl: '',
   monthlyBudgetUsd: 0,
   subscriptionUsd: { claude: 0, codex: 0 },
+  quotaRetentionDays: 365,
   autostart: false,
   autoUpdateCheck: true,
   autoPricingCheck: true,

@@ -237,6 +237,8 @@ export interface Settings {
   monthlyBudgetUsd: number;
   /** Monthly subscription price per provider in USD (0 = unknown); only compared with the API-equivalent estimate. */
   subscriptionUsd: Record<string, number>;
+  /** Delete quota history older than this many days; 0 = keep forever. Token usage is never deleted. */
+  quotaRetentionDays: number;
   autostart: boolean;
   /** ask GitHub once a day for a newer release; never installs on its own */
   autoUpdateCheck: boolean;

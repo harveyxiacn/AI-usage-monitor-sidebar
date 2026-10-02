@@ -171,6 +171,7 @@ pub fn clamp(mut s: Settings) -> Settings {
     for v in s.subscription_usd.values_mut() {
         *v = clamp_f64(*v, 0.0, 10_000.0, 0.0);
     }
+    s.quota_retention_days = s.quota_retention_days.min(3650);
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);

@@ -240,33 +240,43 @@ pub fn parse_ms(rfc3339: &str) -> Option<i64> {
 /// are not reporting live data are left alone: their windows are last-known
 /// values, and extrapolating those would invent usage.
 pub fn attach(db: &Db, snapshot: &mut AppSnapshot, now_ms: i64) {
-    for provider in &mut snapshot.providers {
+    use crate::commands::store::quota::{window_samples_many, WindowQuery};
+    // One pass to collect what to load, one query round under a single lock,
+    // one pass to write the forecasts back.
+    let mut targets: Vec<(usize, usize, WindowSpec)> = Vec::new();
+    let mut queries: Vec<WindowQuery<'_>> = Vec::new();
+    for (pi, provider) in snapshot.providers.iter().enumerate() {
         if provider.status != ProviderStatus::Ok {
             continue;
         }
-        for w in &mut provider.windows {
+        for (wi, w) in provider.windows.iter().enumerate() {
             let spec = WindowSpec {
                 kind: w.kind,
                 window_seconds: w.window_seconds,
                 used_percent: w.used_percent,
                 resets_at_ms: w.resets_at.as_deref().and_then(parse_ms),
             };
-            let since = now_ms - horizon_ms(spec.kind, spec.window_seconds);
-            match crate::commands::store::quota::window_samples(
-                db,
-                &provider.provider,
-                w.kind,
-                w.scope.as_deref(),
-                since,
-            ) {
-                Ok(samples) => w.forecast = forecast(&samples, &spec, now_ms),
-                Err(e) => log::debug!(
-                    "forecast: cannot read samples for {} {}: {e:#}",
-                    provider.provider,
-                    w.label
-                ),
+            queries.push(WindowQuery {
+                provider: &provider.provider,
+                kind: w.kind,
+                scope: w.scope.as_deref(),
+                since: now_ms - horizon_ms(spec.kind, spec.window_seconds),
+            });
+            targets.push((pi, wi, spec));
+        }
+    }
+    if targets.is_empty() {
+        return;
+    }
+    let loaded = window_samples_many(db, &queries);
+    drop(queries);
+    match loaded {
+        Ok(all) => {
+            for ((pi, wi, spec), samples) in targets.into_iter().zip(all) {
+                snapshot.providers[pi].windows[wi].forecast = forecast(&samples, &spec, now_ms);
             }
         }
+        Err(e) => log::debug!("forecast: cannot read quota samples: {e:#}"),
     }
 }
 
