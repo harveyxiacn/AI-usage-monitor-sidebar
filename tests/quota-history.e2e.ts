@@ -47,7 +47,7 @@ interface Backend {
   pending: Pending[];
   commands: string[];
   queries: QuotaHistoryQuery[];
-  historyQueries: Array<{ groupByModel: boolean }>;
+  historyQueries: Array<{ groupByModel: boolean; bucket: string }>;
 }
 
 const test = base.extend<{ backend: Backend }>({
@@ -64,7 +64,7 @@ const test = base.extend<{ backend: Backend }>({
     await page.clock.install({ time });
     await page.clock.pauseAt(time);
     let listenerId = 0;
-    await page.exposeBinding('__quotaTestInvoke', (_source, command: string, args: { query: QuotaHistoryQuery & { groupByModel: boolean } }) => {
+    await page.exposeBinding('__quotaTestInvoke', (_source, command: string, args: { query: QuotaHistoryQuery & { groupByModel: boolean; bucket: string } }) => {
       backend.commands.push(command);
       switch (command) {
         case 'get_quota_history':
@@ -73,6 +73,7 @@ const test = base.extend<{ backend: Backend }>({
           return new Promise<QuotaSample[]>((resolve, reject) => backend.pending.push({ query: args.query, resolve, reject }));
         case 'get_usage_history': backend.historyQueries.push(args.query); return historyResult();
         case 'get_usage_calendar': return { days: [], slots: [], totals: total(0) };
+        case 'get_usage_sessions': return { rows: [], totalSessions: 0, totals: total(0), truncated: false };
         case 'plugin:event|listen': return ++listenerId;
         case 'plugin:event|unlisten': return;
         default: throw new Error(`Unexpected Tauri command in quota history test: ${command}`);
@@ -294,17 +295,23 @@ test('History displays model and effort variants alongside distinct token and qu
   await page.setViewportSize({ width: 1280, height: 2100 });
   await mount(page, true);
   const expectedModels = ['gpt-6-astra · medium', 'gpt-6-astra · ultra', 'gpt-5.6-sol · xhigh', 'claude-fable · high', 'claude-opus · Effort not recorded'];
+  // Usage is the default sub-view: token charts and the table, no quota panel.
   await expect(page.locator('td.model')).toHaveText(expectedModels);
-  await expect(page.locator('.quota-stats dd')).toHaveText(['7%', '15 pp', '1', '5']);
-  await expect(page.locator('canvas')).toHaveCount(2);
+  await expect(page.getByRole('region', { name: 'Quota history', exact: true })).toHaveCount(0);
   await expect.poll(() => chartState(page, '.chart canvas')).toMatchObject({
     type: 'bar', labels: [
       'Claude · claude-fable · high', 'Claude · claude-opus · Effort not recorded',
       'Codex · gpt-5.6-sol · xhigh', 'Codex · gpt-6-astra · medium', 'Codex · gpt-6-astra · ultra',
     ], values: [[400], [500], [300], [100], [200]],
   });
-  expect(backend.historyQueries).toHaveLength(1);
-  expect(backend.historyQueries[0].groupByModel).toBe(true);
+  // the project ranking asks for month buckets on its own; the page's query is the other one
+  const pageQueries = backend.historyQueries.filter((query) => query.bucket !== 'month');
+  expect(pageQueries).toHaveLength(1);
+  expect(pageQueries[0].groupByModel).toBe(true);
+  // the quota sub-view is a separate, segmented choice
+  await page.getByRole('group', { name: 'History view', exact: true }).getByRole('button', { name: 'Quota', exact: true }).click();
+  await expect(page.locator('.quota-stats dd')).toHaveText(['7%', '15 pp', '1', '5']);
+  await expect(page.locator('.quota-chart canvas')).toHaveCount(1);
   expect(backend.queries[0].provider).toBeNull();
   expect(backend.queries[0].from).toBe('2026-09-15T16:00:00.000Z');
   expect(backend.commands).not.toContain('refresh_now');

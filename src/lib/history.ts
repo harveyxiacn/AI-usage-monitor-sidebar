@@ -124,11 +124,24 @@ export function historyRange(preset: HistoryPreset, from: string, to: string, no
 
 // ------------------------------------------------- activity heatmap -------
 
-export type HeatMetric = 'tokens' | 'cost';
+export type HeatMetric = 'tokens' | 'cost' | 'requests' | 'cache';
 
-/** The value a heat cell encodes; null = "cost unknown", not "zero". */
-export function metricOf(totals: Pick<TokenTotals, 'totalTokens' | 'estimatedCostUsd'>, metric: HeatMetric): number | null {
-  return metric === 'cost' ? totals.estimatedCostUsd : totals.totalTokens;
+type HeatValue = Pick<TokenTotals, 'totalTokens' | 'estimatedCostUsd'> &
+  Partial<Pick<TokenTotals, 'requests' | 'inputTokens' | 'cacheReadTokens' | 'cacheWriteTokens'>>;
+
+/**
+ * The value a heat cell encodes; null = "unknown", not "zero" (cost without a
+ * price, or a cache hit rate without any prompt tokens).
+ */
+export function metricOf(totals: HeatValue, metric: HeatMetric): number | null {
+  if (metric === 'cost') return totals.estimatedCostUsd;
+  if (metric === 'requests') return totals.requests ?? 0;
+  if (metric === 'cache') {
+    const read = totals.cacheReadTokens ?? 0;
+    const denominator = (totals.inputTokens ?? 0) + read + (totals.cacheWriteTokens ?? 0);
+    return denominator > 0 ? read / denominator : null;
+  }
+  return totals.totalTokens;
 }
 
 /**
