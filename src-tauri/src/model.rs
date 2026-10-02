@@ -469,6 +469,21 @@ pub struct WeeklySummary {
     pub busiest_day_tokens: i64,
     /// Quota windows (per provider/kind/scope/cycle) that reached 100 %.
     pub limits_hit: u32,
+    /// Per-account share of the totals above; empty (and omitted) unless an
+    /// extra account had usage that week.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<WeeklyAccount>,
+}
+
+/// One account's slice of a [`WeeklySummary`] (`key` is `claude` or
+/// `claude@work`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyAccount {
+    pub key: String,
+    pub total_tokens: i64,
+    pub requests: i64,
+    pub estimated_cost_usd: Option<f64>,
 }
 
 /// Existence check of a prospective extra account's folder (Accounts card).
@@ -483,9 +498,15 @@ pub struct AccountCheck {
     pub credentials_found: bool,
     /// Which file was looked for.
     pub credentials_file: String,
-    /// macOS Claude: no credentials file, so this account cannot be read
-    /// (its login would be in the Keychain, which is not consulted).
+    /// macOS Claude: no credentials file, so the login can only be in the
+    /// Keychain item Claude Code files for that folder.
     pub keychain_only: bool,
+    /// macOS Claude: the Keychain service name looked up for that folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keychain_service: Option<String>,
+    /// That Keychain item exists (probed without reading the secret).
+    #[serde(default)]
+    pub keychain_found: bool,
 }
 
 /// Where a provider's CLI stands on this machine; no credential is read.
@@ -805,6 +826,10 @@ pub struct HistoryQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub group_by_project: bool,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Token usage of one provider inside each of several time windows (quota
@@ -814,6 +839,10 @@ pub struct HistoryQuery {
 pub struct WindowUsageQuery {
     pub provider: String,
     pub windows: Vec<TimeWindow>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -854,6 +883,10 @@ pub struct HistoryRow {
     /// None only for cross-project aggregation; empty means unassigned.
     #[serde(default)]
     pub project: Option<String>,
+    /// Extra account id; absent for the primary account (so a database with
+    /// no extra accounts serialises exactly as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     #[serde(flatten)]
     pub totals: TokenTotals,
 }
@@ -864,6 +897,10 @@ pub struct HistoryResult {
     pub rows: Vec<HistoryRow>,
     pub totals: TokenTotals,
     pub by_provider: BTreeMap<String, TokenTotals>,
+    /// Totals per provider key (`claude`, `claude@work`); only filled when an
+    /// extra account has events in range.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_account: BTreeMap<String, TokenTotals>,
     /// Projects in the selected time/provider range, before project filtering.
     #[serde(default)]
     pub projects: Vec<String>,
@@ -884,6 +921,10 @@ pub struct CalendarQuery {
     /// Same semantics as `HistoryQuery::project`.
     #[serde(default)]
     pub project: Option<String>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// One local calendar day with activity. Days without events are omitted.
@@ -929,6 +970,10 @@ pub struct SessionQuery {
     /// Server-side cap on the returned rows (default 200, clamped to 1..=1000).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account (same as `QuotaHistoryQuery`).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Counters and identifiers only — never prompt or response text.
@@ -947,6 +992,9 @@ pub struct SessionRow {
     /// Provider session id; an empty string groups events that carry none.
     pub session_id: String,
     pub provider: String,
+    /// Extra account id; absent for the primary account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// Exact cwd of the session's last event in range; empty = unassigned.
     pub project: String,
     /// RFC 3339 with the local offset, first/last event **inside the range**.

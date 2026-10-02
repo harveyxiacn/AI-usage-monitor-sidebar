@@ -52,6 +52,19 @@ pub fn ensure_schema(db: &Db) -> Result<()> {
         PRIMARY KEY(provider,request_id));
         CREATE INDEX IF NOT EXISTS idx_session_usage_turn ON session_usage_links(provider,session_id,turn_id);
         CREATE INDEX IF NOT EXISTS idx_session_parent ON session_metadata(provider,parent_id);")?;
+    // v4 (multi-account): which extra account a session belongs to ('' =
+    // primary). Additive and guarded like a migration step, because these
+    // tables are created here rather than in `store::MIGRATIONS`.
+    let has_account: bool = db.lock().query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session_metadata') WHERE name='account')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_account {
+        db.lock().execute_batch(
+            "ALTER TABLE session_metadata ADD COLUMN account TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
     db.lock().execute_batch("CREATE INDEX IF NOT EXISTS idx_usage_session_lookup ON usage_events(provider,COALESCE(session_id,''),ts);")?;
     Ok(())
 }
@@ -110,13 +123,18 @@ fn read_line(reader: &mut impl BufRead) -> Result<Option<(Vec<u8>, u64, bool)>> 
     }
 }
 
-pub fn index_codex_titles(db: &Db, path: &Path) -> Result<()> {
-    index_file(db, "codex", path)
+pub fn index_codex_titles(db: &Db, key: &str, path: &Path) -> Result<()> {
+    index_file(db, key, path)
 }
 
 /// Independent, version-stable metadata checkpoint. No prompt, assistant or
 /// tool content is written to SQLite, even when content access is enabled.
-pub fn index_file(db: &Db, provider: &str, path: &Path) -> Result<()> {
+///
+/// `key` is the provider key: `claude`, or `claude@work` for an extra account
+/// (whose sessions are tagged with it and whose usage links use the scoped
+/// request id the usage rows were stored under).
+pub fn index_file(db: &Db, key: &str, path: &Path) -> Result<()> {
+    let (provider, account) = crate::model::split_key(key);
     anyhow::ensure!(
         matches!(provider, "codex" | "claude"),
         "unsupported session provider"
@@ -243,14 +261,15 @@ pub fn index_file(db: &Db, provider: &str, path: &Path) -> Result<()> {
         let mut conn = db.lock();
         let tx = conn.transaction()?;
         for (context, parsed, start, length, line_hash) in batch {
-            tx.execute("INSERT INTO session_metadata(provider,session_id,project,native_title,title_priority,parent_id,first_ts,last_ts)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?7) ON CONFLICT(provider,session_id) DO UPDATE SET
+            tx.execute("INSERT INTO session_metadata(provider,session_id,project,native_title,title_priority,parent_id,first_ts,last_ts,account)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8) ON CONFLICT(provider,session_id) DO UPDATE SET
+            account=CASE WHEN excluded.account<>'' THEN excluded.account ELSE account END,
             project=CASE WHEN excluded.project<>'' THEN excluded.project ELSE project END,
             native_title=CASE WHEN excluded.native_title IS NOT NULL AND excluded.title_priority>=title_priority THEN excluded.native_title ELSE native_title END,
             title_priority=MAX(title_priority,excluded.title_priority),parent_id=COALESCE(excluded.parent_id,parent_id),
             first_ts=CASE WHEN first_ts IS NULL THEN excluded.first_ts WHEN excluded.first_ts IS NULL THEN first_ts ELSE MIN(first_ts,excluded.first_ts) END,
             last_ts=CASE WHEN last_ts IS NULL THEN excluded.last_ts WHEN excluded.last_ts IS NULL THEN last_ts ELSE MAX(last_ts,excluded.last_ts) END",
-            params![provider,context.session,context.project,parsed.title.as_ref().map(|t|&t.0),parsed.title.as_ref().map(|t|t.1).unwrap_or(0),context.parent,parsed.timestamp])?;
+            params![provider,context.session,context.project,parsed.title.as_ref().map(|t|&t.0),parsed.title.as_ref().map(|t|t.1).unwrap_or(0),context.parent,parsed.timestamp,account])?;
             for (index, msg) in parsed.messages.iter().enumerate() {
                 tx.execute("INSERT INTO session_message_refs(provider,session_id,message_id,path,byte_offset,byte_len,line_hash,message_index,role,turn_id,ts,tool_name,is_error,is_call,call_fingerprint,content_chars)
                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
@@ -263,7 +282,7 @@ pub fn index_file(db: &Db, provider: &str, path: &Path) -> Result<()> {
             }
             if let Some((request, turn)) = &parsed.usage {
                 tx.execute("INSERT INTO session_usage_links(provider,request_id,session_id,turn_id) VALUES(?1,?2,?3,?4)
-                ON CONFLICT(provider,request_id) DO UPDATE SET turn_id=CASE WHEN session_id=excluded.session_id THEN turn_id ELSE excluded.turn_id END,session_id=excluded.session_id",params![provider,request,context.session,turn])?;
+                ON CONFLICT(provider,request_id) DO UPDATE SET turn_id=CASE WHEN session_id=excluded.session_id THEN turn_id ELSE excluded.turn_id END,session_id=excluded.session_id",params![provider,crate::commands::store::usage::scoped_request_id(account,request),context.session,turn])?;
             }
             if let Some((previous, next)) = &parsed.relink_turn {
                 tx.execute("UPDATE session_message_refs SET turn_id=?4 WHERE provider=?1 AND session_id=?2 AND turn_id=?3",params![provider,context.session,previous,next])?;
@@ -336,16 +355,35 @@ impl Range {
 
 /// Shared by the paged list and the insights aggregate so both see the same
 /// sessions for the same filters. Binds ?1 from, ?2 to, ?3 provider, ?4 project, ?5 search.
-pub(super) const CANDIDATES_CTE: &str = "WITH usage AS (SELECT provider,COALESCE(session_id,'') session_id,MAX(ts) last_ts,SUM(total_tokens) tokens,MAX(COALESCE(cwd,'')) project
+pub(super) const CANDIDATES_CTE: &str = "WITH usage AS (SELECT provider,COALESCE(session_id,'') session_id,MAX(ts) last_ts,SUM(total_tokens) tokens,MAX(COALESCE(cwd,'')) project,MAX(account) account
         FROM usage_events WHERE (?1 IS NULL OR ts>=?1) AND (?2 IS NULL OR ts<?2) AND (?3 IS NULL OR provider=?3) AND (?4 IS NULL OR COALESCE(cwd,'')=?4)
         GROUP BY provider,COALESCE(session_id,'')),
         keys AS (SELECT provider,session_id FROM usage UNION SELECT provider,session_id FROM session_metadata
         WHERE (?1 IS NULL OR last_ts>=?1) AND (?2 IS NULL OR first_ts<?2) AND (?3 IS NULL OR provider=?3) AND (?4 IS NULL OR project=?4)),
         candidates AS (SELECT k.provider,k.session_id,CASE WHEN ?1 IS NULL AND ?2 IS NULL THEN MAX(COALESCE(u.last_ts,0),COALESCE(m.last_ts,0)) ELSE COALESCE(u.last_ts,m.last_ts,0) END last_ts,COALESCE(u.tokens,0) tokens,
         COALESCE(a.alias,m.native_title,NULLIF(m.project,''),NULLIF(u.project,''),k.session_id) sort_title,
-        COALESCE(NULLIF(m.project,''),u.project,'') project FROM keys k LEFT JOIN usage u USING(provider,session_id)
+        COALESCE(NULLIF(m.project,''),u.project,'') project,COALESCE(u.account,m.account,'') account FROM keys k LEFT JOIN usage u USING(provider,session_id)
         LEFT JOIN session_metadata m USING(provider,session_id) LEFT JOIN session_aliases a USING(provider,session_id)),
-        filtered AS (SELECT * FROM candidates WHERE ?5='' OR instr(lower(sort_title||' '||session_id||' '||project),lower(?5))>0) ";
+        filtered AS (SELECT * FROM candidates WHERE (?5='' OR instr(lower(sort_title||' '||session_id||' '||project),lower(?5))>0){ACCOUNT}) ";
+
+/// [`CANDIDATES_CTE`] restricted to one account: `None` = every account,
+/// `Some("")` = the primary one. The id is spliced in as a literal (the
+/// numbered parameters of the callers are all taken), so it must be a slug.
+pub(super) fn candidates_cte(account: &Option<String>) -> Result<String> {
+    let filter = match account {
+        None => String::new(),
+        Some(a) => {
+            anyhow::ensure!(
+                a.len() <= 24
+                    && a.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                "invalid account id"
+            );
+            format!(" AND account='{a}'")
+        }
+    };
+    Ok(CANDIDATES_CTE.replace("{ACCOUNT}", &filter))
+}
 
 pub fn list(
     db: &Db,
@@ -364,7 +402,7 @@ pub fn list(
     };
     // The filtering and LIMIT/OFFSET run in SQLite before loading any detail
     // or transcript. A recent low-token session can never be lost to Top-200.
-    let cte = CANDIDATES_CTE;
+    let cte = candidates_cte(&q.account)?;
     let search = q.search.as_deref().unwrap_or("").trim();
     anyhow::ensure!(search.len() <= 512, "session search is too long");
     let params = params![
@@ -578,10 +616,17 @@ pub(super) fn summary(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    let account: String = db.lock().query_row(
+        "SELECT COALESCE(NULLIF((SELECT account FROM session_metadata WHERE provider=?1 AND session_id=?2),''),
+                (SELECT MAX(account) FROM usage_events WHERE provider=?1 AND COALESCE(session_id,'')=?2), '')",
+        params![provider, session],
+        |r| r.get(0),
+    )?;
     Ok(SessionSummary {
         usage: SessionRow {
             session_id: session.into(),
             provider: provider.into(),
+            account: Some(account).filter(|a| !a.is_empty()),
             project,
             first_ts: local_rfc3339(first),
             last_ts: local_rfc3339(last),

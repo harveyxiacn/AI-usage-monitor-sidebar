@@ -10,7 +10,9 @@ use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike, Weekday};
 
 use super::notifier::{Alert, Level};
 use crate::commands::store::{self, Db};
-use crate::model::{CalendarQuery, PricingTable, WeeklySummary};
+use crate::model::{
+    Bucket, CalendarQuery, HistoryQuery, PricingTable, WeeklyAccount, WeeklySummary,
+};
 
 /// Local hour on Monday from which the summary is due.
 pub const DUE_HOUR: u32 = 9;
@@ -48,6 +50,7 @@ pub fn compute(db: &Db, pricing: &PricingTable, monday: NaiveDate) -> Result<Wee
             to: ymd(next_monday),
             provider: None,
             project: None,
+            account: None,
         },
         pricing,
     )?;
@@ -66,6 +69,31 @@ pub fn compute(db: &Db, pricing: &PricingTable, monday: NaiveDate) -> Result<Wee
     let from_ms = store::usage::parse_time_ms(&ymd(monday)).unwrap_or(0);
     let to_ms = store::usage::parse_time_ms(&ymd(next_monday)).unwrap_or(i64::MAX);
     let limits_hit = limits_hit(db, from_ms, to_ms)?;
+    // Per account: only filled when an extra account had usage that week.
+    let per_account = store::query_history(
+        db,
+        &HistoryQuery {
+            from: ymd(monday),
+            to: ymd(next_monday),
+            bucket: Bucket::Week,
+            group_by_model: false,
+            provider: None,
+            project: None,
+            group_by_project: false,
+            account: None,
+        },
+        pricing,
+    )?;
+    let accounts = per_account
+        .by_account
+        .into_iter()
+        .map(|(key, t)| WeeklyAccount {
+            key,
+            total_tokens: t.total_tokens,
+            requests: t.requests,
+            estimated_cost_usd: t.estimated_cost_usd.or(t.known_cost_usd),
+        })
+        .collect();
 
     Ok(WeeklySummary {
         week_start: ymd(monday),
@@ -79,6 +107,7 @@ pub fn compute(db: &Db, pricing: &PricingTable, monday: NaiveDate) -> Result<Wee
         busiest_day: busiest.map(|d| d.date.clone()),
         busiest_day_tokens: busiest.map(|d| d.totals.total_tokens).unwrap_or(0),
         limits_hit,
+        accounts,
     })
 }
 
@@ -229,6 +258,7 @@ mod tests {
             request_id: id.into(),
             cwd: None,
             source_file: None,
+            account: String::new(),
         }
     }
 
@@ -240,6 +270,33 @@ mod tests {
                 rusqlite::params![provider, kind, pct, resets, ts],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn the_week_is_split_by_account_only_when_an_extra_account_was_used() {
+        let db = Db::open_in_memory().unwrap();
+        let pricing = crate::commands::pricing::default_table();
+        let t = |s: &str| store::usage::parse_time_ms(s).unwrap();
+        let monday = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        store::insert_usage_events(&db, &[event(t("2026-09-14T10:00:00"), "p", 1_000_000)])
+            .unwrap();
+        assert!(compute(&db, &pricing, monday).unwrap().accounts.is_empty());
+
+        let mut work = event(t("2026-09-15T10:00:00"), "w", 2_000_000);
+        work.request_id = store::usage::scoped_request_id("work", "w");
+        work.account = "work".into();
+        store::insert_usage_events(&db, &[work]).unwrap();
+        let s = compute(&db, &pricing, monday).unwrap();
+        assert_eq!(
+            s.total_tokens, 3_000_000,
+            "the headline covers every account"
+        );
+        let by: Vec<(&str, i64)> = s
+            .accounts
+            .iter()
+            .map(|a| (a.key.as_str(), a.total_tokens))
+            .collect();
+        assert_eq!(by, vec![("claude", 1_000_000), ("claude@work", 2_000_000)]);
     }
 
     #[test]
@@ -329,6 +386,7 @@ mod tests {
             busiest_day: Some("2026-09-16".into()),
             busiest_day_tokens: 4_000_000,
             limits_hit: 2,
+            accounts: Vec::new(),
         }
     }
 

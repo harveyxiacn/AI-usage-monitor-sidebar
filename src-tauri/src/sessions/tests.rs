@@ -240,7 +240,7 @@ fn partial_lines_native_index_titles_and_replaced_sources_are_safe() {
             + "\n",
     )
     .unwrap();
-    index_codex_titles(&db, &title_path).unwrap();
+    index_codex_titles(&db, "codex", &title_path).unwrap();
     assert_eq!(
         detail(&db, "codex", "s", 0, 10, &pricing::default_table(), false)
             .unwrap()
@@ -661,4 +661,51 @@ fn percentiles_and_log_histogram_bins_are_correct() {
         .windows(2)
         .all(|w| (w[0].to - w[1].from).abs() < 1e-9));
     assert_eq!(h.median, Some(0.5));
+}
+
+#[test]
+fn an_extra_accounts_sessions_carry_the_account_and_keep_their_turn_links() {
+    let db = Db::open_in_memory().unwrap();
+    let (dir, path) = fixture(&[
+        json!({"type":"session_meta","payload":{"id":"acct-session","cwd":"/project"}}),
+        json!({"type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-5.3-codex"}}),
+        json!({"type":"response_item","timestamp":"2026-09-28T01:00:00Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}),
+        json!({"timestamp":"2026-09-28T01:00:05Z","type":"token_usage_record","payload":{"thread_id":"acct-session","turn_id":"turn-1","response_id":"r1","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}),
+    ]);
+    crate::commands::ingest::ingest_one(&db, "codex@work", &path).unwrap();
+    let prices = pricing::default_table();
+    let list = |account: Option<&str>| {
+        super::list(
+            &db,
+            &SessionListQuery {
+                account: account.map(str::to_string),
+                ..SessionListQuery::default()
+            },
+            &prices,
+            false,
+        )
+        .unwrap()
+    };
+    assert_eq!(list(None).total, 1);
+    assert_eq!(list(Some("work")).total, 1);
+    assert_eq!(list(Some("")).total, 0, "not a primary-account session");
+    let row = &list(Some("work")).rows[0];
+    assert_eq!(row.usage.account.as_deref(), Some("work"));
+    assert_eq!(row.usage.totals.total_tokens, 15);
+
+    // the turn still finds its usage through the scoped request id
+    let d = detail(&db, "codex", "acct-session", 0, 10, &prices, false).unwrap();
+    assert_eq!(d.session.usage.account.as_deref(), Some("work"));
+    assert_eq!(d.turns[0].totals.as_ref().map(|t| t.total_tokens), Some(15));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_unsafe_account_filter_is_rejected_not_spliced_into_sql() {
+    let db = Db::open_in_memory().unwrap();
+    let query = SessionListQuery {
+        account: Some("x' OR '1'='1".into()),
+        ..SessionListQuery::default()
+    };
+    assert!(super::list(&db, &query, &pricing::default_table(), false).is_err());
 }

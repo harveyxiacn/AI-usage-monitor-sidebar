@@ -26,7 +26,8 @@ pub fn query_window_usage(
     let mut stmt = conn.prepare(
         "SELECT model, input_tokens, cache_write_tokens, cache_read_tokens,
                 output_tokens, reasoning_tokens, total_tokens
-         FROM usage_events WHERE provider = ?1 AND ts >= ?2 AND ts < ?3",
+         FROM usage_events WHERE provider = ?1 AND ts >= ?2 AND ts < ?3
+           AND (?4 IS NULL OR account = ?4)",
     )?;
     let mut out = Vec::with_capacity(q.windows.len());
     for w in &q.windows {
@@ -34,7 +35,7 @@ pub fn query_window_usage(
         let mut totals = TokenTotals::default();
         let mut cost = 0.0;
         let mut priced = 0i64;
-        let mut rows = stmt.query(rusqlite::params![q.provider, from, to])?;
+        let mut rows = stmt.query(rusqlite::params![q.provider, from, to, q.account])?;
         while let Some(row) = rows.next()? {
             let model: String = row.get(0)?;
             let t = TokenTotals {
@@ -73,19 +74,21 @@ pub fn query_window_usage(
     Ok(out)
 }
 
-/// `(ts, total_tokens)` of every event of `provider` at or after `since` (unix
-/// ms), oldest first — the token-based fallback of the burn-rate forecast.
+/// `(ts, total_tokens)` of every event of `provider` and `account` (`""` = the
+/// primary one) at or after `since` (unix ms), oldest first — the token-based
+/// fallback of the burn-rate forecast.
 pub fn usage_token_events(
     db: &Db,
     provider: &str,
+    account: &str,
     since: i64,
 ) -> Result<Vec<crate::commands::forecast::TokenEvent>> {
     let conn = db.lock();
     let mut stmt = conn.prepare_cached(
         "SELECT ts, total_tokens FROM usage_events
-         WHERE provider = ?1 AND ts >= ?2 ORDER BY ts",
+         WHERE provider = ?1 AND account = ?3 AND ts >= ?2 ORDER BY ts",
     )?;
-    let rows = stmt.query_map(rusqlite::params![provider, since], |r| {
+    let rows = stmt.query_map(rusqlite::params![provider, since, account], |r| {
         Ok(crate::commands::forecast::TokenEvent {
             ts_ms: r.get(0)?,
             tokens: r.get(1)?,
@@ -113,6 +116,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn windows_and_token_events_are_per_account() {
+        let db = Db::open_in_memory().unwrap();
+        let mut work = ev("claude", "w", 1_789_430_400_000 + 1_000, 7, 3);
+        work.account = "work".into();
+        work.request_id = crate::commands::store::usage::scoped_request_id("work", "w");
+        insert_usage_events(
+            &db,
+            &[ev("claude", "p", 1_789_430_400_000 + 500, 10, 0), work],
+        )
+        .unwrap();
+        let window = [win("2026-09-15T00:00:00Z", "2026-09-15T05:00:00Z")];
+        let run = |account: Option<&str>| {
+            let q = WindowUsageQuery {
+                provider: "claude".into(),
+                windows: window.to_vec(),
+                account: account.map(str::to_string),
+            };
+            query_window_usage(&db, &q, &PricingTable::default()).unwrap()[0].total_tokens
+        };
+        assert_eq!((run(None), run(Some("")), run(Some("work"))), (20, 10, 10));
+        let t0 = 1_789_430_400_000;
+        assert_eq!(usage_token_events(&db, "claude", "", t0).unwrap().len(), 1);
+        assert_eq!(
+            usage_token_events(&db, "claude", "work", t0).unwrap().len(),
+            1
+        );
+        assert!(usage_token_events(&db, "claude", "other", t0)
+            .unwrap()
+            .is_empty());
+    }
+
     fn win(from: &str, to: &str) -> TimeWindow {
         TimeWindow {
             from: from.into(),
@@ -137,6 +172,7 @@ mod tests {
         )
         .unwrap();
         let q = WindowUsageQuery {
+            account: None,
             provider: "claude".into(),
             windows: vec![
                 win("2026-09-15T00:00:00Z", "2026-09-15T05:00:00Z"),
@@ -157,11 +193,13 @@ mod tests {
     fn rejects_bad_ranges_and_oversized_requests() {
         let db = Db::open_in_memory().unwrap();
         let bad = WindowUsageQuery {
+            account: None,
             provider: "claude".into(),
             windows: vec![win("2026-09-16T00:00:00Z", "2026-09-15T00:00:00Z")],
         };
         assert!(query_window_usage(&db, &bad, &PricingTable::default()).is_err());
         let many = WindowUsageQuery {
+            account: None,
             provider: "claude".into(),
             windows: (0..=MAX_WINDOWS)
                 .map(|_| win("2026-09-15T00:00:00Z", "2026-09-15T01:00:00Z"))
@@ -184,9 +222,11 @@ mod tests {
             ],
         )
         .unwrap();
-        let events = usage_token_events(&db, "claude", t0).unwrap();
+        let events = usage_token_events(&db, "claude", "", t0).unwrap();
         let got: Vec<(i64, i64)> = events.iter().map(|e| (e.ts_ms, e.tokens)).collect();
         assert_eq!(got, vec![(t0, 110), (t0 + 2_000, 220)]);
-        assert!(usage_token_events(&db, "copilot", t0).unwrap().is_empty());
+        assert!(usage_token_events(&db, "copilot", "", t0)
+            .unwrap()
+            .is_empty());
     }
 }

@@ -21,7 +21,7 @@ pub use usage::{insert_usage_events, query_calendar, query_history, query_sessio
 pub use windows::{query_window_usage, usage_token_events};
 
 /// Bumped whenever the schema changes; migrations live in [`MIGRATIONS`].
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// One schema step. Steps are applied in order to a database whose
 /// `schema_version` is below `to`, inside the migration transaction, and must
@@ -56,6 +56,14 @@ pub const MIGRATIONS: &[Migration] = &[
         to: 3,
         min_reader: 2,
         apply: migrate_to_v3,
+    },
+    // v4 (v0.7, complete multi-account): usage_events.account with a default.
+    // Additive: a v3 build reads such a database unchanged (it sees the extra
+    // accounts' events as primary ones, which only affects its own totals).
+    Migration {
+        to: 4,
+        min_reader: 2,
+        apply: migrate_to_v4,
     },
 ];
 
@@ -97,6 +105,27 @@ fn migrate_to_v3(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute_batch(
         "DROP INDEX IF EXISTS idx_quota_ts;
          CREATE INDEX IF NOT EXISTS idx_quota_account_ts ON quota_samples(provider, account, ts);",
+    )?;
+    Ok(())
+}
+
+fn migrate_to_v4(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    // v4 (multi-account ingestion): every usage event belongs to an account;
+    // '' is the primary one, so all existing rows migrate unchanged and keep
+    // their `UNIQUE(provider, request_id)` identity (extra accounts get a
+    // namespaced request id instead, see `usage::scoped_request_id`).
+    // Checked first: an older binary can rewrite the version marker while
+    // leaving this additive column in place.
+    let has_account: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_events') WHERE name='account')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_account {
+        tx.execute_batch("ALTER TABLE usage_events ADD COLUMN account TEXT NOT NULL DEFAULT '';")?;
+    }
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_usage_account_ts ON usage_events(provider, account, ts);",
     )?;
     Ok(())
 }
@@ -500,7 +529,7 @@ mod tests {
                     |r| r.get::<_, String>(0)
                 )
                 .unwrap(),
-            "3"
+            SCHEMA_VERSION.to_string()
         );
         let offset = IngestFile {
             path: "retained.jsonl".into(),
@@ -652,7 +681,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, "3");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
         let (old_index, new_index): (bool, bool) = db
             .lock()
             .query_row(
@@ -702,6 +731,131 @@ mod tests {
         assert_eq!(n, 3);
         drop(again);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A database exactly as v0.6 left it: schema 3, quota samples already
+    /// carry `account`, usage events do not.
+    fn write_v3_database(path: &Path) {
+        write_v2_database(path);
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE quota_samples ADD COLUMN account TEXT NOT NULL DEFAULT '';
+             DROP INDEX idx_quota_ts;
+             CREATE INDEX idx_quota_account_ts ON quota_samples(provider, account, ts);
+             INSERT INTO quota_samples(provider,account,kind,used_percent,ts)
+               VALUES('claude','work','five_hour',9.0,1789430500000);
+             INSERT INTO usage_events(provider,model,ts,total_tokens,request_id,session_id)
+               VALUES('codex','m',2000,5,'shared-id','s1');
+             UPDATE meta SET value='3' WHERE key='schema_version';
+             UPDATE meta SET value='2' WHERE key='min_reader_version';",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn v4_migration_makes_every_existing_usage_event_a_primary_account_row() {
+        let dir = crate::commands::test_support::tempdir();
+        let path = dir.join("usage.db");
+        write_v3_database(&path);
+        let db = Db::open(&path).unwrap();
+
+        let rows: Vec<(String, String, String)> = {
+            let conn = db.lock();
+            let mut stmt = conn
+                .prepare("SELECT provider, request_id, account FROM usage_events ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert_eq!(
+            rows,
+            vec![
+                ("claude".into(), "kept".into(), String::new()),
+                ("codex".into(), "shared-id".into(), String::new()),
+            ],
+            "ids are untouched and every row is the primary account"
+        );
+        // quota rows (and the extra account's sample) are left alone
+        let samples: i64 = db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM quota_samples WHERE account='work'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(samples, 1);
+        let meta_of = |key: &str| -> String {
+            db.lock()
+                .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(meta_of("schema_version"), "4");
+        assert_eq!(
+            meta_of(compat::MIN_READER_KEY),
+            "2",
+            "an additive step keeps the reader floor"
+        );
+        let index: bool = db
+            .lock()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='idx_usage_account_ts')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(index);
+        assert_eq!(compat::list(&dir).len(), 1, "backed up before migrating");
+
+        // the old unique key still holds, and an extra account's scoped id coexists
+        let mut extra = usage::UsageEvent {
+            provider: "codex".into(),
+            model: "m".into(),
+            ts: 3000,
+            total_tokens: 7,
+            request_id: usage::scoped_request_id("work", "shared-id"),
+            account: "work".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            usage::insert_usage_events(&db, &[extra.clone()]).unwrap(),
+            1
+        );
+        extra.request_id = "shared-id".into();
+        extra.account = String::new();
+        assert_eq!(
+            usage::insert_usage_events(&db, &[extra]).unwrap(),
+            0,
+            "the primary id is still unique per provider"
+        );
+
+        // reopening is a no-op
+        drop(db);
+        let again = Db::open(&path).unwrap();
+        assert_eq!(usage::count_events(&again).unwrap(), 3);
+        drop(again);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reapplying_v4_keeps_an_existing_account_column_and_its_values() {
+        let db = Db::open_in_memory().unwrap();
+        db.lock()
+            .execute_batch(
+                "UPDATE meta SET value='3' WHERE key='schema_version';
+                 INSERT INTO usage_events(provider,account,model,ts,total_tokens,request_id)
+                   VALUES('claude','work','m',1,1,'w1');",
+            )
+            .unwrap();
+        db.migrate().unwrap();
+        db.migrate().unwrap();
+        let account: String = db
+            .lock()
+            .query_row("SELECT account FROM usage_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(account, "work");
     }
 
     #[test]

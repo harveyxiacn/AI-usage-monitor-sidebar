@@ -545,11 +545,11 @@ pub fn attach(db: &Db, snapshot: &mut AppSnapshot, now_ms: i64) {
                 // The percentages had nothing to say: try the token history of
                 // the current period (never for a model-scoped window — the
                 // provider's tokens are not that scope's tokens).
-                // Extra accounts have no ingested token events: the provider's
-                // own would belong to the primary account.
-                if f.is_none() && !scoped && provider.account_id.is_none() {
+                // The token events are those of this very account.
+                if f.is_none() && !scoped {
                     if let Some(since) = period_start_ms(&spec) {
-                        match store::usage_token_events(db, &provider.provider, since) {
+                        let account = provider.account_id.as_deref().unwrap_or("");
+                        match store::usage_token_events(db, &provider.provider, account, since) {
                             Ok(events) if !events.is_empty() => {
                                 f = forecast_with_tokens(&samples, &spec, now_ms, Some(&events));
                             }

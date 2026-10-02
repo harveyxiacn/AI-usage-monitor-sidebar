@@ -109,6 +109,26 @@ pub struct UsageEvent {
     pub request_id: String,
     pub cwd: Option<String>,
     pub source_file: Option<String>,
+    /// Extra account id; empty = the primary account. Not part of the
+    /// `UNIQUE(provider, request_id)` identity: extra accounts get a scoped
+    /// `request_id` instead (see [`scoped_request_id`]).
+    pub account: String,
+}
+
+/// Separator between the account and the provider's own id in a scoped
+/// request id (an ASCII unit separator never occurs in provider ids).
+const SCOPE_SEP: char = '\u{1f}';
+
+/// Dedupe key of a request. The primary account keeps the provider's own id
+/// (so every existing row stays valid); an extra account's id is prefixed with
+/// the account, so two accounts that log the same request id never collide on
+/// `UNIQUE(provider, request_id)`.
+pub fn scoped_request_id(account: &str, id: &str) -> String {
+    if account.is_empty() {
+        id.to_string()
+    } else {
+        format!("{account}{SCOPE_SEP}{id}")
+    }
 }
 
 /// Insert a batch of events.
@@ -133,8 +153,8 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
             "INSERT OR IGNORE INTO usage_events
                (provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
                 output_tokens, reasoning_tokens, total_tokens, session_id, request_id, cwd, source_file,
-                reasoning_effort)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                reasoning_effort, account)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
         )?;
         let mut upgrade = tx.prepare(
             "UPDATE usage_events SET model=CASE WHEN ?2='unknown' THEN model ELSE ?2 END,
@@ -180,7 +200,23 @@ pub fn insert_usage_events(db: &Db, events: &[UsageEvent]) -> Result<u64> {
                 e.source_file,
                 e.reasoning_effort,
             ];
-            let n = insert.execute(params)?;
+            let n = insert.execute(rusqlite::params![
+                e.provider,
+                e.model,
+                e.ts,
+                e.input_tokens,
+                e.cache_write_tokens,
+                e.cache_read_tokens,
+                e.output_tokens,
+                e.reasoning_tokens,
+                e.total_tokens,
+                e.session_id,
+                e.request_id,
+                e.cwd,
+                e.source_file,
+                e.reasoning_effort,
+                e.account,
+            ])?;
             if n > 0 {
                 added += 1;
                 changed += n;
@@ -220,6 +256,7 @@ pub fn count_events(db: &Db) -> Result<i64> {
 struct HistoryBucket {
     start: i64,
     provider: String,
+    account: String,
     project: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
@@ -245,6 +282,8 @@ fn query_history_uncached(
     let mut buckets: BTreeMap<HistoryBucket, Acc> = BTreeMap::new();
     let mut totals = Acc::default();
     let mut by_provider: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut by_account: BTreeMap<String, Acc> = BTreeMap::new();
+    let mut has_extra_account = false;
     // Set as soon as one model was priced from its family, not from itself.
     let mut cost_approximate = false;
     let projects;
@@ -257,24 +296,29 @@ fn query_history_uncached(
         let mut options = conn.prepare(
             "SELECT DISTINCT COALESCE(cwd, '') AS project FROM usage_events
              WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
+               AND (?4 IS NULL OR account = ?4)
              ORDER BY project COLLATE BINARY",
         )?;
         projects = options
-            .query_map(rusqlite::params![from, to, q.provider], |row| {
+            .query_map(rusqlite::params![from, to, q.provider, q.account], |row| {
                 row.get::<_, String>(0)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let sql = "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
-                          output_tokens, reasoning_tokens, total_tokens, cwd, reasoning_effort
+                          output_tokens, reasoning_tokens, total_tokens, cwd, reasoning_effort, account
                    FROM usage_events
                    WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
                      AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
+                     AND (?5 IS NULL OR account = ?5)
                    ORDER BY ts";
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt.query(rusqlite::params![from, to, q.provider, q.project])?;
+        let mut rows = stmt.query(rusqlite::params![
+            from, to, q.provider, q.project, q.account
+        ])?;
         while let Some(row) = rows.next()? {
             let provider: String = row.get(0)?;
+            let account: String = row.get(11)?;
             let model: String = row.get(1)?;
             let ts: i64 = row.get(2)?;
             let t = TokenTotals {
@@ -310,10 +354,16 @@ fn query_history_uncached(
                 .entry(HistoryBucket {
                     start: bucket_ms,
                     provider: provider.clone(),
+                    account: account.clone(),
                     project,
                     model: key_model,
                     reasoning_effort: if q.group_by_model { row.get(10)? } else { None },
                 })
+                .or_default()
+                .add(&t, cost);
+            has_extra_account |= !account.is_empty();
+            by_account
+                .entry(crate::model::provider_key(&provider, Some(&account)))
                 .or_default()
                 .add(&t, cost);
             by_provider.entry(provider).or_default().add(&t, cost);
@@ -329,14 +379,24 @@ fn query_history_uncached(
             model: bucket.model,
             reasoning_effort: bucket.reasoning_effort,
             project: bucket.project,
+            account: Some(bucket.account).filter(|a| !a.is_empty()),
             totals: acc.finish(),
         })
         .collect();
 
+    // The per-account map only exists once an extra account has events, so a
+    // database without them is reported exactly as before.
+    if !has_extra_account {
+        by_account.clear();
+    }
     Ok(HistoryResult {
         rows,
         totals: totals.finish(),
         by_provider: by_provider
+            .into_iter()
+            .map(|(k, v)| (k, v.finish()))
+            .collect(),
+        by_account: by_account
             .into_iter()
             .map(|(k, v)| (k, v.finish()))
             .collect(),
@@ -426,9 +486,12 @@ fn query_calendar_uncached(
                     output_tokens, reasoning_tokens, total_tokens
              FROM usage_events
              WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
-               AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)",
+               AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
+               AND (?5 IS NULL OR account = ?5)",
         )?;
-        let mut rows = stmt.query(rusqlite::params![from, to, q.provider, q.project])?;
+        let mut rows = stmt.query(rusqlite::params![
+            from, to, q.provider, q.project, q.account
+        ])?;
         while let Some(row) = rows.next()? {
             let model: String = row.get(1)?;
             let ts: i64 = row.get(2)?;
@@ -509,7 +572,9 @@ fn query_sessions_uncached(
         .limit
         .unwrap_or(SESSION_LIMIT_DEFAULT)
         .clamp(1, SESSION_LIMIT_MAX) as usize;
-    let mut sessions: BTreeMap<(String, String), SessionAcc> = BTreeMap::new();
+    // (provider, account, session id); the account is part of the key so two
+    // logins that happen to share a session id stay separate sessions.
+    let mut sessions: BTreeMap<(String, String, String), SessionAcc> = BTreeMap::new();
     let mut totals = Acc::default();
 
     {
@@ -517,13 +582,16 @@ fn query_sessions_uncached(
         let mut stmt = conn.prepare(
             "SELECT provider, model, ts, input_tokens, cache_write_tokens, cache_read_tokens,
                     output_tokens, reasoning_tokens, total_tokens,
-                    COALESCE(session_id, ''), COALESCE(cwd, ''), reasoning_effort
+                    COALESCE(session_id, ''), COALESCE(cwd, ''), reasoning_effort, account
              FROM usage_events
              WHERE ts >= ?1 AND ts < ?2 AND (?3 IS NULL OR provider = ?3)
                AND (?4 IS NULL OR COALESCE(cwd, '') = ?4)
+               AND (?5 IS NULL OR account = ?5)
              ORDER BY ts",
         )?;
-        let mut rows = stmt.query(rusqlite::params![from, to, q.provider, q.project])?;
+        let mut rows = stmt.query(rusqlite::params![
+            from, to, q.provider, q.project, q.account
+        ])?;
         while let Some(row) = rows.next()? {
             let provider: String = row.get(0)?;
             let model: String = row.get(1)?;
@@ -541,9 +609,10 @@ fn query_sessions_uncached(
             };
             let session_id: String = row.get(9)?;
             let project: String = row.get(10)?;
+            let account: String = row.get(12)?;
             let cost = pricing::estimate_cost(pricing, &model, &t);
             let entry = sessions
-                .entry((provider, session_id))
+                .entry((provider, account, session_id))
                 .or_insert_with(|| SessionAcc {
                     first_ts: ts,
                     last_ts: ts,
@@ -566,9 +635,10 @@ fn query_sessions_uncached(
     let total_sessions = sessions.len() as i64;
     let mut rows = sessions
         .into_iter()
-        .map(|((provider, session_id), s)| SessionRow {
+        .map(|((provider, account, session_id), s)| SessionRow {
             session_id,
             provider,
+            account: Some(account).filter(|a| !a.is_empty()),
             project: s.project,
             first_ts: local_rfc3339(s.first_ts),
             last_ts: local_rfc3339(s.last_ts),
@@ -585,6 +655,7 @@ fn query_sessions_uncached(
             .cmp(&a.totals.total_tokens)
             .then_with(|| b.last_ts.cmp(&a.last_ts))
             .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.account.cmp(&b.account))
             .then_with(|| a.session_id.cmp(&b.session_id))
     });
     let truncated = rows.len() > limit;
@@ -730,6 +801,7 @@ mod tests {
             request_id: id.into(),
             cwd: None,
             source_file: None,
+            account: String::new(),
         }
     }
 
@@ -742,6 +814,7 @@ mod tests {
             provider: None,
             project: None,
             group_by_project: false,
+            account: None,
         }
     }
 
@@ -864,6 +937,79 @@ mod tests {
         let warm = before.elapsed();
         assert_eq!(db.usage_cache.lock().hits, rounds);
         println!("QUERY_BENCH events=50000 rounds={rounds} baseline_scanned_events={} cached_scanned_events=0 baseline_ms={:.3} cached_ms={:.3}", 50_000 * rounds, cold.as_secs_f64() * 1000., warm.as_secs_f64() * 1000.);
+    }
+
+    /// `event` as logged by an extra account: tagged and with a scoped id.
+    fn of_account(mut e: UsageEvent, account: &str) -> UsageEvent {
+        e.request_id = scoped_request_id(account, &e.request_id);
+        e.account = account.into();
+        e
+    }
+
+    #[test]
+    fn history_filters_and_splits_by_account_and_is_unchanged_without_extras() {
+        let db = Db::open_in_memory().unwrap();
+        let pricing = PricingTable::default();
+        let t = ms("2026-09-15 10:00:00");
+        // the same request id in both accounts must coexist
+        let primary = event("claude", "m", t, "same", 100, 20);
+        let work = of_account(event("claude", "m", t + 1000, "same", 40, 10), "work");
+        insert_usage_events(&db, std::slice::from_ref(&primary)).unwrap();
+        let q = query("2026-09-15", "2026-09-16", Bucket::Day);
+
+        // no extra account yet: no per-account output at all, rows untagged
+        let before = query_history(&db, &q, &pricing).unwrap();
+        assert!(before.by_account.is_empty());
+        assert!(before.rows.iter().all(|r| r.account.is_none()));
+        let json = serde_json::to_string(&before).unwrap();
+        assert!(!json.contains("byAccount") && !json.contains("\"account\""));
+
+        assert_eq!(insert_usage_events(&db, &[work]).unwrap(), 1);
+        let all = query_history(&db, &q, &pricing).unwrap();
+        assert_eq!(all.totals.total_tokens, 120 + 50, "None = every account");
+        assert_eq!(all.by_provider["claude"].total_tokens, 170);
+        assert_eq!(all.by_account["claude"].total_tokens, 120);
+        assert_eq!(all.by_account["claude@work"].total_tokens, 50);
+        assert_eq!(all.rows.len(), 2, "one row per account in the same bucket");
+        assert_eq!(all.rows[1].account.as_deref(), Some("work"));
+
+        let mut only_primary = q.clone();
+        only_primary.account = Some(String::new());
+        assert_eq!(
+            query_history(&db, &only_primary, &pricing)
+                .unwrap()
+                .totals
+                .total_tokens,
+            120
+        );
+        let mut only_work = q.clone();
+        only_work.account = Some("work".into());
+        let w = query_history(&db, &only_work, &pricing).unwrap();
+        assert_eq!(w.totals.total_tokens, 50);
+        assert_eq!(w.rows.len(), 1);
+
+        // calendar and sessions honour the same filter
+        let mut cal = calendar("2026-09-15", "2026-09-16");
+        assert_eq!(
+            query_calendar(&db, &cal, &pricing)
+                .unwrap()
+                .totals
+                .total_tokens,
+            170
+        );
+        cal.account = Some("work".into());
+        assert_eq!(
+            query_calendar(&db, &cal, &pricing)
+                .unwrap()
+                .totals
+                .total_tokens,
+            50
+        );
+        let mut sess = sessions("2026-09-15", "2026-09-16");
+        sess.account = Some("work".into());
+        let s = query_sessions(&db, &sess, &pricing).unwrap();
+        assert_eq!(s.total_sessions, 1);
+        assert_eq!(s.rows[0].account.as_deref(), Some("work"));
     }
 
     #[test]
@@ -1138,6 +1284,7 @@ mod tests {
                 to: "2026-09-16".into(),
                 provider: None,
                 project: None,
+                account: None,
                 limit: None,
             },
             &pricing,
@@ -1625,6 +1772,7 @@ mod tests {
             to: to.into(),
             provider: None,
             project: None,
+            account: None,
         }
     }
 
@@ -1634,6 +1782,7 @@ mod tests {
             to: to.into(),
             provider: None,
             project: None,
+            account: None,
             limit: None,
         }
     }

@@ -422,6 +422,7 @@ fn make_event(
         request_id,
         cwd,
         source_file: Some(source.to_string()),
+        account: String::new(),
     }
 }
 

@@ -135,6 +135,7 @@ pub fn parse_chunk(text: &str, source: &str) -> Vec<UsageEvent> {
             request_id: key.clone(),
             cwd: parsed.cwd.clone(),
             source_file: Some(source.to_string()),
+            account: String::new(),
         };
         if let Some(previous) = by_key.get_mut(&key) {
             if previous.model == event.model {
