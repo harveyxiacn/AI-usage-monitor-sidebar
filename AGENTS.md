@@ -118,6 +118,7 @@ login of its own.
   `~/.config/github-copilot/apps.json` and is switched off unless that file
   already holds a github.com token. Do not enable it for a user without saying
   it was never tested against a live account.
+- OpenRouter: **experimental and unverified**, off by default. There is no CLI login; the app reads the API key from an environment variable whose *name* is the `openrouterKeyEnv` setting (default `OPENROUTER_API_KEY`). Never ask for, store or print the key; tell the user to export the variable and restart the app, then enable it under Providers.
 - Non-default locations are honoured through `CLAUDE_CONFIG_DIR` / `CODEX_HOME`.
 
 A ring in an error state has its message in the popover and in the log.
@@ -162,7 +163,8 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
 | `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |
 | `adaptiveRefresh` | `true`, `false` | poll a provider less often while its session logs are quiet |
-| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` is **experimental** (never verified against a live account) and only turns itself on when its credentials are found |
+| `providers` | `{"claude":{"enabled":true,"showInSidebar":true,"order":0},"codex":{"enabled":true,"showInSidebar":true,"order":1},"copilot":{"enabled":false,"showInSidebar":true,"order":2},"openrouter":{"enabled":false,"showInSidebar":true,"order":3}}` | `enabled` off = not polled at all; `showInSidebar` off = hidden from the bar only. `copilot` and `openrouter` are **experimental** (never verified against a live account); `copilot` only turns itself on when its credentials are found, `openrouter` never does |
+| `openrouterKeyEnv` | `"OPENROUTER_API_KEY"` | **name** of the environment variable holding the OpenRouter API key (never the key; a value that is not an upper-case variable name is reset to the default) |
 | `pricingUrl` | `""` | price source URL. Empty = the project's GitHub raw `pricing.json`; non-empty must be an `https://` custom source |
 | `autoPricingCheck` | `true`, `false` | check the selected price source about 60 s after startup and daily; checks only and reminds, never applies prices automatically |
 | `thresholds` | `{"warn":70,"critical":90}` | ring colour and notifications |

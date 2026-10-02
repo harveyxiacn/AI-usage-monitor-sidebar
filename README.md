@@ -76,6 +76,7 @@ quota is left, and when does it reset?*
 | GitHub Copilot | **experimental — never tested against a live account** | Pro / Pro+ / Business / Enterprise | monthly premium-request pool; chat and completions are unmetered on paid plans |
 | GitHub Copilot | **experimental — never tested against a live account** | Free | monthly chat **+** completions counts (there is no premium pool to meter) |
 | GitHub Copilot | **experimental — never tested against a live account** | organisation-managed seat | GitHub reports no per-seat quota; the popover says so instead of showing 0 % |
+| OpenRouter | **experimental — not verified against a live account** | API key from an environment variable | "Credits" window from the key's limit, or the account balance when the key has none; opt-in, off by default |
 
 Window kinds are **detected from the API**, never assumed: a window is classified
 by its `limit_window_seconds` (≤ 6 h → 5-hour, ~7 d → weekly, anything else →
@@ -107,6 +108,7 @@ session logs those CLIs leave on disk.
 | Claude | `~/.claude/.credentials.json` (Linux, Windows) · macOS Keychain item `Claude Code-credentials` · override the directory with `CLAUDE_CONFIG_DIR` |
 | Codex | `~/.codex/auth.json` · override the directory with `CODEX_HOME` |
 | GitHub Copilot | `~/.config/github-copilot/apps.json` (older `hosts.json`), written by the Copilot editor plugins · `%LOCALAPPDATA%\github-copilot\` on Windows · `$XDG_CONFIG_HOME` is honoured. The GitHub CLI's token is deliberately **not** used. |
+| OpenRouter | no file: the API key is read from the environment variable named by `openrouterKeyEnv` (default `OPENROUTER_API_KEY`); the key itself is never stored |
 
 **Endpoints**
 
@@ -115,6 +117,7 @@ session logs those CLIs leave on disk.
 | Claude | `GET https://api.anthropic.com/api/oauth/usage` (and `/api/oauth/profile` for the plan label), `Authorization: Bearer …`, `anthropic-beta: oauth-2025-04-20` |
 | Codex | `GET https://chatgpt.com/backend-api/wham/usage`, `Authorization: Bearer …`, `ChatGPT-Account-Id: …` |
 | GitHub Copilot | `GET https://api.github.com/copilot_internal/user`, `Authorization: token …`, `X-Github-Api-Version: 2025-04-01` — the call the Copilot editor extensions make |
+| OpenRouter | `GET https://openrouter.ai/api/v1/key` (and `/api/v1/credits` for a key without a limit), `Authorization: Bearer …` |
 
 **Local logs (token history, and a fallback when you are offline)**
 
@@ -433,6 +436,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Pro / Pro+ / Business / Enterprise | 每月 premium 请求额度池；付费套餐的 chat 与补全不计量 |
 | GitHub Copilot | **实验性 —— 从未在真实账号上验证** | Free | 每月 chat **+** 代码补全次数（免费套餐没有 premium 额度池） |
 | GitHub Copilot | **实验性 —— 从未在真实账号上验证** | 组织分配的席位 | GitHub 不返回该席位的个人额度，弹窗会如实说明，而不是显示 0% |
+| OpenRouter | **实验性 —— 未在真实账号上验证** | 环境变量中的 API Key | 按密钥额度上限显示“Credits”窗口；无上限时显示账户余额；需手动开启，默认关闭 |
 
 窗口类型一律**由 API 返回值判断**，不做假设：按 `limit_window_seconds` 归类
 （≤ 6 小时 → 5 小时窗口，约 7 天 → 每周窗口，其余 → 其他）。每周窗口也可能是
@@ -458,6 +462,7 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 | Claude | `~/.claude/.credentials.json`（Linux、Windows）· macOS 钥匙串条目 `Claude Code-credentials` · 可用 `CLAUDE_CONFIG_DIR` 覆盖目录 |
 | Codex | `~/.codex/auth.json` · 可用 `CODEX_HOME` 覆盖目录 |
 | GitHub Copilot | `~/.config/github-copilot/apps.json`（旧版为 `hosts.json`），由 Copilot 编辑器插件写入 · Windows 为 `%LOCALAPPDATA%\github-copilot\` · 支持 `$XDG_CONFIG_HOME`。**不会**使用 GitHub CLI 的令牌。 |
+| OpenRouter | 无文件：API 密钥从 `openrouterKeyEnv`（默认 `OPENROUTER_API_KEY`）所指定的环境变量读取，密钥本身从不保存 |
 
 **接口**
 
@@ -466,6 +471,7 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 | Claude | `GET https://api.anthropic.com/api/oauth/usage`（套餐名另取 `/api/oauth/profile`），请求头 `Authorization: Bearer …`、`anthropic-beta: oauth-2025-04-20` |
 | Codex | `GET https://chatgpt.com/backend-api/wham/usage`，请求头 `Authorization: Bearer …`、`ChatGPT-Account-Id: …` |
 | GitHub Copilot | `GET https://api.github.com/copilot_internal/user`，请求头 `Authorization: token …`、`X-Github-Api-Version: 2025-04-01` —— 与 Copilot 编辑器插件所调用的一致 |
+| OpenRouter | `GET https://openrouter.ai/api/v1/key`（无额度上限的密钥还会请求 `/api/v1/credits`），`Authorization: Bearer …` |
 
 **本地日志（token 历史；离线时也作为额度兜底）**
 

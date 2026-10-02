@@ -176,6 +176,7 @@ export interface ColorSettings {
   claude: string;
   codex: string;
   copilot: string;
+  openrouter: string;
   warn: string;
   critical: string;
   /** tint of the glass / solid surface, alpha comes from `opacity` */
@@ -245,6 +246,8 @@ export interface Settings {
   pricingUrl: string;
   /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
   monthlyBudgetUsd: number;
+  /** NAME of the environment variable holding the OpenRouter key; never the key */
+  openrouterKeyEnv: string;
   /** Monthly subscription price per provider in USD (0 = unknown); only compared with the API-equivalent estimate. */
   subscriptionUsd: Record<string, number>;
   /** Delete quota history older than this many days; 0 = keep forever. Token usage is never deleted. */

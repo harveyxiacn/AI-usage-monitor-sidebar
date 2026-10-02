@@ -7,6 +7,7 @@
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod openrouter;
 
 use crate::model::{
     AppSnapshot, DataSource, ProviderInfo, ProviderQuota, ProviderStatus, QuotaWindow, Settings,
@@ -19,6 +20,7 @@ use std::time::Duration;
 pub const CLAUDE_ID: &str = "claude";
 pub const CODEX_ID: &str = "codex";
 pub const COPILOT_ID: &str = "copilot";
+pub const OPENROUTER_ID: &str = "openrouter";
 
 /// Every provider id the app knows, in default display order.
 ///
@@ -26,7 +28,7 @@ pub const COPILOT_ID: &str = "copilot";
 /// one `ProviderSettings` entry per id and `settings::clamp` back-fills them
 /// into an older `settings.json`, so adding a provider to `all_providers`
 /// means adding it here and nowhere else.
-pub const DEFAULT_PROVIDER_ORDER: &[&str] = &[CLAUDE_ID, CODEX_ID, COPILOT_ID];
+pub const DEFAULT_PROVIDER_ORDER: &[&str] = &[CLAUDE_ID, CODEX_ID, COPILOT_ID, OPENROUTER_ID];
 
 /// Whether a provider is switched on the first time its settings entry is
 /// created (an existing entry always wins — the user's choice is never
@@ -39,6 +41,8 @@ pub const DEFAULT_PROVIDER_ORDER: &[&str] = &[CLAUDE_ID, CODEX_ID, COPILOT_ID];
 pub fn enabled_by_default(id: &str) -> bool {
     match id {
         COPILOT_ID => copilot::has_credentials(),
+        // there is no CLI whose login could be detected: always opt-in
+        OPENROUTER_ID => false,
         _ => true,
     }
 }
@@ -55,6 +59,10 @@ pub struct ProviderCtx {
     pub api_base: Option<String>,
     /// Pause before the single transient-failure retry (`send_with_retry`).
     pub retry_delay: Duration,
+    /// Name of the environment variable holding the OpenRouter API key (the
+    /// `openrouterKeyEnv` setting; `ordered_providers` fills it in). The key
+    /// itself is never part of the context.
+    pub openrouter_key_env: String,
 }
 
 impl Default for ProviderCtx {
@@ -64,6 +72,7 @@ impl Default for ProviderCtx {
             user_agent: default_user_agent(),
             api_base: None,
             retry_delay: RETRY_DELAY,
+            openrouter_key_env: openrouter::DEFAULT_KEY_ENV.to_string(),
         }
     }
 }
@@ -154,6 +163,7 @@ pub fn all_providers(ctx: &ProviderCtx) -> Vec<Box<dyn Provider>> {
         Box::new(claude::ClaudeProvider::new(ctx.clone())),
         Box::new(codex::CodexProvider::new(ctx.clone())),
         Box::new(copilot::CopilotProvider::new(ctx.clone())),
+        Box::new(openrouter::OpenRouterProvider::new(ctx.clone())),
     ]
 }
 
@@ -412,7 +422,9 @@ pub fn is_enabled(settings: &Settings, id: &str) -> bool {
 
 /// Providers in the user's configured display order.
 pub fn ordered_providers(ctx: &ProviderCtx, settings: &Settings) -> Vec<Box<dyn Provider>> {
-    let mut list = all_providers(ctx);
+    let mut ctx = ctx.clone();
+    ctx.openrouter_key_env = settings.openrouter_key_env.clone();
+    let mut list = all_providers(&ctx);
     list.sort_by_key(|p| {
         settings
             .providers

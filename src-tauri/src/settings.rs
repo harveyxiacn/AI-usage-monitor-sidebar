@@ -175,6 +175,11 @@ pub fn clamp(mut s: Settings) -> Settings {
         *v = clamp_f64(*v, 0.0, 10_000.0, 0.0);
     }
     s.quota_retention_days = s.quota_retention_days.min(3650);
+    // a variable *name*: a pasted key (lowercase, dashes) falls back to the default
+    s.openrouter_key_env = s.openrouter_key_env.trim().to_string();
+    if !crate::commands::providers::openrouter::is_valid_key_env(&s.openrouter_key_env) {
+        s.openrouter_key_env = Settings::default().openrouter_key_env;
+    }
     s.custom_presets = clamp_presets(std::mem::take(&mut s.custom_presets));
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
@@ -203,6 +208,7 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.colors.claude = hex_or(&s.colors.claude, &dc.claude);
     s.colors.codex = hex_or(&s.colors.codex, &dc.codex);
     s.colors.copilot = hex_or(&s.colors.copilot, &dc.copilot);
+    s.colors.openrouter = hex_or(&s.colors.openrouter, &dc.openrouter);
     s.colors.warn = hex_or(&s.colors.warn, &dc.warn);
     s.colors.critical = hex_or(&s.colors.critical, &dc.critical);
     s.colors.surface = hex_or(&s.colors.surface, "");
@@ -552,6 +558,26 @@ mod tests {
     use crate::commands::test_support::tempdir;
     use crate::model::{Edge, PercentPosition, RingMode, SidebarItems, Theme};
     use serde_json::json;
+
+    #[test]
+    fn openrouter_is_registered_off_and_its_key_variable_must_be_a_name() {
+        let base = Settings::default();
+        assert!(
+            !base.providers["openrouter"].enabled,
+            "experimental: opt-in only"
+        );
+        assert_eq!(base.providers["openrouter"].order, 3);
+        assert_eq!(base.openrouter_key_env, "OPENROUTER_API_KEY");
+        assert_eq!(
+            merge(&base, &json!({"openrouterKeyEnv": "MY_OR_KEY"})).openrouter_key_env,
+            "MY_OR_KEY"
+        );
+        // a pasted key is not a variable name: back to the default
+        assert_eq!(
+            merge(&base, &json!({"openrouterKeyEnv": "sk-or-v1-abc"})).openrouter_key_env,
+            "OPENROUTER_API_KEY"
+        );
+    }
 
     #[test]
     fn merge_replaces_scalars_and_keeps_the_rest() {

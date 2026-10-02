@@ -36,7 +36,7 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   notifications: ['notifications', 'forecastNotifications', 'thresholds', 'focusUntil', 'focusHidesSidebar'],
   privacy: ['hideAccountEmail'],
   shortcuts: ['shortcutToggleSidebar', 'shortcutOpenDashboard'],
-  providers: ['providers'],
+  providers: ['providers', 'openrouterKeyEnv'],
   data: ['ingestEnabled', 'monthlyBudgetUsd', 'subscriptionUsd', 'quotaRetentionDays'],
   updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl'],
   integrations: ['exportSnapshot', 'pollingPaused'],
