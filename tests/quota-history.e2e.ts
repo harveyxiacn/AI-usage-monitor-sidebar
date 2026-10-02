@@ -5,6 +5,17 @@ import type { HistoryResult, QuotaHistoryQuery, QuotaSample, TokenTotals } from 
 const START = Date.parse('2026-09-22T00:00:00Z');
 const RANGE = { from: START, to: START + 2 * 3_600_000 };
 
+/**
+ * What the curve draws: a reset starts a new line instead of a vertical drop,
+ * so a null point sits 1 ms before the reset sample (index 2 of `samples()`).
+ */
+function curve(shown: (usedPercent: number) => number) {
+  return samples().flatMap((sample, i) => {
+    const x = Date.parse(sample.ts);
+    return i === 2 ? [{ x: x - 1, y: null }, { x, y: shown(sample.usedPercent) }] : [{ x, y: shown(sample.usedPercent) }];
+  });
+}
+
 function samples(provider = 'codex'): QuotaSample[] {
   return [[0, 20], [30, 30], [61, 2], [65, 7], [70, 7]].map(([minute, usedPercent]) => ({
     provider, kind: 'five_hour', scope: null, usedPercent, plan: 'Pro',
@@ -102,6 +113,20 @@ const test = base.extend<{ backend: Backend }>({
   },
 });
 
+/**
+ * The panels debounce their loads by 80 ms, and this suite freezes the clock
+ * (`pauseAt`), so a timer only fires when the test advances it. Let Svelte run
+ * the pending effects (which arm the timers), then move time past the debounce.
+ */
+async function flushDebounce(page: Page) {
+  await page.evaluate(async () => {
+    const path = '/node_modules/.vite/deps/svelte.js';
+    const { tick } = await import(/* @vite-ignore */ path);
+    await tick();
+  });
+  await page.clock.runFor(100);
+}
+
 async function mount(page: Page, fullHistory = false, live = false) {
   await page.goto('/quota-history-fixture');
   await page.evaluate(async ({ fullHistory, live, initialRange, settingsValue, snapshotValue }) => {
@@ -128,10 +153,12 @@ async function mount(page: Page, fullHistory = false, live = false) {
     Reflect.set(window, '__setQuotaProps', (patch: Record<string, unknown>) => state.update((value: Record<string, unknown>) => ({ ...value, ...patch })));
     Reflect.set(window, '__unmountQuotaFixture', () => unmount(instance));
   }, { fullHistory, live, initialRange: RANGE, settingsValue: { ...mockSettings, percentMode: 'used', language: 'en' }, snapshotValue: mockSnapshot });
+  await flushDebounce(page);
 }
 
 async function setProps(page: Page, patch: Record<string, unknown>) {
   await page.evaluate((value) => Reflect.get(window, '__setQuotaProps')(value), patch);
+  await flushDebounce(page);
 }
 
 async function chartState(page: Page, selector = '.quota-chart canvas') {
@@ -152,8 +179,9 @@ async function chartState(page: Page, selector = '.quota-chart canvas') {
       stepped: dataset.stepped, data: dataset.data,
       labels: chart.data.datasets.map((item: { label: string }) => item.label),
       values: chart.data.datasets.map((item: { data: unknown[] }) => item.data),
-      resetDash: dataset.segment?.borderDash({ p1DataIndex: 2 }),
       ordinaryDash: dataset.segment?.borderDash({ p1DataIndex: 1 }) ?? null,
+      // the reset sample sits at index 3 (index 2 is the line break before it)
+      resetDash: dataset.segment?.borderDash({ p1DataIndex: 3 }) ?? null,
     };
   }, selector);
 }
@@ -161,19 +189,19 @@ async function chartState(page: Page, selector = '.quota-chart canvas') {
 test('quota curve and change records show exact percentage points across a reset', async ({ page, backend }) => {
   await mount(page);
   const panel = page.getByRole('region', { name: 'Quota history', exact: true });
-  await expect(panel.locator('dd')).toHaveText(['7%', '15 pp', '1', '5']);
-  await expect(panel.locator('tbody tr')).toHaveCount(4);
-  await expect(panel.locator('tbody tr').nth(0).locator('td').nth(1)).toHaveText('7%');
-  await expect(panel.locator('tbody tr').nth(0).locator('td').nth(2)).toHaveText('93%');
-  await expect(panel.locator('tbody tr').nth(0).locator('td').nth(3)).toHaveText('+5 pp');
-  await expect(panel.locator('tbody tr').nth(1)).toContainText('-28 pp');
-  await expect(panel.locator('tbody tr').nth(1)).toContainText('Reset / new cycle');
-  await expect(panel.locator('tbody tr').nth(3)).toContainText('First sample in range');
+  await expect(panel.locator('.quota-stats dd')).toHaveText(['7%', '15 pp', '1', '5']);
+  await expect(panel.locator('.quota-table-wrap tbody tr')).toHaveCount(4);
+  await expect(panel.locator('.quota-table-wrap tbody tr').nth(0).locator('td').nth(1)).toHaveText('7%');
+  await expect(panel.locator('.quota-table-wrap tbody tr').nth(0).locator('td').nth(2)).toHaveText('93%');
+  await expect(panel.locator('.quota-table-wrap tbody tr').nth(0).locator('td').nth(3)).toHaveText('+5 pp');
+  await expect(panel.locator('.quota-table-wrap tbody tr').nth(1)).toContainText('-28 pp');
+  await expect(panel.locator('.quota-table-wrap tbody tr').nth(1)).toContainText('Reset / new cycle');
+  await expect(panel.locator('.quota-table-wrap tbody tr').nth(3)).toContainText('First sample in range');
   await expect(panel.getByText('Unchanged', { exact: true })).toHaveCount(0);
   await expect(panel.getByText('Showing 4 of 4 records', { exact: true })).toBeVisible();
   await expect.poll(() => chartState(page)).toMatchObject({
-    type: 'line', min: 0, max: 100, stepped: 'before', resetDash: [4, 4], ordinaryDash: null,
-    data: samples().map((sample) => ({ x: Date.parse(sample.ts), y: sample.usedPercent })),
+    type: 'line', min: 0, max: 100, stepped: 'before', resetDash: null, ordinaryDash: null,
+    data: curve((used) => used),
   });
   expect(backend.queries).toEqual([{ from: new Date(RANGE.from).toISOString(), to: new Date(RANGE.to).toISOString(), provider: 'codex' }]);
 });
@@ -190,9 +218,10 @@ test('remaining preference rebuilds the curve while keeping used-change semantic
   await expect(page.locator('.quota-stats dd')).toHaveText(['93%', '15 pp', '1', '5']);
   await expect(page.locator('.quota-stats dt').first()).toHaveText('Latest remaining in range');
   await expect.poll(() => chartState(page)).toMatchObject({
-    labels: ['Remaining'], data: samples().map((sample) => ({ x: Date.parse(sample.ts), y: 100 - sample.usedPercent })),
+    labels: ['Remaining'], data: curve((used) => 100 - used),
   });
-  expect((await chartState(page))!.id).not.toBe(initialChart!.id);
+  // the same chart instance is updated in place (no flash from a rebuild)
+  expect((await chartState(page))!.id).toBe(initialChart!.id);
   expect(backend.queries).toHaveLength(1);
 });
 
@@ -246,6 +275,7 @@ test('a snapshot timestamp refreshes live history from stored samples without pr
     const { snapshot } = await import(/* @vite-ignore */ path);
     snapshot.value = { ...snapshot.value, generatedAt: '2026-09-22T10:00:01Z' };
   });
+  await flushDebounce(page);
   await expect.poll(() => backend.pending.length).toBe(1);
   await expect(page.locator('.quota-panel')).toHaveAttribute('aria-busy', 'true');
   await expect(page.locator('.quota-stats dd')).toHaveText(['7%', '15 pp', '1', '5']);
@@ -253,13 +283,17 @@ test('a snapshot timestamp refreshes live history from stored samples without pr
   await expect(page.locator('.quota-stats dd')).toHaveText(['9%', '17 pp', '1', '6']);
   await expect(page.locator('.quota-panel')).toHaveAttribute('aria-busy', 'false');
   expect(backend.queries).toHaveLength(2);
-  expect(backend.queries[1].to).toBe('2026-09-22T10:00:00.001Z');
+  // live: the window end follows the clock (frozen by pauseAt), never the stale 02:00Z range end
+  const now = await page.evaluate(() => Date.now());
+  expect(Date.parse(backend.queries[1].to)).toBeGreaterThan(Date.parse('2026-09-22T10:00:00Z'));
+  expect(Date.parse(backend.queries[1].to)).toBeLessThanOrEqual(now + 1);
   expect(backend.commands).not.toContain('refresh_now');
 });
 
 test('invalid ranges discard pending results and unmount destroys the chart and ignores a pending rejection', async ({ page, backend }) => {
   backend.defer = true;
-  await mount(page);
+  // live, so a snapshot timestamp refetches; a non-live view ignores snapshots
+  await mount(page, false, true);
   await expect.poll(() => backend.pending.length).toBe(1);
   await setProps(page, { range: null });
   backend.pending[0].resolve(samples());
@@ -277,6 +311,7 @@ test('invalid ranges discard pending results and unmount destroys the chart and 
     const { snapshot } = await import(/* @vite-ignore */ path);
     snapshot.value = { ...snapshot.value, generatedAt: '2026-09-22T10:01:00Z' };
   });
+  await flushDebounce(page);
   await expect.poll(() => backend.pending.length).toBe(2);
   await page.evaluate(() => Reflect.get(window, '__unmountQuotaFixture')());
   backend.pending[1].reject(new Error('disposed request failure'));
@@ -310,6 +345,7 @@ test('History displays model and effort variants alongside distinct token and qu
   expect(pageQueries[0].groupByModel).toBe(true);
   // the quota sub-view is a separate, segmented choice
   await page.getByRole('group', { name: 'History view', exact: true }).getByRole('button', { name: 'Quota', exact: true }).click();
+  await flushDebounce(page);
   await expect(page.locator('.quota-stats dd')).toHaveText(['7%', '15 pp', '1', '5']);
   await expect(page.locator('.quota-chart canvas')).toHaveCount(1);
   expect(backend.queries[0].provider).toBeNull();
