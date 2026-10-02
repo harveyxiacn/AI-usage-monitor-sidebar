@@ -1,6 +1,7 @@
 // Locale-aware formatting helpers. [FRONTEND]
 // Everything user-visible goes through t(), so these functions are reactive to
 // the language rune just like the templates that call them.
+import { resetParts } from '$lib/countdown';
 import { forecastLine } from '$lib/forecast';
 import { intlLocale, t } from '$lib/i18n/i18n.svelte';
 import { clampPercent } from '$lib/severity';
@@ -62,20 +63,24 @@ export function shortPercent(usedPercent: number | null, mode: PercentMode): str
 }
 
 /**
- * "Resets in 51 min" / "Resets in 2 h 05 m" within 24 h, otherwise an absolute
- * "Resets Thu 12:00 AM" / "9月18日 03:59 重置". null → "—".
+ * "Resets in 51 min" / "Resets in 2 h 05 m" within 24 h, otherwise the absolute
+ * "Resets Thu 12:00 AM" / "9月18日 03:59 重置" plus a coarse relative
+ * "(in 3 d 4 h)". null → "—".
  */
 export function formatReset(resetsAt: string | null, now: number = Date.now()): string {
-  if (!resetsAt) return t('reset.unknown');
-  const ts = Date.parse(resetsAt);
-  if (!Number.isFinite(ts)) return t('reset.unknown');
-  const diff = ts - now;
-  if (diff < DAY) {
-    const totalMin = Math.max(0, Math.ceil(diff / MINUTE));
-    if (totalMin < 60) return t('reset.inMin', { m: totalMin });
-    return t('reset.inHourMin', { h: Math.floor(totalMin / 60), m: pad2(totalMin % 60) });
+  const p = resetParts(resetsAt, now);
+  switch (p.kind) {
+    case 'unknown':
+      return t('reset.unknown');
+    case 'min':
+      return t('reset.inMin', { m: p.m });
+    case 'hourMin':
+      return t('reset.inHourMin', { h: p.h, m: pad2(p.m) });
+    case 'at': {
+      const when = absoluteReset(new Date(p.ts));
+      return p.h === 0 ? t('reset.atInD', { when, d: p.d }) : t('reset.atInDH', { when, d: p.d, h: p.h });
+    }
   }
-  return t('reset.at', { when: absoluteReset(new Date(ts)) });
 }
 
 /** "Thu 12:00 AM" (en) / "9月18日 03:59" (zh) — no comma, matching the design. */

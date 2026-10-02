@@ -57,6 +57,7 @@ test('display names fall back to a readable label for an unknown provider', () =
   expect(providerDisplayName('claude')).toBe('Claude');
   expect(providerDisplayName('codex')).toBe('Codex');
   expect(providerDisplayName('copilot')).toBe('Copilot');
+  expect(providerDisplayName('openrouter')).toBe('OpenRouter');
   expect(providerDisplayName('github-copilot')).toBe('Github Copilot');
   expect(providerDisplayName('gemini_cli')).toBe('Gemini Cli');
 });
@@ -65,7 +66,7 @@ test('the colour UI derives its provider rows from Settings.colors', () => {
   // Adding a provider accent in the backend must give it a picker for free,
   // and must never turn a threshold/surface key into a "provider".
   const colors = mockSettings.colors;
-  expect(providerColorKeys(colors)).toEqual(['claude', 'codex', 'copilot']);
+  expect(providerColorKeys(colors)).toEqual(['claude', 'codex', 'copilot', 'openrouter']);
   expect(providerColor(colors, 'claude')).toBe('#ff5c1a');
   expect(providerColor(colors, 'copilot')).toBe('#8250df');
   expect(providerColor(colors, 'warn')).toBeNull();

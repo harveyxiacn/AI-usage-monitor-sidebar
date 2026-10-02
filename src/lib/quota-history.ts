@@ -13,6 +13,8 @@ export interface QuotaHistoryEntry {
 export interface QuotaHistorySeries {
   key: string;
   provider: QuotaSample['provider'];
+  /** extra account id; null for the primary account */
+  account: string | null;
   kind: QuotaSample['kind'];
   scope: string | null;
   samples: QuotaSample[];
@@ -41,7 +43,8 @@ export function buildQuotaHistory(samples: readonly QuotaSample[]): QuotaHistory
     const timestamp = Date.parse(sample.ts);
     if (!Number.isFinite(timestamp) || !Number.isFinite(sample.usedPercent) ||
         sample.usedPercent < 0 || sample.usedPercent > 100) continue;
-    const key = JSON.stringify([sample.provider, sample.kind, sample.scope]);
+    // the primary account keeps the exact key it always had
+    const key = JSON.stringify(sample.account ? [sample.provider, sample.kind, sample.scope, sample.account] : [sample.provider, sample.kind, sample.scope]);
     let byTimestamp = grouped.get(key);
     if (!byTimestamp) {
       byTimestamp = new Map();
@@ -59,7 +62,7 @@ export function buildQuotaHistory(samples: readonly QuotaSample[]): QuotaHistory
       return { sample, previous, change, event: eventFor(previous, sample, change) };
     });
     return {
-      key, provider: ordered[0].provider, kind: ordered[0].kind, scope: ordered[0].scope,
+      key, provider: ordered[0].provider, account: ordered[0].account ?? null, kind: ordered[0].kind, scope: ordered[0].scope,
       samples: ordered, entries,
       firstUsedPercent: ordered[0].usedPercent,
       lastUsedPercent: ordered[ordered.length - 1].usedPercent,

@@ -6,16 +6,28 @@
 //! scheduler, state, window`, so every other backend module hangs off this one
 //! via `#[path]` declarations.
 
+#[path = "accounts.rs"]
+pub mod accounts;
+#[path = "alerts/mod.rs"]
+pub mod alerts;
+#[path = "diagnostics.rs"]
+pub mod diagnostics;
 #[path = "forecast.rs"]
 pub mod forecast;
 #[path = "ingest/mod.rs"]
 pub mod ingest;
+#[path = "onboarding.rs"]
+pub mod onboarding;
 #[path = "pricing.rs"]
 pub mod pricing;
 #[path = "providers/mod.rs"]
 pub mod providers;
 #[path = "settings.rs"]
 pub mod settings;
+#[path = "settings_history.rs"]
+pub mod settings_history;
+#[path = "settings_io.rs"]
+pub mod settings_io;
 #[path = "store/mod.rs"]
 pub mod store;
 #[cfg(test)]
@@ -96,6 +108,17 @@ pub async fn get_quota_history(
 ) -> Result<Vec<QuotaSample>, String> {
     let db = state.db()?;
     blocking(move || store::query_quota_history(&db, &query)).await
+}
+
+/// Tokens and estimated cost per time window (quota cycles) for one provider.
+#[tauri::command]
+pub async fn get_window_usage(
+    state: State<'_, AppState>,
+    query: WindowUsageQuery,
+) -> Result<Vec<TokenTotals>, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_window_usage(&db, &query, &pricing)).await
 }
 
 #[tauri::command]

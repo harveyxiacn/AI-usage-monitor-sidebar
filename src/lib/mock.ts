@@ -5,7 +5,10 @@
 // the *semantics* of the real commands (bucketing, filtering, grouping, cost
 // estimation) so the UI code is exercised exactly as it would be in Tauri.
 import type {
+  AccountCheck,
+  AccountSettings,
   AppInfo,
+  BackupInfo,
   AppSnapshot,
   Bucket,
   CalendarDay,
@@ -20,6 +23,7 @@ import type {
   PricingEntry,
   PricingTable,
   PriceUpdateStatus,
+  ProviderSetup,
   ProviderId,
   ProviderInfo,
   QuotaHistoryQuery,
@@ -28,12 +32,20 @@ import type {
   SessionRow,
   SessionsResult,
   Settings,
+  ShortcutRegistration,
+  ShortcutRegistrations,
   ShortcutStatus,
+  Diagnostics,
+  ImportResult,
+  SettingsVersion,
   TokenTotals,
   UpdateStatus,
+  WeeklySummary,
+  WindowUsageQuery,
 } from './types';
 import { localDateInput } from './history';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
+import { quotaKey } from './providers';
 import { shortcutProblem } from './shortcuts';
 
 const now = Date.now();
@@ -119,6 +131,9 @@ export const mockSettings: Settings = {
   showScopedRing: true,
   percentMode: 'used',
   percentPosition: 'below',
+  labelContent: 'percent',
+  ringStyle: 'ring',
+  sidebarAnimations: true,
   showPercentLabel: true,
   sidebarItems: { fiveHour: true, weekly: true, scoped: true, other: true, logo: true, percentLabel: true, moreButton: true },
   refreshIntervalSec: 60,
@@ -129,10 +144,15 @@ export const mockSettings: Settings = {
     // copilot is experimental: off until its credentials are found (see
     // providers::enabled_by_default), which the browser preview mirrors.
     copilot: { enabled: false, showInSidebar: true, order: 2 },
+    openrouter: { enabled: false, showInSidebar: true, order: 3 },
   },
+  accounts: [],
   ingestEnabled: true,
   pricingUrl: '',
   monthlyBudgetUsd: 0,
+  openrouterKeyEnv: 'OPENROUTER_API_KEY',
+  subscriptionUsd: { claude: 0, codex: 0 },
+  quotaRetentionDays: 365,
   autostart: false,
   autoUpdateCheck: true,
   autoPricingCheck: true,
@@ -141,12 +161,28 @@ export const mockSettings: Settings = {
   opacity: 1,
   scale: 1,
   thresholds: { warn: 70, critical: 90 },
-  colors: { claude: '#ff5c1a', codex: '#10a37f', copilot: '#8250df', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
+  colors: { claude: '#ff5c1a', codex: '#10a37f', copilot: '#8250df', openrouter: '#6467f2', warn: '#f5c542', critical: '#ff3b30', surface: '', text: '' },
   sizes: { ringSize: 56, ringStroke: 4.5, barGap: 18, barPadding: 10, cornerRadius: 26, labelSize: 13 },
   notifications: false,
   forecastNotifications: true,
+  thresholdNotifications: true,
+  budgetNotifications: true,
+  weeklySummary: false,
+  webhook: { enabled: false, url: '', kind: 'generic' },
+  skippedVersion: '',
+  // The browser preview behaves like an installed, already-introduced app so
+  // the wizard and "What's new" do not cover every other screen; `?mock=firstrun`
+  // and `?mock=upgraded` switch them on (see seededSettings).
+  lastSeenVersion: '0.1.0-mock',
+  onboarded: true,
+  focusUntil: 0,
+  focusHidesSidebar: false,
   hideAccountEmail: false,
+  exportSnapshot: false,
+  pollingPaused: false,
+  trayDisplay: 'icon',
   alwaysOnTop: true,
+  customPresets: {},
 };
 
 export const mockProviders: ProviderInfo[] = [
@@ -174,6 +210,15 @@ export const mockProviders: ProviderInfo[] = [
     displayName: 'GitHub Copilot',
     loggedIn: false,
     credentialPath: '~/.config/github-copilot/apps.json',
+    logPath: null,
+    planLabel: null,
+    experimental: true,
+  },
+  {
+    id: 'openrouter',
+    displayName: 'OpenRouter',
+    loggedIn: false,
+    credentialPath: '$OPENROUTER_API_KEY',
     logPath: null,
     planLabel: null,
     experimental: true,
@@ -229,7 +274,19 @@ const PRICING: PricingEntry[] = [
 
 let pricing: PricingTable = { entries: structuredClone(PRICING), updatedAt: iso(now - 9 * DAY) };
 
+export const mockWeeklySummary: WeeklySummary = {
+  weekStart: '2026-09-21',
+  weekEnd: '2026-09-27',
+  totalTokens: 48_300_000,
+  requests: 912,
+  estimatedCostUsd: 37.42,
+  busiestDay: '2026-09-24',
+  busiestDayTokens: 14_200_000,
+  limitsHit: 1,
+};
+
 export const mockAppInfo: AppInfo = {
+
   version: '0.1.0-mock',
   dataDir: '~/.local/share/ai-usage-sidebar',
   configDir: '~/.config/ai-usage-sidebar',
@@ -254,7 +311,10 @@ let updateStatus: UpdateStatus = {
   installing: false,
   error: null,
   checkedAt: null,
+  downloaded: 0,
+  total: null,
 };
+
 
 /** Preview pricing feed: an offer is available after a manual check. */
 const MOCK_PRICE_REVISION = '2026-09-23';
@@ -699,25 +759,51 @@ function runSessions(q: SessionQuery): SessionsResult {
 }
 
 /** Quota samples every 30 min for the last 14 days, sawtooth per window. */
+function runWindowUsage(q: WindowUsageQuery): TokenTotals[] {
+  return q.windows.map((w) => {
+    const from = Date.parse(w.from);
+    const to = Date.parse(w.to);
+    const totals = emptyTotals();
+    let cost: number | null = 0;
+    for (const e of events) {
+      if (e.provider !== q.provider || e.ts < from || e.ts >= to) continue;
+      addInto(totals, e);
+      const c = eventCost(e);
+      cost = cost == null || c == null ? null : cost + c;
+    }
+    totals.estimatedCostUsd = totals.requests > 0 ? cost : null;
+    return totals;
+  });
+}
+
 function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
   const from = Date.parse(q.from);
   const to = Date.parse(q.to);
   const rnd = lcg(0xbeef);
   const out: QuotaSample[] = [];
-  for (const provider of ['claude', 'codex'] as ProviderId[]) {
+  // the primary accounts, then every extra account of the settings
+  const sources: Array<{ provider: ProviderId; account: string | null }> = [
+    { provider: 'claude', account: null },
+    { provider: 'codex', account: null },
+    ...settings.accounts.map((a) => ({ provider: a.provider as ProviderId, account: a.id })),
+  ];
+  for (const { provider, account } of sources) {
     if (q.provider && provider !== q.provider) continue;
-    const plan = provider === 'claude' ? 'max' : 'plus';
+    // null = every account, '' = the primary one, else that extra account
+    if (q.account != null && q.account !== (account ?? '')) continue;
+    const plan = account ? 'pro' : provider === 'claude' ? 'max' : 'plus';
     for (let ts = to - 14 * DAY; ts < to; ts += HOUR / 2) {
       if (ts < from) continue;
-      const base = provider === 'claude' ? 1 : 0.6;
+      const base = (provider === 'claude' ? 1 : 0.6) * (account ? 0.5 : 1);
       // 5-hour window: sawtooth that resets every 5 h
       const phase5 = ((ts % (5 * HOUR)) / (5 * HOUR)) * 100;
       const five = Math.min(100, Math.max(0, phase5 * base * (0.5 + rnd() * 0.9)));
       // weekly window: slow ramp that resets on the week boundary
       const phase7 = ((ts % (7 * DAY)) / (7 * DAY)) * 100;
       const seven = Math.min(100, Math.max(0, phase7 * base * (0.6 + rnd() * 0.4)));
-      out.push({ provider, kind: 'five_hour', scope: null, usedPercent: Math.round(five), resetsAt: iso(ts + 5 * HOUR - (ts % (5 * HOUR))), plan, ts: iso(ts) });
-      out.push({ provider, kind: 'seven_day', scope: null, usedPercent: Math.round(seven), resetsAt: iso(ts + 7 * DAY - (ts % (7 * DAY))), plan, ts: iso(ts) });
+      const tag = account ? { account } : {};
+      out.push({ provider, ...tag, kind: 'five_hour', scope: null, usedPercent: Math.round(five), resetsAt: iso(ts + 5 * HOUR - (ts % (5 * HOUR))), plan, ts: iso(ts) });
+      out.push({ provider, ...tag, kind: 'seven_day', scope: null, usedPercent: Math.round(seven), resetsAt: iso(ts + 7 * DAY - (ts % (7 * DAY))), plan, ts: iso(ts) });
     }
   }
   return out;
@@ -732,6 +818,10 @@ function runQuotaHistory(q: QuotaHistoryQuery): QuotaSample[] {
  */
 export function seededSettings(): Settings {
   const base = structuredClone(mockSettings);
+  const scenario = mockScenario();
+  if (scenario === 'firstrun') base.onboarded = false;
+  if (scenario === 'upgraded') base.lastSeenVersion = '';
+  if (scenario === 'accounts') base.accounts = structuredClone(mockAccounts);
   if (typeof window === 'undefined') return base;
   const raw = new URLSearchParams(window.location.search).get('settings');
   if (!raw) return base;
@@ -751,7 +841,44 @@ function mockScenario(): string {
   return new URLSearchParams(location.search).get('mock') ?? '';
 }
 
+/** Scenarios where no provider is signed in (empty states, first-run wizard). */
+const LOGGED_OUT_SCENARIOS = ['logged-out', 'firstrun'];
+
+/** `?mock=accounts`: a personal and a work Claude account. */
+export const mockAccounts: AccountSettings[] = [
+  { id: 'work', provider: 'claude', label: 'Work', configDir: '/home/you/.claude-work', enabled: true },
+];
+
+/** The extra account's quota: same shape as the primary one, different numbers. */
+function workQuota(primary: AppSnapshot['providers'][number]): AppSnapshot['providers'][number] {
+  return {
+    ...structuredClone(primary),
+    displayName: `${primary.displayName} · Work`,
+    plan: 'pro',
+    planLabel: 'Claude Pro',
+    account: { email: 'you@work.example', name: 'You (work)' },
+    accountId: 'work',
+    accountLabel: 'Work',
+    windows: [
+      { kind: 'five_hour', label: '5-hour', windowSeconds: 18000, usedPercent: 12, resetsAt: iso(Date.now() + 3 * HOUR), scope: null, isPrimary: true },
+      { kind: 'seven_day', label: 'Weekly', windowSeconds: 604800, usedPercent: 48, resetsAt: iso(Date.now() + 2 * DAY), scope: null, isPrimary: false },
+    ],
+  };
+}
+
 function applyScenario(base: AppSnapshot): AppSnapshot {
+  if (mockScenario() === 'accounts') {
+    const claudeAt = base.providers.findIndex((p) => p.provider === 'claude');
+    const providers = [...base.providers];
+    providers.splice(claudeAt + 1, 0, workQuota(base.providers[claudeAt]));
+    return { ...base, providers };
+  }
+  if (LOGGED_OUT_SCENARIOS.includes(mockScenario())) {
+    return {
+      ...base,
+      providers: base.providers.map((p) => ({ ...p, status: 'not_logged_in' as const, windows: [], account: null, planLabel: null, plan: null, error: null })),
+    };
+  }
   if (mockScenario() !== 'rate-limited') return base;
   return {
     ...base,
@@ -771,6 +898,21 @@ function applyScenario(base: AppSnapshot): AppSnapshot {
 }
 
 let settings = seededSettings();
+/** Undo ring of the preview (newest first, max 5): the Rust side coalesces slider bursts, this does not need to. */
+let settingsHistory: SettingsVersion[] = [];
+
+function rememberSettings(previous: Settings, next: Settings): void {
+  if (JSON.stringify(previous) === JSON.stringify(next)) return;
+  if (settingsHistory[0] && JSON.stringify(settingsHistory[0].settings) === JSON.stringify(previous)) return;
+  settingsHistory = [{ replacedAt: Date.now(), settings: structuredClone(previous) }, ...settingsHistory].slice(0, 5);
+}
+
+/** Same wording as the Rust `classify`, for the browser preview. */
+function mockRegistration(value: string): ShortcutRegistration {
+  if (!value.trim()) return { state: 'off', message: null };
+  if (shortcutProblem(value)) return { state: 'failed', message: `invalid shortcut: ${value}` };
+  return { state: 'registered', message: null };
+}
 let snapshot = applyScenario(structuredClone(mockSnapshot));
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 
@@ -791,7 +933,7 @@ function jitterSnapshot(provider?: ProviderId | null) {
   snapshot = {
     generatedAt: stamp,
     providers: snapshot.providers.map((p) => {
-      if (provider && p.provider !== provider) return p;
+      if (provider && quotaKey(p) !== provider) return p;
       // A rate-limited provider is skipped by the backend, so its numbers and
       // its timestamp stay where they were.
       if (p.status === 'rate_limited') return p;
@@ -809,7 +951,7 @@ function jitterSnapshot(provider?: ProviderId | null) {
 }
 
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (['list_sessions', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
+  if (['list_sessions', 'get_session_insights', 'get_session_detail', 'set_session_alias', 'get_analysis_settings', 'save_analysis_settings', 'prepare_session_evaluation', 'evaluate_session', 'get_session_evaluations', 'save_evaluation_review', 'clear_session_analysis'].includes(cmd)) {
     return (await import('./session-mock')).sessionMockInvoke(cmd, args) as Promise<T>;
   }
   switch (cmd) {
@@ -826,16 +968,84 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       const patch = (args?.patch ?? {}) as SettingsPatch;
       // `providers`, `colors` and `sizes` are merged per key, like the Rust
       // update_settings does (docs/ARCHITECTURE.md §5 / §7).
+      const previous = settings;
       settings = mergeSettings(settings, patch);
+      rememberSettings(previous, settings);
       mockEmit('settings-updated', structuredClone(settings));
       return structuredClone(settings) as T;
     }
+    case 'get_settings_history':
+      return structuredClone(settingsHistory) as T;
+    case 'restore_settings_version': {
+      const version = settingsHistory[Number(args?.index)];
+      if (!version) throw new Error('no saved settings version');
+      const previous = settings;
+      settings = structuredClone(version.settings);
+      rememberSettings(previous, settings);
+      mockEmit('settings-updated', structuredClone(settings));
+      return structuredClone(settings) as T;
+    }
+    case 'export_settings': {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ai-usage-sidebar-settings.json';
+      document.body.appendChild(link);
+      try { link.click(); } finally { link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30_000); }
+      return 'ai-usage-sidebar-settings.json' as T;
+    }
+    case 'import_settings': {
+      const file = args?.file as File | undefined;
+      if (!file) return null as T;
+      const patch = JSON.parse(await file.text()) as Record<string, unknown>;
+      delete patch.focusUntil;
+      delete patch.version;
+      const before = structuredClone(settings);
+      const ignored = Object.keys(patch).filter((key) => !(key in settings));
+      settings = mergeSettings(settings, patch as SettingsPatch);
+      rememberSettings(before, settings);
+      mockEmit('settings-updated', structuredClone(settings));
+      const result: ImportResult = { path: file.name, before, after: structuredClone(settings), ignored };
+      return result as T;
+    }
+    case 'get_diagnostics': {
+      const report: Diagnostics = {
+        appVersion: mockAppInfo.version,
+        os: 'linux',
+        arch: 'x86_64',
+        backend: 'browser',
+        sessionType: null,
+        providers: mockProviders.map((p) => ({
+          id: p.id,
+          displayName: p.displayName,
+          enabled: settings.providers[p.id]?.enabled ?? true,
+          experimental: p.experimental,
+          loggedIn: p.loggedIn,
+          status: snapshot.providers.find((q) => q.provider === p.id)?.status ?? null,
+          planLabel: p.planLabel,
+          account: p.loggedIn ? 'h•••@g•••.com' : null,
+          error: null,
+          fetchedAt: snapshot.generatedAt,
+        })),
+        settings: structuredClone(settings) as unknown as Record<string, unknown>,
+        logDir: '~/.local/share/ai-usage-sidebar/logs',
+        configDir: mockAppInfo.configDir,
+        dataDir: mockAppInfo.dataDir,
+        logFile: 'ai-usage-sidebar.log',
+        logTail: '[INFO] browser preview: no real log',
+      };
+      return report as T;
+    }
+    case 'open_folder':
+      return undefined as T;
     case 'get_usage_history':
       return runHistory(args?.query as HistoryQuery) as T;
     case 'get_usage_calendar':
       return runCalendar(args?.query as CalendarQuery) as T;
     case 'get_usage_sessions':
       return runSessions(args?.query as SessionQuery) as T;
+    case 'get_window_usage':
+      return runWindowUsage(args?.query as WindowUsageQuery) as T;
     case 'get_quota_history':
       return runQuotaHistory(args?.query as QuotaHistoryQuery) as T;
     case 'get_pricing':
@@ -927,6 +1137,46 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       setTimeout(() => mockEmit('ingest-progress', done), 900);
       return new Promise<T>((resolve) => setTimeout(() => resolve(done as T), 900));
     }
+    case 'send_test_notification': {
+      if (args?.channel === 'webhook') {
+        const { url } = settings.webhook;
+        if (!url.trim().toLowerCase().startsWith('https://')) throw new Error('the webhook URL must be an https:// address');
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (url.includes('fail')) throw new Error('webhook example.invalid/…: could not connect');
+        return undefined as T;
+      }
+      if (mockScenario() === 'notif-denied') throw new Error('notifications are blocked by the system');
+      return undefined as T;
+    }
+    case 'get_notification_permission':
+      return (mockScenario() === 'notif-denied' ? 'denied' : 'granted') as T;
+    case 'get_weekly_summary':
+      return structuredClone(mockWeeklySummary) as T;
+    case 'get_provider_setup': {
+      const loggedOut = LOGGED_OUT_SCENARIOS.includes(mockScenario());
+      const setup: ProviderSetup[] = [
+        { provider: 'claude', configDir: '~/.claude', configDirFound: !loggedOut, credentialsFound: !loggedOut, loginSteps: ['claude', '/login'] },
+        { provider: 'codex', configDir: '~/.codex', configDirFound: true, credentialsFound: !loggedOut, loginSteps: ['codex login'] },
+      ];
+      return setup as T;
+    }
+    case 'check_account_dir': {
+      const dir = String(args?.configDir ?? '').trim();
+      const absolute = dir.startsWith('/') || /^[a-zA-Z]:[\/]/.test(dir);
+      // the preview's "disk": the seeded work folder exists and is signed in, `/missing` does not exist
+      const found = absolute && !dir.includes('missing');
+      const claude = args?.provider === 'claude';
+      const check: AccountCheck = {
+        absolute,
+        dirFound: found,
+        credentialsFound: found && !dir.includes('signedout'),
+        credentialsFile: `${dir.replace(/[\/]+$/, '')}/${claude ? '.credentials.json' : 'auth.json'}`,
+        keychainOnly: false,
+      };
+      return check as T;
+    }
+    case 'pick_account_folder':
+      return '/home/you/.claude-second' as T;
     case 'get_update_status':
       return structuredClone(updateStatus) as T;
     case 'check_for_updates': {
@@ -952,10 +1202,33 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       };
       return status as T;
     }
+    case 'get_shortcut_registrations': {
+      const registrations: ShortcutRegistrations = {
+        toggleSidebar: mockRegistration(settings.shortcutToggleSidebar),
+        openDashboard: mockRegistration(settings.shortcutOpenDashboard),
+      };
+      return registrations as T;
+    }
     case 'get_providers':
       return structuredClone(mockProviders) as T;
     case 'get_app_info':
-      return structuredClone(mockAppInfo) as T;
+      // `?mock=upgraded` pretends to be a build that has bundled release notes.
+      return structuredClone(mockScenario() === 'upgraded' ? { ...mockAppInfo, version: '0.5.0' } : mockAppInfo) as T;
+    case 'backup_data':
+      return '~/Backups/ai-usage-sidebar-backup-20261002-101500' as T;
+    case 'restore_data': {
+      const info: BackupInfo = {
+        path: '~/Backups/ai-usage-sidebar-backup-20261002-101500',
+        createdAt: iso(now - 2 * DAY),
+        appVersion: '0.6.0',
+        schemaVersion: 2,
+        hasDatabase: true,
+        hasSettings: true,
+      };
+      return info as T;
+    }
+    case 'restart_app':
+      return undefined as T;
     case 'get_monitors':
       return structuredClone(mockMonitors) as T;
     case 'popover_show':

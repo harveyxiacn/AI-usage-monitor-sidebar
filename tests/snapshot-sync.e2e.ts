@@ -117,8 +117,12 @@ async function expectRings(page: Page, claudeRemaining = 23, codexRemaining = 71
   const slots = page.locator('.slot[role="button"]');
   await expect(slots).toHaveCount(2);
   await expect(slots.locator('.pct')).toHaveText([`${claudeRemaining}%`, `${codexRemaining}%`]);
-  await expect(slots.nth(0)).toHaveAttribute('aria-label', `Claude: Weekly 51%, 5-hour ${claudeRemaining}%, Weekly · Fable 41%`);
-  await expect(slots.nth(1)).toHaveAttribute('aria-label', `Codex: Weekly ${codexRemaining}%`);
+  // "<window> <percent> <mode>[ (severity)], <reset>[, <forecast>]" per arc, outer → inner, joined by "; "
+  await expect(slots.nth(0)).toHaveAttribute(
+    'aria-label',
+    new RegExp(`^Claude: Weekly 51% [^;]*; 5-hour ${claudeRemaining}% [^;]*; Weekly · Fable 41% [^;]*$`)
+  );
+  await expect(slots.nth(1)).toHaveAttribute('aria-label', new RegExp(`^Codex: Weekly ${codexRemaining}% [^;]*$`));
   // Read SVG attributes, not animated computed styles. Each entry is the
   // actual fraction of the ring's circumference painted by its value arc.
   await expect.poll(() => slots.locator('circle.arc').evaluateAll((arcs) => arcs.map((arc) => {

@@ -7,20 +7,31 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import CommandPalette from '$lib/components/dashboard/CommandPalette.svelte';
   import OverviewTab from '$lib/components/dashboard/OverviewTab.svelte';
+  import OnboardingWizard from '$lib/components/dashboard/OnboardingWizard.svelte';
+  import WhatsNew from '$lib/components/dashboard/WhatsNew.svelte';
+  import ShareCardModal from '$lib/components/dashboard/ShareCardModal.svelte';
   import { st } from '$lib/session-labels.svelte';
   import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
+  import { DASHBOARD_TAB_EVENT } from '$lib/dashboard-nav';
   import { t } from '$lib/i18n/i18n.svelte';
+  import { overlays } from '$lib/stores/overlays.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
   import { update } from '$lib/stores/update.svelte';
+  import { shouldShowWizard } from '$lib/onboarding';
+  import { downloadPercent, formatBytes, updateBannerVisible } from '$lib/update-banner';
   import { pricingUpdate } from '$lib/stores/pricing-update.svelte';
   import type { DashboardTab } from '$lib/types';
 
   // stamped before the first applyTheme() effect so the theme store knows
   // which window it is (the custom text colour is widget-only)
   markWindow('dashboard');
+
+  /** the key the palette hint advertises: Cmd+K on macOS, Ctrl+K elsewhere */
+  const paletteKey = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K';
 
   const TABS: DashboardTab[] = ['overview', 'history', 'sessions', 'settings'];
   let HistoryTab = $state<typeof import('$lib/components/dashboard/HistoryTab.svelte').default | null>(null);
@@ -48,7 +59,9 @@
   onMount(() => {
     const requestedTab = new URLSearchParams(window.location.search).get('tab') as DashboardTab;
     if (TABS.includes(requestedTab)) tab = requestedTab;
-    const disposers: Array<() => void> = [settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
+    const onTabRequest = (e: Event) => { const next = (e as CustomEvent<DashboardTab>).detail; if (TABS.includes(next)) tab = next; };
+    window.addEventListener(DASHBOARD_TAB_EVENT, onTabRequest);
+    const disposers: Array<() => void> = [() => window.removeEventListener(DASHBOARD_TAB_EVENT, onTabRequest), settings.init(), snapshot.init(), update.init(), pricingUpdate.init()];
 
     // applyTheme() writes data-theme on <html>; watching the attribute also
     // catches the prefers-color-scheme listener firing under theme 'auto'.
@@ -93,13 +106,38 @@
         </button>
       {/each}
     </nav>
+    <div class="topbar-actions">
+      <button class="btn" type="button" onclick={() => (overlays.share = true)}>{t('share.open')}</button>
+      <button
+        class="btn palette-hint"
+        type="button"
+        aria-label={t('palette.open')}
+        aria-keyshortcuts="Control+K Meta+K"
+        title={t('palette.open')}
+        onclick={() => (overlays.palette = true)}
+      ><kbd>{paletteKey}</kbd></button>
+    </div>
   </header>
 
-  {#if update.available && !updateDismissed}
+  {#if updateBannerVisible(update.available, settings.value.skippedVersion, updateDismissed)}
     <aside class="update-bar">
-      <span>{t('update.banner', { version: update.available })}</span>
-      <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.programUpdates')}</button>
-      <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
+      {#if update.value?.installing}
+        {@const percent = downloadPercent(update.value.downloaded, update.value.total)}
+        <span role="status">
+          {#if percent === null}
+            {t('update.downloadingUnknown', { done: formatBytes(update.value.downloaded) })}
+          {:else}
+            {t('update.downloadingSize', { percent: percent ?? 0, done: formatBytes(update.value.downloaded), total: formatBytes(update.value.total ?? 0) })}
+          {/if}
+
+        </span>
+        <progress max="100" value={percent ?? undefined} aria-label={t('update.installing')}></progress>
+      {:else}
+        <span>{t('update.banner', { version: update.available ?? '' })}</span>
+        <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.programUpdates')}</button>
+        <button class="link" onclick={() => void settings.patch({ skippedVersion: update.available ?? '' })}>{t('update.skip')}</button>
+        <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
+      {/if}
     </aside>
   {/if}
 
@@ -112,6 +150,7 @@
   {/if}
 
   <main>
+    <WhatsNew />
     {#if tab === 'overview'}
       <OverviewTab />
     {:else if tab === 'history' && HistoryTab}
@@ -126,7 +165,14 @@
       <p role="status">{t('common.loading')}</p>
     {/if}
   </main>
+
+  {#if shouldShowWizard(settings.loaded, settings.value.onboarded)}
+    <OnboardingWizard />
+  {/if}
 </div>
+
+<CommandPalette />
+<ShareCardModal />
 
 <style>
   .app {
@@ -156,6 +202,18 @@
   .preview-badge {
     color: var(--muted);
     font-size: 0.6875rem;
+  }
+
+  .topbar-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-left: auto;
+  }
+
+  .palette-hint kbd {
+    font: inherit;
+    font-size: 0.75rem;
+    letter-spacing: 0.02em;
   }
 
   .tabs {
@@ -213,6 +271,13 @@
     text-decoration: underline;
   }
 
+  .update-bar progress {
+    width: 10rem;
+    max-width: 100%;
+    accent-color: var(--focus);
+  }
+
+
   main {
     flex: 1 1 auto;
     min-height: 0;
@@ -231,6 +296,10 @@
 
     .tabs button.active::after {
       display: none;
+    }
+
+    .topbar-actions {
+      margin-left: 0;
     }
 
     main {

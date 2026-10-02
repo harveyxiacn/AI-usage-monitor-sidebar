@@ -44,6 +44,29 @@ const labels = {
   clear: ['Clear this session’s analysis', '清除此会话分析'], clearNote: ['Removes saved assessments and local alias. Original logs and token history remain.', '删除评测报告和本地别名，保留原始日志和 Tokens 历史。'], confirmClear: ['Confirm clear', '确认清除'],
   sourceStale: ['The source has changed since this assessment.', '此评测之后源会话已更新。'], from: ['From', '开始'], to: ['Through', '结束'],
   elapsed: ['Observed duration', '观察耗时'], noTurns: ['This log does not expose reliable turn linkage.', '此日志未提供可靠的轮次关联。'], reportUsage: ['Evaluator usage', '评测模型用量'],
+  viewLabel: ['Sessions view', '会话视图'], browse: ['Browse', '浏览'], insights: ['Insights', '洞察'],
+  insightsNote: ['Computed from usage, timing and tool metadata only; no conversation content is read, so this works with local content off. Estimated costs are API-equivalent, never an invoice.', '仅根据用量、时间与工具元数据计算，不读取对话内容，因此在关闭本地内容读取时同样可用。估算费用为 API 等值，不是账单。'],
+  insightsCapped: ['Analysing the newest {shown} of {total} matching sessions.', '正在分析最近的 {shown} 个会话（共 {total} 个匹配）。'],
+  insightsEmpty: ['No sessions match these filters, so there is nothing to analyse.', '没有符合筛选条件的会话，无可分析内容。'],
+  kpiSessions: ['Sessions', '会话数'], kpiMedianCost: ['Median cost / session', '会话费用中位数'], kpiMedianActive: ['Median active time', '活跃时间中位数'],
+  kpiMedianTurns: ['Median user turns', '用户轮次中位数'], kpiFailureRate: ['Tool failure rate', '工具失败率'], kpiRepeatRate: ['Repeated-call rate', '重复调用率'],
+  kpiPriced: ['{n} priced', '{n} 个有价格'], kpiOfCalls: ['{n} of {total} calls', '{n} / {total} 次调用'],
+  costDist: ['Cost per session', '每会话费用分布'], durationDist: ['Active time per session', '每会话活跃时间分布'],
+  distNote: ['Log-scale bins, three per decade. Sessions with zero value are not drawn.', '对数分箱，每十倍三档；数值为零的会话不绘制。'],
+  sessionsAxis: ['Sessions', '会话数'], median: ['Median', '中位数'], p90: ['P90', 'P90'], bin: ['Range', '区间'], zeroSessions: ['at zero', '为零'],
+  scatterTitle: ['Turns vs. cost', '轮次与费用'], scatterNote: ['Point size is tool failures, colour is provider. Select a point to open the session.', '点大小表示工具失败数，颜色表示服务商。选择一个点即可打开会话。'],
+  turnsAxis: ['User turns', '用户轮次'], costAxis: ['Estimated cost (USD)', '估算费用（美元）'], scatterUnpriced: ['{n} sessions without a known price are not plotted.', '{n} 个价格未知的会话未绘制。'],
+  topCost: ['Most expensive sessions', '费用最高的会话'], topDuration: ['Longest sessions', '最长的会话'], topFailures: ['Highest tool-failure rate', '工具失败率最高'], topRepeats: ['Most repeated tool calls', '重复工具调用最多'],
+  topNone: ['Nothing to show.', '暂无内容。'], failureRateShort: ['failure rate', '失败率'], repeatsShort: ['repeated', '重复'],
+  flagFailures: ['High failure rate', '失败率偏高'], flagRepeats: ['Many repeated calls', '重复调用偏多'],
+  whyFailures: ['Failed tool calls are usually retried, which adds turns and tokens without moving the task forward. Flagged at {n}+ failures and {p}% or more of calls.', '失败的工具调用通常会被重试，增加轮次和 Tokens 却无助于推进任务。标记条件：失败至少 {n} 次且占调用的 {p}% 以上。'],
+  whyRepeats: ['Repeating the same call with identical input often points to a loop or a missing instruction; a clearer prompt or stopping earlier can save tokens. Flagged at {n}+ repeats and {p}% or more of calls.', '以相同输入重复同一调用，常说明陷入循环或缺少明确指示；更清晰的提示或更早停止可节省 Tokens。标记条件：重复至少 {n} 次且占调用的 {p}% 以上。'],
+  openSession: ['Open session', '打开会话'], backToList: ['Back to insights', '返回洞察'],
+  toolsTitle: ['Tool usage', '工具使用'], toolName: ['Tool', '工具'], toolCalls: ['Calls', '调用次数'], toolFailRate: ['Failure rate', '失败率'], toolSessions: ['Sessions', '会话数'],
+  toolsNone: ['No tool metadata is indexed for these sessions.', '这些会话没有已索引的工具元数据。'],
 } as const;
 export type SessionLabel = keyof typeof labels;
-export function st(key: SessionLabel) { return labels[key][getLocale() === 'zh-CN' ? 1 : 0]; }
+export function st(key: SessionLabel, values?: Record<string, string | number>) {
+  const text: string = labels[key][getLocale() === 'zh-CN' ? 1 : 0];
+  return values ? text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? String(values[k]) : m)) : text;
+}

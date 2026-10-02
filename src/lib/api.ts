@@ -3,18 +3,23 @@
 // in docs/ARCHITECTURE.md §5. [FRONTEND owns this file — keep names stable]
 
 import type {
+  AccountCheck,
   AppInfo,
   AppSnapshot,
+  BackupInfo,
   CalendarQuery,
   CalendarResult,
   DashboardTab,
+  Diagnostics,
   HistoryQuery,
   HistoryResult,
+  ImportResult,
   IngestStats,
   MonitorInfo,
   PopoverRequest,
   PriceUpdateStatus,
   PricingTable,
+  ProviderSetup,
   ProviderId,
   ProviderInfo,
   QuotaHistoryQuery,
@@ -22,11 +27,16 @@ import type {
   SessionQuery,
   SessionsResult,
   Settings,
+  SettingsVersion,
+  ShortcutRegistrations,
   ShortcutStatus,
   SidebarState,
+  TokenTotals,
   UpdateStatus,
+  WeeklySummary,
+  WindowUsageQuery,
 } from './types';
-import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionListQuery, SessionListResult } from './session-types';
+import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionInsights, SessionListQuery, SessionListResult } from './session-types';
 import type { SettingsPatch } from './settings-writer';
 
 export const isTauri = (): boolean =>
@@ -38,6 +48,16 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
     return invoke<T>(cmd, args);
   }
   return (await import('./mock')).mockInvoke<T>(cmd, args);
+}
+
+/** Opens an https link in the system browser (a new tab in browser previews). */
+export async function openExternal(url: string): Promise<void> {
+  if (isTauri()) {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  } else {
+    window.open(url, '_blank', 'noopener');
+  }
 }
 
 export type Unlisten = () => void;
@@ -59,6 +79,7 @@ export const getUsageHistory = (query: HistoryQuery) => invoke<HistoryResult>('g
 export const getUsageCalendar = (query: CalendarQuery) => invoke<CalendarResult>('get_usage_calendar', { query });
 export const getUsageSessions = (query: SessionQuery) => invoke<SessionsResult>('get_usage_sessions', { query });
 export const listSessions = (query: SessionListQuery) => invoke<SessionListResult>('list_sessions', { query });
+export const getSessionInsights = (query: SessionListQuery) => invoke<SessionInsights>('get_session_insights', { query });
 export const getSessionDetail = (provider: string, sessionId: string, offset = 0, limit = 40) => invoke<SessionDetail>('get_session_detail', { provider, sessionId, offset, limit });
 export const setSessionAlias = (provider: string, sessionId: string, alias: string) => invoke<void>('set_session_alias', { provider, sessionId, alias });
 export const getAnalysisSettings = () => invoke<AnalysisSettings>('get_analysis_settings');
@@ -69,6 +90,7 @@ export const getSessionEvaluations = (provider: string, sessionId: string) => in
 export const saveEvaluationReview = (id: string, requirements: RequirementAssessment[]) => invoke<EvaluationReport>('save_evaluation_review', { id, requirements });
 export const clearSessionAnalysis = (provider: string, sessionId: string) => invoke<void>('clear_session_analysis', { provider, sessionId });
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
+export const getWindowUsage = (query: WindowUsageQuery) => invoke<TokenTotals[]>('get_window_usage', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });
 /** Refreshes the configured source, or the official project source when pricingUrl is empty. */
@@ -83,6 +105,54 @@ export const useSourcePricing = () => invoke<PricingTable>('use_source_pricing')
 export const reingestLogs = () => invoke<IngestStats>('reingest_logs');
 export const getProviders = () => invoke<ProviderInfo[]>('get_providers');
 export const getAppInfo = () => invoke<AppInfo>('get_app_info');
+/** Backs settings + database up into a new timestamped folder inside `dest`; no `dest` opens a folder picker. null = cancelled. */
+export const backupData = (dest?: string) => invoke<string | null>('backup_data', { dest: dest ?? null });
+/** Validates a backup and stages it; it is swapped in at the next start (`restartApp`). null = cancelled. */
+export const restoreData = (src?: string) => invoke<BackupInfo | null>('restore_data', { src: src ?? null });
+export const restartApp = () => invoke<void>('restart_app');
+/** Everything a bug report needs; nothing secret, e-mails always masked. */
+export const getDiagnostics = () => invoke<Diagnostics>('get_diagnostics');
+/** Opens one of the app's own folders in the file manager. */
+export const openFolder = (which: 'log' | 'config' | 'data') => invoke<void>('open_folder', { which });
+
+// ---- settings backup / undo ----
+/** Native save dialog (a download in browser previews); the saved path, or null when cancelled. */
+export const exportSettings = () => invoke<string | null>('export_settings');
+
+/** Native open dialog (a file picker in browser previews); null when cancelled. */
+export async function importSettings(): Promise<ImportResult | null> {
+  if (isTauri()) return invoke<ImportResult | null>('import_settings');
+  const file = await new Promise<File | null>((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+  if (!file) return null;
+  return (await import('./mock')).mockInvoke<ImportResult>('import_settings', { file });
+}
+
+/** The last few settings versions, newest first. */
+export const getSettingsHistory = () => invoke<SettingsVersion[]>('get_settings_history');
+/** Make version `index` (0 = newest) the live settings; the replaced one is kept for undoing. */
+export const restoreSettingsVersion = (index: number) => invoke<Settings>('restore_settings_version', { index });
+
+// ---- notifications / onboarding ----
+/** `channel` is `'native'` or `'webhook'`; a rejected promise carries the user-facing reason. */
+export const sendTestNotification = (channel: 'native' | 'webhook') => invoke<void>('send_test_notification', { channel });
+/** OS permission for native notifications; desktops without a permission model say `granted`. */
+export const getNotificationPermission = () => invoke<'granted' | 'denied' | 'prompt' | 'unknown'>('get_notification_permission');
+/** Last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit. */
+export const getWeeklySummary = () => invoke<WeeklySummary>('get_weekly_summary');
+/** Where each provider's CLI stands (existence checks only, no credential is read). */
+export const getProviderSetup = () => invoke<ProviderSetup[]>('get_provider_setup');
+/** Existence check of a prospective extra account's folder (no credential is read). */
+export const checkAccountDir = (provider: string, configDir: string) => invoke<AccountCheck>('check_account_dir', { provider, configDir });
+/** Native folder dialog; null when cancelled. */
+export const pickAccountFolder = () => invoke<string | null>('pick_account_folder');
+
 
 /** Native save dialog on desktop; a normal file download in browser previews. */
 export async function exportUsageCsv(csv: string, suggestedName: string): Promise<string | null> {
@@ -100,6 +170,21 @@ export async function exportUsageCsv(csv: string, suggestedName: string): Promis
   return suggestedName;
 }
 
+/** Native save dialog on desktop (the PNG bytes of a share card); a download in browser previews. null = cancelled. */
+export async function saveShareCard(png: Uint8Array, suggestedName: string): Promise<string | null> {
+  if (isTauri()) return invoke<string | null>('save_share_card', { png: Array.from(png), suggestedNameHint: suggestedName });
+  const url = URL.createObjectURL(new Blob([png as BlobPart], { type: 'image/png' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = suggestedName;
+  document.body.appendChild(link);
+  try { link.click(); } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
+  return suggestedName;
+}
+
 // ---- updater ----
 export const getUpdateStatus = () => invoke<UpdateStatus>('get_update_status');
 /** Reads the release feed; never downloads anything. */
@@ -109,6 +194,8 @@ export const installUpdate = () => invoke<void>('install_update');
 
 // ---- platform ----
 export const getShortcutStatus = () => invoke<ShortcutStatus>('get_shortcut_status');
+/** Per shortcut: off / registered / failed / unsupported (native Wayland). */
+export const getShortcutRegistrations = () => invoke<ShortcutRegistrations>('get_shortcut_registrations');
 export const sidebarSetExpanded = (expanded: boolean) => invoke<void>('sidebar_set_expanded', { expanded });
 export const sidebarRelayout = (width: number, height: number) => invoke<void>('sidebar_relayout', { width, height });
 /** dx/dy: CSS px the pointer travelled since the drag started */
@@ -121,6 +208,8 @@ export const hoverReport = (source: 'bar' | 'popover', hovered: boolean) => invo
 export const openDashboard = (tab?: DashboardTab) => invoke<void>('open_dashboard', { tab: tab ?? null });
 export const applyWindowSettings = () => invoke<void>('apply_window_settings');
 export const getMonitors = () => invoke<MonitorInfo[]>('get_monitors');
+/** Show or hide the whole bar window (the tray's "Show/Hide sidebar"). */
+export const toggleSidebar = () => invoke<void>('toggle_sidebar');
 export const quitApp = () => invoke<void>('quit_app');
 
 // ---- events ----

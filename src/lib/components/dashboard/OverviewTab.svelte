@@ -1,21 +1,26 @@
 <!--
   Dashboard → Overview. One card per provider: identity, every rate-limit
   window with its reset time, credits, status and a 7-day trend line per
-  non-scoped window (from `get_quota_history`). [FRONTEND]
+  non-scoped window (from `get_quota_history`), plus today's tokens, estimated
+  cost, cache hit rate and an hourly mini bar (from `get_usage_history`). [FRONTEND]
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import QuotaExtras from '$lib/components/QuotaExtras.svelte';
+  import GettingStarted from './GettingStarted.svelte';
+  import WeeklySummaryCard from './WeeklySummaryCard.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
-  import { getQuotaHistory } from '$lib/api';
-  import { formatAgo, staleHint, windowLabel } from '$lib/format';
+  import { getQuotaHistory, getUsageHistory } from '$lib/api';
+  import { formatAgo, formatEstimatedCost, formatTokens, staleHint, windowLabel } from '$lib/format';
   import { hasKey, t, tDyn } from '$lib/i18n/i18n.svelte';
   import { accountEmail } from '$lib/privacy';
+  import { quotaKey, sampleKey } from '$lib/providers';
   import { accentFor } from '$lib/stores/rings.svelte';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
+  import { todaySummaries, type TodaySummary } from '$lib/today';
   import type { ProviderId, ProviderQuota, QuotaSample } from '$lib/types';
 
   const s = $derived(settings.value);
@@ -24,6 +29,9 @@
   let samples = $state<QuotaSample[]>([]);
   let historyError = $state<string | null>(null);
   let historyRequest = 0;
+  let today = $state<Map<string, TodaySummary>>(new Map());
+  let todayRequest = 0;
+  const generatedAt = $derived(snapshot.value?.generatedAt);
 
   const providers = $derived.by(() => {
     const list = snapshot.value?.providers ?? [];
@@ -32,11 +40,11 @@
     );
   });
 
-  /** provider + kind + scope → chronological used-percent series */
+  /** provider[@account] + kind + scope → chronological used-percent series */
   const series = $derived.by(() => {
     const map = new Map<string, number[]>();
     for (const sample of [...samples].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))) {
-      const key = `${sample.provider}|${sample.kind}|${sample.scope ?? ''}`;
+      const key = `${sampleKey(sample)}|${sample.kind}|${sample.scope ?? ''}`;
       const arr = map.get(key);
       if (arr) arr.push(sample.usedPercent);
       else map.set(key, [sample.usedPercent]);
@@ -44,8 +52,8 @@
     return map;
   });
 
-  function trend(provider: ProviderId, kind: string, scope: string | null): number[] {
-    return series.get(`${provider}|${kind}|${scope ?? ''}`) ?? [];
+  function trend(key: string, kind: string, scope: string | null): number[] {
+    return series.get(`${key}|${kind}|${scope ?? ''}`) ?? [];
   }
 
   async function loadQuotaHistory() {
@@ -63,10 +71,35 @@
     }
   }
 
+  async function loadToday() {
+    const id = ++todayRequest;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    try {
+      const result = await getUsageHistory({
+        from: start.toISOString(),
+        to: new Date(Date.now() + 1000).toISOString(),
+        bucket: 'hour',
+        groupByModel: false,
+        provider: null,
+      });
+      if (id === todayRequest) today = todaySummaries(result);
+    } catch {
+      // the quota cards stay useful without the usage summary
+      if (id === todayRequest) today = new Map();
+    }
+  }
+
+  // a new snapshot (poll or manual refresh) is a good moment to re-read today's usage; the backend caches it for 30 s
+  $effect(() => {
+    void generatedAt;
+    void loadToday();
+  });
+
   onMount(() => {
     void loadQuotaHistory();
     const timer = setInterval(() => (now = Date.now()), 15_000);
-    return () => { historyRequest++; clearInterval(timer); };
+    return () => { historyRequest++; todayRequest++; clearInterval(timer); };
   });
 
   function statusHint(q: ProviderQuota): string | null {
@@ -89,7 +122,7 @@
     return t('popover.noCredits');
   }
 
-  async function refresh(provider?: ProviderId) {
+  async function refresh(provider?: string) {
     await snapshot.refresh(provider);
     await loadQuotaHistory();
     now = Date.now();
@@ -111,16 +144,20 @@
   {#if snapshot.error}<p class="hint bad" role="alert">{t('common.error', { message: snapshot.error })}</p>{/if}
   {#if historyError}<p class="hint bad" role="alert">{t('overview.historyError', { message: historyError })}</p>{/if}
 
+  <GettingStarted />
+
   {#if snapshot.loading}
     <p class="muted">{t('common.loading')}</p>
   {:else if providers.length === 0}
     <p class="muted">{t('overview.noProviders')}</p>
   {:else}
     <div class="grid">
-      {#each providers as q (q.provider)}
+      {#each providers as q (quotaKey(q))}
         {@const accent = accentFor(q.provider, 0)}
         {@const hint = statusHint(q)}
         {@const credits = creditsLine(q)}
+        <!-- an extra account has no ingested token log: its card has no usage line -->
+        {@const day = q.accountId ? undefined : today.get(q.provider)}
         {@const email = accountEmail(q.account?.email, s.hideAccountEmail)}
         <article class="card provider">
           <header class="head">
@@ -137,9 +174,9 @@
             <button
               class="btn"
               disabled={snapshot.refreshing !== null}
-              onclick={() => void refresh(q.provider)}
+              onclick={() => void refresh(quotaKey(q))}
             >
-              {snapshot.refreshing === q.provider ? t('common.refreshing') : t('common.refresh')}
+              {snapshot.refreshing === quotaKey(q) ? t('common.refreshing') : t('common.refresh')}
             </button>
           </header>
 
@@ -152,7 +189,7 @@
           {:else}
             <div class="windows">
               {#each q.windows as w, i (w.label + ':' + i)}
-                {@const line = w.scope == null ? trend(q.provider, w.kind, null) : []}
+                {@const line = w.scope == null ? trend(quotaKey(q), w.kind, null) : []}
                 <div class="win">
                   <WindowRow
                     window={w}
@@ -183,6 +220,31 @@
             </div>
           {/if}
 
+          <div class="today" aria-label={t('overview.today')}>
+            <span class="today-title">{t('overview.today')}</span>
+            {#if day && day.totals.requests > 0}
+              <dl>
+                <div><dt>{t('overview.today.tokens')}</dt><dd>{formatTokens(day.totals.totalTokens)}</dd></div>
+                <div><dt>{t('overview.today.cost')}</dt><dd>{formatEstimatedCost(day.totals)}</dd></div>
+                <div><dt>{t('overview.today.cache')}</dt><dd>{day.cacheHitRate === null ? '—' : `${Math.round(day.cacheHitRate * 100)}%`}</dd></div>
+              </dl>
+              {@const peak = Math.max(...day.hours, 1)}
+              <div class="hours" role="img" aria-label={t('overview.today.hours')}>
+                {#each day.hours as value, hour (hour)}
+                  <span
+                    class="hour"
+                    class:now={hour === new Date(now).getHours()}
+                    style:height={`${value > 0 ? Math.max(8, (value / peak) * 100) : 0}%`}
+                    style:background={accent}
+                    title={`${String(hour).padStart(2, '0')}:00 · ${formatTokens(value)}`}
+                  ></span>
+                {/each}
+              </div>
+            {:else}
+              <span class="muted small">{t('overview.today.none')}</span>
+            {/if}
+          </div>
+
           <QuotaExtras extras={q.extras} context="dashboard" />
 
           <footer class="foot">
@@ -200,7 +262,10 @@
       {/each}
     </div>
   {/if}
+
+  <WeeklySummaryCard />
 </section>
+
 
 <style>
   .overview {
@@ -331,6 +396,56 @@
 
   .trend :global(svg) {
     flex: 1 1 auto;
+  }
+
+  .today {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding-top: 0.625rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .today-title {
+    font-size: 0.6875rem;
+    color: var(--faint);
+  }
+
+  .today dl {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin: 0;
+  }
+
+  .today dt {
+    font-size: 0.6875rem;
+    color: var(--muted);
+  }
+
+  .today dd {
+    margin: 0.125rem 0 0;
+    font-size: 0.9375rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hours {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    align-items: end;
+    gap: 2px;
+    height: 1.5rem;
+  }
+
+  .hour {
+    display: block;
+    border-radius: 1px;
+    opacity: 0.55;
+    min-height: 0;
+  }
+
+  .hour.now {
+    opacity: 1;
   }
 
   .foot {

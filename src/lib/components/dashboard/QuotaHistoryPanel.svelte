@@ -2,10 +2,13 @@
   import { onDestroy, untrack } from 'svelte';
   import { getQuotaHistory, exportUsageCsv } from '$lib/api';
   import QuotaHistoryChart from '$lib/components/QuotaHistoryChart.svelte';
+  import QuotaCycles from './history/QuotaCycles.svelte';
   import { kindLabel } from '$lib/format';
   import { csvCell, type HistoryRange } from '$lib/history';
   import { intlLocale, t, tDyn } from '$lib/i18n/i18n.svelte';
-  import { providerDisplayName } from '$lib/providers';
+  import { providerDisplayName, sampleKey } from '$lib/providers';
+  import { accountMatches, accountName } from '$lib/accounts';
+  import { forecastSegment } from '$lib/quota-cycles';
   import { buildQuotaHistory, type QuotaHistorySeries } from '$lib/quota-history';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -27,15 +30,34 @@
   let filterKey = '';
   let disposed = false;
   const generatedAt = $derived(snapshot.value?.generatedAt);
-  const series = $derived(buildQuotaHistory(samples));
+  /** `all`, `primary` or an extra account id; the selector only exists once an extra account is configured */
+  let accountFilter = $state('all');
+  const accountChoices = $derived(
+    settings.value.accounts.filter((a) => !provider || a.provider === provider)
+  );
+  $effect(() => {
+    // an account that was removed (or filtered out by the provider) cannot stay selected
+    if (accountFilter !== 'all' && accountFilter !== 'primary' && !accountChoices.some((a) => a.id === accountFilter)) accountFilter = 'all';
+  });
+  const series = $derived(buildQuotaHistory(samples.filter((s) => accountMatches(s.account, accountFilter))));
   const selected = $derived(series.find((s) => s.key === selectedKey) ?? series[0] ?? null);
   const selectedSeriesKey = $derived(selected?.key);
   const remaining = $derived(settings.value.percentMode === 'remaining');
+  /** dashed "at this pace" segment: only for the live window whose last sample is the current reading */
+  const forecast = $derived.by(() => {
+    void generatedAt;
+    const last = selected?.samples.at(-1);
+    if (!selected || !last || !live) return null;
+    const win = snapshot.value?.providers.find((p) => p.provider === selected.provider && (p.accountId ?? null) === selected.account)?.windows
+      .find((w) => w.kind === selected.kind && w.scope === selected.scope);
+    if (!win || win.resetsAt !== last.resetsAt) return null;
+    return forecastSegment({ ts: Date.parse(last.ts), usedPercent: last.usedPercent }, win.resetsAt, win.forecast, Date.now());
+  });
   const entries = $derived(selected?.entries.filter((entry) => !changesOnly || entry.event !== 'unchanged' || entry.previous?.resetsAt !== entry.sample.resetsAt).reverse() ?? []);
   const number = (v: number) => new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 2 }).format(v);
   const percent = (v: number) => `${number(v)}%`;
   const timestamp = (value: string | null) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString(intlLocale()) : '—';
-  const label = (s: QuotaHistorySeries) => [providerDisplayName(s.provider), kindLabel(s.kind, 'dashboard', s.scope !== null) || t('history.quota.other'), s.scope === '' ? '""' : s.scope].filter((v) => v !== null).join(' · ');
+  const label = (s: QuotaHistorySeries) => [providerDisplayName(s.provider), accountName(settings.value.accounts, s.account), kindLabel(s.kind, 'dashboard', s.scope !== null) || t('history.quota.other'), s.scope === '' ? '""' : s.scope].filter((v) => v !== null).join(' · ');
 
   async function load() {
     const id = ++requestId;
@@ -72,10 +94,10 @@
     if (!selected || exporting) return;
     exporting = true; exportError = null; saved = null;
     const header = ['timestamp', 'provider', 'window', 'scope', 'used_percent', 'remaining_percent', 'change_percentage_points', 'event', 'resets_at', 'plan'];
-    const rows = selected.entries.map(({ sample: s, change, event }) => [s.ts, s.provider, s.kind, s.scope ?? '', s.usedPercent, 100 - s.usedPercent, change ?? '', event, s.resetsAt ?? '', s.plan ?? '']);
+    const rows = selected.entries.map(({ sample: s, change, event }) => [s.ts, sampleKey(s), s.kind, s.scope ?? '', s.usedPercent, 100 - s.usedPercent, change ?? '', event, s.resetsAt ?? '', s.plan ?? '']);
     const csv = [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
     try {
-      const path = await exportUsageCsv(csv, `quota-${selected.provider}-${selected.kind}.csv`);
+      const path = await exportUsageCsv(csv, `quota-${sampleKey(selected)}-${selected.kind}.csv`);
       if (!disposed && path) saved = path;
     } catch (e) { if (!disposed) exportError = String(e); }
     finally { if (!disposed) exporting = false; }
@@ -85,6 +107,15 @@
 <section class="card quota-panel" aria-label={t('history.quota.title')} aria-busy={loading}>
   <header>
     <div><h3>{t('history.quota.title')}</h3><p class="muted">{t('history.quota.scopeNote')}</p></div>
+    {#if accountChoices.length > 0}
+      <label class="window-picker">{t('history.quota.account')}
+        <select class="field" bind:value={accountFilter}>
+          <option value="all">{t('history.quota.account.all')}</option>
+          <option value="primary">{t('history.quota.account.primary')}</option>
+          {#each accountChoices as a (a.id)}<option value={a.id}>{a.label}</option>{/each}
+        </select>
+      </label>
+    {/if}
     {#if selected}
       <label class="window-picker">{t('history.quota.window')}
         <select class="field" value={selected.key} onchange={(event) => selectedKey = event.currentTarget.value}>
@@ -102,8 +133,9 @@
       <div><dt>{t('history.quota.samples')}</dt><dd>{number(selected.samples.length)}</dd></div>
     </dl>
     <p class="muted range-note">{t(remaining ? 'history.quota.remaining' : 'history.quota.used')} · {timestamp(selected.samples[0].ts)} → {timestamp(selected.samples.at(-1)!.ts)}</p>
-    <QuotaHistoryChart series={selected} {remaining} {themeKey} />
-    <p class="muted">{t('history.quota.observedNote')}</p>
+    <QuotaHistoryChart series={selected} {remaining} {themeKey} thresholds={settings.value.thresholds} {forecast} />
+    <p class="muted">{t('history.quota.observedNote')} {t('history.quota.guidesNote')}</p>
+    <QuotaCycles allSeries={series} {selected} {themeKey} {generatedAt} />
     <div class="detail-head">
       <h4>{t('history.quota.details')}</h4>
       <label class="changes-toggle"><input type="checkbox" bind:checked={changesOnly} />{t('history.quota.changesOnly')}</label>

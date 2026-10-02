@@ -13,14 +13,28 @@
     /** track height in px at scale 1 */
     height?: number;
     dimmed?: boolean;
+    /** accessible name of the meter (the window's label) */
+    label?: string;
+    /** spoken value, e.g. "73% used, resets in 51 min"; falls back to the number */
+    valueText?: string;
   }
 
-  let { value, color, height = 6, dimmed = false }: Props = $props();
+  let { value, color, height = 6, dimmed = false, label, valueText }: Props = $props();
 
   const pct = $derived(Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0)));
 </script>
 
-<div class="track" class:dimmed style:--h={`${height / 16}rem`}>
+<div
+  class="track"
+  class:dimmed
+  style:--h={`${height / 16}rem`}
+  role="meter"
+  aria-label={label}
+  aria-valuemin={0}
+  aria-valuemax={100}
+  aria-valuenow={Math.round(pct)}
+  aria-valuetext={valueText}
+>
   <div class="fill" style:width={`${pct}%`} style:background={color} style:color={color}></div>
 </div>
 

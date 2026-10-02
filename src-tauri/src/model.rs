@@ -194,6 +194,55 @@ pub struct ProviderQuota {
     /// scheduler replaces it with the time it will actually try again.
     #[serde(default)]
     pub next_attempt_at: Option<String>,
+    /// Id of the extra account this quota belongs to (`settings.accounts`);
+    /// absent for the primary account, so a primary entry serializes exactly
+    /// as it did before multi-account support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// User label of that extra account ("Work"); absent for the primary one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
+}
+
+impl ProviderQuota {
+    /// Registry key: `"claude"` for the primary account, `"claude@work"` for
+    /// an extra one. Everything keyed per provider (poll clocks, backoff,
+    /// alert dedupe, ring keys, the CLI filter) uses this.
+    pub fn key(&self) -> String {
+        provider_key(&self.provider, self.account_id.as_deref())
+    }
+}
+
+/// `provider` or `provider@account`.
+pub fn provider_key(provider: &str, account_id: Option<&str>) -> String {
+    match account_id.filter(|a| !a.is_empty()) {
+        Some(a) => format!("{provider}@{a}"),
+        None => provider.to_string(),
+    }
+}
+
+/// Inverse of [`provider_key`]; the account part is `""` for the primary one.
+pub fn split_key(key: &str) -> (&str, &str) {
+    key.split_once('@').unwrap_or((key, ""))
+}
+
+/// One extra account of a provider (`settings.accounts`). The primary account
+/// of each provider is implicit: the default config dir.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSettings {
+    /// Slug `[a-z0-9-]{1,24}`, unique across all accounts.
+    pub id: String,
+    /// `"claude"` | `"codex"`.
+    pub provider: String,
+    /// Shown as "Claude Code · <label>"; 1..=40 characters.
+    pub label: String,
+    /// Absolute path of the account's CLI config dir (`CLAUDE_CONFIG_DIR` /
+    /// `CODEX_HOME` of that login).
+    pub config_dir: String,
+    /// Off = not polled; the entry stays in the list.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -259,6 +308,37 @@ pub enum PercentPosition {
     #[default]
     Below,
     Center,
+}
+
+/// What the tray icon itself shows: only the glyph, or the busiest window's
+/// percentage as well (menu-bar title on macOS, rendered into the icon on
+/// Windows and Linux).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayDisplay {
+    #[default]
+    Icon,
+    Percent,
+}
+
+/// What the label next to / under each ring says. `Percent` is the original
+/// behaviour; `Reset` is the countdown ("1h12"); `Both` shows both.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelContent {
+    #[default]
+    Percent,
+    Reset,
+    Both,
+}
+
+/// How a provider is drawn on the bar: concentric rings, or slim mini-bars.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RingStyle {
+    #[default]
+    Ring,
+    Bar,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,6 +428,80 @@ impl Default for SidebarItems {
     }
 }
 
+/// Wire format of the webhook channel.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookKind {
+    /// JSON `{title, body, provider, window, level, ts}`.
+    #[default]
+    Generic,
+    /// Plain-text body, `Title` header (ntfy.sh and compatible servers).
+    Ntfy,
+    /// Slack-compatible incoming webhook, `{"text": …}`.
+    Slack,
+}
+
+/// Second notification channel next to the native one. The URL may carry a
+/// secret (a Slack token, an ntfy topic) and is therefore never logged.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebhookSettings {
+    pub enabled: bool,
+    /// `https://` only; empty = not configured.
+    pub url: String,
+    pub kind: WebhookKind,
+}
+
+/// Last week's usage, for the weekly-summary notification and Overview card.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklySummary {
+    /// Local `YYYY-MM-DD` of the Monday the summarised week started on.
+    pub week_start: String,
+    /// Local `YYYY-MM-DD` of the Sunday it ended on.
+    pub week_end: String,
+    pub total_tokens: i64,
+    pub requests: i64,
+    /// Sum of priced requests (an estimate, never billing).
+    pub estimated_cost_usd: Option<f64>,
+    /// Local `YYYY-MM-DD` of the day with the most tokens, if any activity.
+    pub busiest_day: Option<String>,
+    pub busiest_day_tokens: i64,
+    /// Quota windows (per provider/kind/scope/cycle) that reached 100 %.
+    pub limits_hit: u32,
+}
+
+/// Existence check of a prospective extra account's folder (Accounts card).
+/// No credential is read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCheck {
+    /// The path is absolute (a relative one is never accepted).
+    pub absolute: bool,
+    pub dir_found: bool,
+    /// The provider's credentials file exists in that folder.
+    pub credentials_found: bool,
+    /// Which file was looked for.
+    pub credentials_file: String,
+    /// macOS Claude: no credentials file, so this account cannot be read
+    /// (its login would be in the Keychain, which is not consulted).
+    pub keychain_only: bool,
+}
+
+/// Where a provider's CLI stands on this machine; no credential is read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSetup {
+    pub provider: String,
+    /// The CLI's config directory (honouring `CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
+    pub config_dir: String,
+    pub config_dir_found: bool,
+    /// A credentials file exists (existence only, contents are never read).
+    pub credentials_found: bool,
+    /// Shell commands that sign in, in order.
+    pub login_steps: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Thresholds {
@@ -362,6 +516,7 @@ pub struct ColorSettings {
     pub claude: String,
     pub codex: String,
     pub copilot: String,
+    pub openrouter: String,
     pub warn: String,
     pub critical: String,
     pub surface: String,
@@ -374,6 +529,7 @@ impl Default for ColorSettings {
             claude: "#ff5c1a".into(),
             codex: "#10a37f".into(),
             copilot: "#8250df".into(),
+            openrouter: "#6467f2".into(),
             warn: "#f5c542".into(),
             critical: "#ff3b30".into(),
             surface: "".into(),
@@ -438,6 +594,15 @@ pub struct Settings {
     /// Render the percentage below the ring (legacy layout) or in its center.
     #[serde(default)]
     pub percent_position: PercentPosition,
+    /// Percent, reset countdown or both in the sidebar label.
+    #[serde(default)]
+    pub label_content: LabelContent,
+    /// Concentric rings (default) or compact mini-bars.
+    #[serde(default)]
+    pub ring_style: RingStyle,
+    /// One-shot pulse / flash on threshold crossings and resets.
+    #[serde(default = "default_true")]
+    pub sidebar_animations: bool,
     /// Deprecated, mirrors `sidebar_items.percent_label`.
     pub show_percent_label: bool,
     pub sidebar_items: SidebarItems,
@@ -446,6 +611,11 @@ pub struct Settings {
     /// quiet for a while (see `scheduler::poll_interval_secs`).
     pub adaptive_refresh: bool,
     pub providers: BTreeMap<String, ProviderSettings>,
+    /// Extra accounts (at most `MAX_ACCOUNTS`) of Claude Code / Codex, each
+    /// with its own CLI config dir. The primary account stays implicit.
+    /// Quota only: their local session logs are not ingested.
+    #[serde(default)]
+    pub accounts: Vec<AccountSettings>,
     pub ingest_enabled: bool,
     /// Optional https URL of a pricing table. Empty uses the project's
     /// published table, so people receive pricing revisions independently of
@@ -453,6 +623,15 @@ pub struct Settings {
     pub pricing_url: String,
     /// Monthly *estimated* cost budget in USD; 0 turns the budget line off.
     pub monthly_budget_usd: f64,
+    /// Name of the environment variable that holds the OpenRouter API key
+    /// (experimental provider). Never the key itself.
+    pub openrouter_key_env: String,
+    /// What the user pays per month for each provider's subscription, in USD;
+    /// 0 = unknown. Only used to compare the API-equivalent estimate with it.
+    pub subscription_usd: BTreeMap<String, f64>,
+    /// Delete quota samples older than this many days (0 = keep forever).
+    /// Token usage events are never deleted.
+    pub quota_retention_days: u32,
     pub autostart: bool,
     /// Ask GitHub once a day whether a newer release exists. Never installs
     /// anything on its own — the user always confirms (docs/RELEASING.md).
@@ -473,9 +652,44 @@ pub struct Settings {
     pub notifications: bool,
     /// Warn when a window is on pace to run out before it resets.
     pub forecast_notifications: bool,
+    /// Warn when a window crosses `thresholds.warn` / `thresholds.critical`.
+    pub threshold_notifications: bool,
+    /// Warn when the month-to-date estimated cost reaches 80 % / 100 % of
+    /// `monthly_budget_usd` (needs a budget > 0).
+    pub budget_notifications: bool,
+    /// Monday ~09:00 local: one notification summarising the previous week.
+    pub weekly_summary: bool,
+    /// Optional second notification channel (see `alerts::notifier`).
+    pub webhook: WebhookSettings,
+    /// Update version the user chose to skip; the banner stays quiet for it.
+    pub skipped_version: String,
+    /// App version whose release notes were last shown ("What's new").
+    pub last_seen_version: String,
+    /// The first-run wizard was completed or skipped. Settings files that
+    /// already exist when this key is introduced count as onboarded.
+    pub onboarded: bool,
+    /// Focus / do-not-disturb: native notifications are suppressed until this
+    /// epoch-ms instant. `0` = off, `-1` = until the user turns it off.
+    pub focus_until: i64,
+    /// While focus mode is active, also hide the sidebar window.
+    pub focus_hides_sidebar: bool,
     /// Mask account e-mails everywhere they render (screen sharing).
     pub hide_account_email: bool,
+    /// After every snapshot, write `snapshot.json` into the app data dir for
+    /// scripts, status bars and `--print` (see `export_snapshot.rs`).
+    pub export_snapshot: bool,
+    /// Skip the *automatic* provider polling (ingestion of local logs keeps
+    /// running). An explicit refresh still polls. Persisted on purpose.
+    pub polling_paused: bool,
+    /// `icon` (default) keeps the plain tray glyph; `percent` adds the busiest
+    /// visible window's percentage (see `window/tray_status.rs`).
+    #[serde(default)]
+    pub tray_display: TrayDisplay,
     pub always_on_top: bool,
+    /// The user's own presets, name → partial settings patch (at most 10).
+    /// A patch goes through the normal merge when applied, so it is only
+    /// stored shape-checked here (see `settings::clamp`).
+    pub custom_presets: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Settings {
@@ -513,14 +727,24 @@ impl Default for Settings {
             show_scoped_ring: true,
             percent_mode: PercentMode::Used,
             percent_position: PercentPosition::default(),
+            label_content: LabelContent::default(),
+            ring_style: RingStyle::default(),
+            sidebar_animations: true,
             show_percent_label: true,
             sidebar_items: SidebarItems::default(),
             refresh_interval_sec: 60,
             adaptive_refresh: true,
             providers,
+            accounts: Vec::new(),
             ingest_enabled: true,
             pricing_url: String::new(),
             monthly_budget_usd: 0.0,
+            openrouter_key_env: "OPENROUTER_API_KEY".into(),
+            subscription_usd: [("claude", 0.0), ("codex", 0.0)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+            quota_retention_days: 365,
             autostart: false,
             auto_update_check: true,
             auto_pricing_check: true,
@@ -536,8 +760,21 @@ impl Default for Settings {
             sizes: SizeSettings::default(),
             notifications: false,
             forecast_notifications: true,
+            threshold_notifications: true,
+            budget_notifications: true,
+            weekly_summary: false,
+            webhook: WebhookSettings::default(),
+            skipped_version: String::new(),
+            last_seen_version: String::new(),
+            onboarded: false,
+            focus_until: 0,
+            focus_hides_sidebar: false,
             hide_account_email: false,
+            export_snapshot: false,
+            polling_paused: false,
+            tray_display: TrayDisplay::default(),
             always_on_top: true,
+            custom_presets: BTreeMap::new(),
         }
     }
 }
@@ -568,6 +805,22 @@ pub struct HistoryQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub group_by_project: bool,
+}
+
+/// Token usage of one provider inside each of several time windows (quota
+/// cycles). Windows are `[from, to)` RFC 3339 instants.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowUsageQuery {
+    pub provider: String,
+    pub windows: Vec<TimeWindow>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeWindow {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -728,12 +981,19 @@ pub struct QuotaHistoryQuery {
     pub to: String,
     #[serde(default)]
     pub provider: Option<String>,
+    /// `None` = every account; `Some("")` = the primary account only;
+    /// `Some("work")` = that extra account.
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaSample {
     pub provider: String,
+    /// Extra account id; absent for the primary account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub kind: WindowKind,
     pub scope: Option<String>,
     pub used_percent: f64,
@@ -832,6 +1092,10 @@ pub struct UpdateStatus {
     pub error: Option<String>,
     /// RFC 3339 UTC of the last completed check.
     pub checked_at: Option<String>,
+    /// Bytes downloaded so far while `installing`.
+    pub downloaded: u64,
+    /// Total download size while `installing`, when the server says.
+    pub total: Option<u64>,
 }
 
 /// Why a configured global shortcut is not active; `None` = registered (or
@@ -841,6 +1105,35 @@ pub struct UpdateStatus {
 pub struct ShortcutStatus {
     pub toggle_sidebar: Option<String>,
     pub open_dashboard: Option<String>,
+}
+
+/// What became of one configured global shortcut.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationState {
+    /// Nothing configured.
+    #[default]
+    Off,
+    Registered,
+    /// Invalid, or the OS refused it (usually: another program owns the keys).
+    Failed,
+    /// This session cannot grab global keys at all (native Wayland).
+    Unsupported,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutRegistration {
+    pub state: RegistrationState,
+    /// Why, for `failed` and `unsupported`.
+    pub message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutRegistrations {
+    pub toggle_sidebar: ShortcutRegistration,
+    pub open_dashboard: ShortcutRegistration,
 }
 
 // ---------- platform / window ----------
@@ -898,4 +1191,44 @@ pub mod windows {
     pub const SIDEBAR: &str = "sidebar";
     pub const POPOVER: &str = "popover";
     pub const DASHBOARD: &str = "dashboard";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_json_fills_every_missing_key_with_its_default() {
+        let s: Settings = serde_json::from_str(r#"{"edge":"left"}"#).unwrap();
+        assert_eq!(s.edge, Edge::Left);
+        let d = Settings::default();
+        assert_eq!(s.refresh_interval_sec, d.refresh_interval_sec);
+        assert_eq!(s.quota_retention_days, 365);
+        assert_eq!(s.providers, d.providers);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, d);
+    }
+
+    #[test]
+    fn unknown_keys_from_a_newer_or_older_build_are_ignored() {
+        let s: Settings = serde_json::from_str(
+            r#"{"theme":"light","someFutureSetting":{"a":1},"removedLongAgo":true}"#,
+        )
+        .unwrap();
+        assert_eq!(s.theme, Theme::Light);
+        assert_eq!(s.edge, Settings::default().edge);
+    }
+
+    #[test]
+    fn a_settings_value_survives_a_json_round_trip() {
+        let s = Settings {
+            quota_retention_days: 0,
+            monthly_budget_usd: 12.5,
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        let value = serde_json::to_value(&s).unwrap();
+        assert_eq!(value["quotaRetentionDays"], 0, "keys are camelCase");
+    }
 }

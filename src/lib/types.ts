@@ -99,6 +99,34 @@ export interface ProviderQuota {
   extras: QuotaExtra[];
   /** Only for `rate_limited`: RFC 3339 UTC of the scheduler's next attempt */
   nextAttemptAt: string | null;
+  /** Extra account (`Settings.accounts`) this quota belongs to; absent for the primary account. */
+  accountId?: string | null;
+  /** User label of that extra account ("Work"); absent for the primary one. */
+  accountLabel?: string | null;
+}
+
+/** An extra account of Claude Code or Codex with its own CLI config dir. */
+export interface AccountSettings {
+  /** slug `[a-z0-9-]{1,24}`, unique across all accounts */
+  id: string;
+  provider: 'claude' | 'codex';
+  /** 1..40 characters; shown as "Claude Code · <label>" */
+  label: string;
+  /** absolute path of the account's CLI config dir (CLAUDE_CONFIG_DIR / CODEX_HOME of that login) */
+  configDir: string;
+  /** off = not polled, the entry stays in the list */
+  enabled: boolean;
+}
+
+/** From `check_account_dir`: existence checks only, no credential is read. */
+export interface AccountCheck {
+  absolute: boolean;
+  dirFound: boolean;
+  credentialsFound: boolean;
+  /** the file that was looked for */
+  credentialsFile: string;
+  /** macOS Claude without a credentials file: cannot be read (the login would be in the Keychain) */
+  keychainOnly: boolean;
 }
 
 export interface AppSnapshot {
@@ -119,8 +147,14 @@ export type VerticalAlign = 'top' | 'center' | 'bottom';
 /** concentric: one ring group per provider (outer weekly, inner 5-hour, optional 3rd scoped ring); primary: single ring; all: one ring per window */
 export type RingMode = 'concentric' | 'primary' | 'all';
 export type PercentMode = 'used' | 'remaining';
+/** What the tray icon shows: only the glyph, or the busiest window's percentage too. */
+export type TrayDisplay = 'icon' | 'percent';
 /** Whether a ring's percentage sits below it or replaces its centre logo. */
 export type PercentPosition = 'below' | 'center';
+/** What the sidebar label says: the percentage, the reset countdown, or both. */
+export type LabelContent = 'percent' | 'reset' | 'both';
+/** ring: concentric arcs per provider; bar: compact slim progress bars. */
+export type RingStyle = 'ring' | 'bar';
 export type Theme = 'dark' | 'light' | 'auto';
 export type Language = 'auto' | 'en' | 'zh-CN';
 /** glass: translucent "liquid glass" surface with specular highlights; solid: opaque dark/light pill */
@@ -172,6 +206,7 @@ export interface ColorSettings {
   claude: string;
   codex: string;
   copilot: string;
+  openrouter: string;
   warn: string;
   critical: string;
   /** tint of the glass / solid surface, alpha comes from `opacity` */
@@ -194,6 +229,15 @@ export interface SizeSettings {
   cornerRadius: number;
   /** percent label font size, 9..18 (default 13) */
   labelSize: number;
+}
+
+export type WebhookKind = 'generic' | 'ntfy' | 'slack';
+
+export interface WebhookSettings {
+  enabled: boolean;
+  /** https:// only; may hold a secret — never echo it into logs or UI text */
+  url: string;
+  kind: WebhookKind;
 }
 
 export interface Settings {
@@ -222,6 +266,12 @@ export interface Settings {
   percentMode: PercentMode;
   /** `below` preserves the original label; `center` replaces the provider logo. */
   percentPosition: PercentPosition;
+  /** `percent` (default), `reset` countdown or `both`; centre position always shows the percent */
+  labelContent: LabelContent;
+  /** `ring` (default) or compact `bar` */
+  ringStyle: RingStyle;
+  /** one-shot pulse on threshold crossings and flash on resets */
+  sidebarAnimations: boolean;
   /** @deprecated mirror of `sidebarItems.percentLabel` */
   showPercentLabel: boolean;
   /** what the floating bar may draw; hidden items are still tracked */
@@ -230,11 +280,19 @@ export interface Settings {
   /** Poll a provider less often while its session logs are quiet (10 min → ×2, 30 min → ×5, capped at 10 min) */
   adaptiveRefresh: boolean;
   providers: Record<string, ProviderSettings>;
+  /** Extra accounts (max 6) of Claude Code / Codex; the primary account stays implicit. Quota only. */
+  accounts: AccountSettings[];
   ingestEnabled: boolean;
   /** Optional https source for a user-managed pricing table; empty uses the official project source. */
   pricingUrl: string;
   /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
   monthlyBudgetUsd: number;
+  /** NAME of the environment variable holding the OpenRouter key; never the key */
+  openrouterKeyEnv: string;
+  /** Monthly subscription price per provider in USD (0 = unknown); only compared with the API-equivalent estimate. */
+  subscriptionUsd: Record<string, number>;
+  /** Delete quota history older than this many days; 0 = keep forever. Token usage is never deleted. */
+  quotaRetentionDays: number;
   autostart: boolean;
   /** ask GitHub once a day for a newer release; never installs on its own */
   autoUpdateCheck: boolean;
@@ -254,9 +312,35 @@ export interface Settings {
   notifications: boolean;
   /** warn when a window is on pace to run out before it resets */
   forecastNotifications: boolean;
+  /** warn when a window crosses `thresholds.warn` / `thresholds.critical` (needs `notifications`) */
+  thresholdNotifications: boolean;
+  /** warn when the month-to-date estimated cost reaches 80 % / 100 % of `monthlyBudgetUsd` (needs `notifications`) */
+  budgetNotifications: boolean;
+  /** Monday ~09:00 local: one notification summarising last week (needs `notifications`) */
+  weeklySummary: boolean;
+  /** optional second notification channel */
+  webhook: WebhookSettings;
+  /** update version the user chose to skip; '' = none */
+  skippedVersion: string;
+  /** app version whose release notes were last shown ("What's new"); '' = none */
+  lastSeenVersion: string;
+  /** the first-run wizard was completed or skipped */
+  onboarded: boolean;
+  /** Focus / do-not-disturb: native notifications are off until this epoch ms (0 = off, -1 = until turned off). */
+  focusUntil: number;
+  /** While focus mode is on, also hide the sidebar. */
+  focusHidesSidebar: boolean;
   /** Mask account e-mails everywhere they render (screenshots, screen sharing). */
   hideAccountEmail: boolean;
+  /** Write snapshot.json to the app data dir after every snapshot (CLI / status bars). */
+  exportSnapshot: boolean;
+  /** Skip automatic provider polling (local log ingestion keeps running). */
+  pollingPaused: boolean;
+  /** `icon` (default) or `percent`: add the busiest visible window's number to the tray icon (menu-bar title on macOS). */
+  trayDisplay: TrayDisplay;
   alwaysOnTop: boolean;
+  /** The user's own presets, name → partial settings patch (at most 10). */
+  customPresets: Record<string, Record<string, unknown>>;
 }
 
 // ---------- history ----------
@@ -389,10 +473,20 @@ export interface QuotaHistoryQuery {
   from: string;
   to: string;
   provider: ProviderId | null;
+  /** null/absent = every account; '' = the primary account only; else that extra account */
+  account?: string | null;
+}
+
+/** Tokens/cost of one provider inside each `[from, to)` window (quota cycles). */
+export interface WindowUsageQuery {
+  provider: ProviderId;
+  windows: Array<{ from: string; to: string }>;
 }
 
 export interface QuotaSample {
   provider: ProviderId;
+  /** extra account id; absent for the primary account */
+  account?: string | null;
   kind: WindowKind;
   scope: string | null;
   usedPercent: number;
@@ -451,6 +545,63 @@ export interface PriceUpdateStatus {
   customPricing: boolean;
 }
 
+/** What a backup folder holds (backup_data / restore_data). */
+export interface BackupInfo {
+  /** the backup folder that was validated */
+  path: string;
+  createdAt: string | null;
+  appVersion: string | null;
+  schemaVersion: number | null;
+  hasDatabase: boolean;
+  hasSettings: boolean;
+}
+
+/** One earlier settings version from the undo ring (newest first). */
+export interface SettingsVersion {
+  /** epoch ms at which this version stopped being the live one */
+  replacedAt: number;
+  settings: Settings;
+}
+
+/** Result of importing a settings file. */
+export interface ImportResult {
+  path: string;
+  before: Settings;
+  after: Settings;
+  /** file keys that were unknown, invalid or clamped */
+  ignored: string[];
+}
+
+export interface ProviderDiagnostics {
+  id: ProviderId;
+  displayName: string;
+  enabled: boolean;
+  experimental: boolean;
+  loggedIn: boolean;
+  status: ProviderStatus | null;
+  planLabel: string | null;
+  /** always masked */
+  account: string | null;
+  error: string | null;
+  fetchedAt: string | null;
+}
+
+/** What `get_diagnostics` returns: nothing secret, e-mails always masked. */
+export interface Diagnostics {
+  appVersion: string;
+  os: string;
+  arch: string;
+  backend: string;
+  sessionType: string | null;
+  providers: ProviderDiagnostics[];
+  settings: Record<string, unknown>;
+  logDir: string;
+  configDir: string;
+  dataDir: string;
+  logFile: string | null;
+  logTail: string;
+}
+
 export interface AppInfo {
   version: string;
   dataDir: string;
@@ -476,7 +627,53 @@ export interface UpdateStatus {
   error: string | null;
   /** RFC 3339 UTC of the last completed check */
   checkedAt: string | null;
+  /** bytes downloaded so far while `installing` */
+  downloaded: number;
+  /** total download size while `installing`, null when unknown */
+  total: number | null;
 }
+
+/** What became of one configured global shortcut. */
+export type RegistrationState = 'off' | 'registered' | 'failed' | 'unsupported';
+
+export interface ShortcutRegistration {
+  state: RegistrationState;
+  /** why, for `failed` and `unsupported` */
+  message: string | null;
+}
+
+export interface ShortcutRegistrations {
+  toggleSidebar: ShortcutRegistration;
+  openDashboard: ShortcutRegistration;
+}
+
+/** Last completed Monday–Sunday, from `get_weekly_summary`. */
+export interface WeeklySummary {
+  /** local YYYY-MM-DD of the Monday */
+  weekStart: string;
+  /** local YYYY-MM-DD of the Sunday */
+  weekEnd: string;
+  totalTokens: number;
+  requests: number;
+  /** estimate, never billing */
+  estimatedCostUsd: number | null;
+  /** local YYYY-MM-DD of the day with the most tokens */
+  busiestDay: string | null;
+  busiestDayTokens: number;
+  /** quota windows that reached 100 % */
+  limitsHit: number;
+}
+
+/** From `get_provider_setup`: existence checks only, no credential is read. */
+export interface ProviderSetup {
+  provider: ProviderId;
+  configDir: string;
+  configDirFound: boolean;
+  credentialsFound: boolean;
+  /** shell commands that sign in, in order */
+  loginSteps: string[];
+}
+
 
 /** Why a configured global shortcut is not active; null = fine (or disabled). */
 export interface ShortcutStatus {

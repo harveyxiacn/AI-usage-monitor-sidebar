@@ -9,6 +9,26 @@
 // their colours are byte-for-byte what they were before.
 import type { ColorSettings, ProviderId } from './types';
 
+/**
+ * Identity of one quota source: `claude` for the primary account,
+ * `claude@work` for an extra one. Everything keyed per provider on screen
+ * (ring keys, popover target, refresh, alert dedupe in the backend) uses it.
+ */
+export function quotaKey(q: { provider: ProviderId; accountId?: string | null }): string {
+  return q.accountId ? `${q.provider}@${q.accountId}` : q.provider;
+}
+
+/** `quotaKey` of a stored quota sample (or history series), whose account id field is `account`. */
+export function sampleKey(s: { provider: ProviderId; account?: string | null }): string {
+  return s.account ? `${s.provider}@${s.account}` : s.provider;
+}
+
+/** Inverse of `quotaKey`; `account` is '' for the primary account. */
+export function splitQuotaKey(key: string): { provider: ProviderId; account: string } {
+  const at = key.indexOf('@');
+  return at < 0 ? { provider: key, account: '' } : { provider: key.slice(0, at), account: key.slice(at + 1) };
+}
+
 /** Colour keys of `Settings.colors` that are *not* a provider accent. */
 const RESERVED_COLOR_KEYS: ReadonlySet<string> = new Set(['warn', 'critical', 'surface', 'text']);
 
@@ -48,11 +68,16 @@ export function providerColor(colors: ColorSettings, provider: ProviderId): stri
   return typeof value === 'string' ? value : null;
 }
 
+/** Spellings a plain capitalise-each-word cannot produce. */
+const DISPLAY_NAMES: Readonly<Record<string, string>> = { openrouter: 'OpenRouter' };
+
 /**
  * Last-resort label for a provider the snapshot does not name: "github-copilot"
  * → "Github Copilot". The backend's `displayName` always wins when present.
  */
 export function providerDisplayName(provider: ProviderId): string {
+  const known = DISPLAY_NAMES[provider.toLowerCase()];
+  if (known) return known;
   return (
     provider
       .split(/[-_\s]+/)

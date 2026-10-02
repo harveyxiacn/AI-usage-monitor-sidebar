@@ -1,11 +1,14 @@
 # Provider research — candidates beyond Claude Code and Codex
 
-Researched 2026-09-21 for v0.2.0. **Nothing in this file was tested against a
-live account**: the research machine has none of these tools installed or
-signed in (`~/.gemini`, `~/.cursor`, `~/.config/github-copilot` do not exist).
-Every factual claim below is a citation to published source code or official
-documentation that was actually fetched; where a claim could not be backed by a
-source it says **NOT VERIFIED**.
+Researched 2026-09-21 for v0.2.0 (§1–§3), extended for v0.6 with OpenRouter (§4)
+and multiple accounts (§5). **Nothing about Copilot, Gemini, Cursor or OpenRouter
+was tested against a live account**: the research machine has none of these tools
+installed or signed in (`~/.gemini`, `~/.cursor`, `~/.config/github-copilot` do
+not exist, there is no OpenRouter key). Every factual claim below is a citation to
+published source code or official documentation that was actually fetched; where a
+claim could not be backed by a source it says **NOT VERIFIED**. Only Claude Code
+and Codex (the baseline, and the two providers that support extra accounts) were
+built against real responses.
 
 ## The bar a candidate has to clear
 
@@ -25,6 +28,7 @@ CLI calls, with the same headers. That is the bar:
 | GitHub Copilot | **implementable with evidence** | yes, `experimental` (see §1) |
 | Google Gemini CLI | evidence for the HTTP call, **blocked on credential storage** | no (see §2) |
 | Cursor | **not implemented — ToS and stability** | no (see §3) |
+| OpenRouter | documented API, **no live account to verify** | yes, `experimental`, opt-in (see §4) |
 
 ---
 
@@ -374,3 +378,121 @@ credential a CLI wrote for its own API client, and this project will not ship
 it.
 
 **Verdict: not implemented — ToS and stability.**
+
+---
+
+## 4. OpenRouter — documented API, experimental
+
+Added in v0.6. **Experimental — not verified against a live account.** The
+author has no OpenRouter key to test with; every shape below is from the public
+API reference (openrouter.ai/docs, fetched 2026-10-02) and the tests use
+fixtures written from those pages, not captured responses.
+
+Unlike §1–§3 there is **no CLI login to borrow**: OpenRouter is an API gateway
+and its credential is a plain API key. The bar of "the credential the tool
+wrote for itself" therefore cannot apply, and the provider instead reads the
+key from an **environment variable whose name is a setting**
+(`openrouterKeyEnv`, default `OPENROUTER_API_KEY`). The key is never written to
+settings, logs or the UI, is only sent to `openrouter.ai`, and a value that
+does not look like a variable name (a pasted key) is rejected. Because it is
+read from the process environment, a variable set after the app started needs
+an app restart. There are no local session logs, so ingestion ignores it.
+
+Endpoints (`Authorization: Bearer <key>`):
+
+* `GET https://openrouter.ai/api/v1/key` — `data.limit`, `limit_remaining`,
+  `limit_reset` (`daily` / `weekly` / `monthly` / `null`), `usage`,
+  `is_free_tier`. Any key may call it.
+* `GET https://openrouter.ai/api/v1/credits` — `data.total_credits`,
+  `data.total_usage`. The reference says **only management keys** may call it;
+  a 403 for an ordinary key is expected and swallowed.
+
+Mapping:
+
+| Key | Result |
+|---|---|
+| has a `limit` | one "Credits" window, used % = `(limit - limit_remaining) / limit` (falls back to `usage / limit`); when `limit_reset` is set the reset is the next UTC midnight (Monday for weekly, the 1st for monthly — taken from the docs' wording, unverified) |
+| no limit, `/credits` readable | one "Credits" window, used % = `total_usage / total_credits`, no reset; informational |
+| no limit, `/credits` refused | no window, only a "spent by this key" line |
+
+Status: missing/empty variable → `not_logged_in` (no request is made); 401/403
+→ `token_expired`; 429 → `rate_limited` with `Retry-After`; anything else →
+`error`, keeping the last good windows.
+
+Off by default and absent from the snapshot until the user switches it on
+(Settings → Providers, badged *Experimental*).
+
+---
+
+## 5. Multiple accounts (Claude Code and Codex)
+
+Added in v0.6. Both verified providers can be tracked for more than one login,
+for example a personal and a work account. The **primary account** of each
+provider stays implicit: the default config dir, honouring `CLAUDE_CONFIG_DIR`
+/ `CODEX_HOME` exactly as before. Extra accounts are listed in
+`settings.accounts` (at most 6):
+
+```json
+{ "accounts": [
+  { "id": "work", "provider": "claude", "label": "Work",
+    "configDir": "/home/me/.claude-work", "enabled": true } ] }
+```
+
+| Field | Rule |
+|---|---|
+| `id` | slug `[a-z0-9-]{1,24}`, unique across all accounts; it is the key of the account's history, so it is never regenerated when the entry is edited |
+| `provider` | `claude` or `codex` (others are dropped) |
+| `label` | 1-40 characters; the card reads "Claude Code · Work" |
+| `configDir` | absolute path of that login's CLI config dir |
+| `enabled` | off = not polled and absent from the bar; provider-level `enabled` / `showInSidebar` / `order` apply to every account of the provider |
+
+An invalid entry is dropped on load (never "repaired" into another path).
+
+**Signing in a second account** (the app never runs these and never reads what
+they write):
+
+* Claude Code: `CLAUDE_CONFIG_DIR=<dir> claude`, then `/login`.
+* Codex: `CODEX_HOME=<dir> codex login`.
+
+**What an account reads.** The same credential loader as the primary account,
+with the dir passed explicitly: `<configDir>/.credentials.json` (Claude) or
+`<configDir>/auth.json` (Codex), the same endpoints, the same status mapping.
+Each account is its own provider instance: separate last-good cache
+(`cache/quota-claude@work.json`), separate backoff, `Retry-After` and
+adaptive-poll clock, and Claude's 120 s floor applies **per account**. The
+profile cache is keyed by token, so two accounts do not evict each other.
+
+**Keys.** `claude` is the primary account, `claude@work` an extra one. The same
+key is used for ring keys, the popover target, `refresh_now(provider)`,
+notification dedupe (threshold, forecast), `snapshot.json` (`id`, plus an
+`account` field that is absent for the primary account) and
+`--print --provider claude@work`. `--provider claude` still means the primary
+account only.
+
+**Storage.** `quota_samples.account` (`''` = primary). Every quota query,
+throttling check, forecast input, the weekly "limits hit" count and the
+retention thinning are per account.
+
+**Limitations.**
+
+* **Quota only.** Local session logs of extra accounts are *not* ingested
+  (`usage_events`, sessions, token/cost history and the token-based forecast
+  fallback exist for the primary account only). Ingestion roots, the sessions
+  tables and the evaluation features all key on the provider, and generalising
+  them would change rows existing users already have. Cost-based features
+  (the monthly budget alerts, the weekly summary's tokens and cost) therefore
+  describe the primary accounts only; quota features (rings, forecasts,
+  threshold and forecast alerts, quota history, the weekly "limits hit" count)
+  cover every account.
+* **macOS and Claude Code.** On macOS the login of the *default* config dir is
+  in the Keychain item `Claude Code-credentials`. Claude Code files the login of
+  a non-default `CLAUDE_CONFIG_DIR` under a **different** Keychain service name,
+  which could not be verified, and guessing it risks reading the wrong
+  account's token. Extra Claude accounts are therefore read from
+  `<configDir>/.credentials.json` only; when that file is absent the account
+  shows `not_logged_in` with an explicit "not supported on macOS unless a
+  credentials file exists" message, and the Settings card says the same.
+  Codex accounts are file based on every platform.
+* The tray shows one usage line per account (up to 6 extra ones).
+* Only Claude Code and Codex support extra accounts; an `accounts` entry for
+  another provider is dropped.

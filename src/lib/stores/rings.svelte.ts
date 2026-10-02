@@ -11,7 +11,7 @@
 // `$lib/sidebar-items` (Settings.sidebarItems / ProviderSettings.showInSidebar)
 // before any group is built; everything here is pure presentation.
 import { severityColor, severityOf, worstSeverity, type Severity } from '$lib/format';
-import { altVar, rampVar } from '$lib/providers';
+import { altVar, quotaKey, rampVar } from '$lib/providers';
 import { barGroups, barProviders, barSeverity, labelWindowOf } from '$lib/sidebar-items';
 import { settings } from './settings.svelte';
 import { snapshot } from './snapshot.svelte';
@@ -29,6 +29,8 @@ export interface RingItem {
   /** stable key for keyed each-blocks */
   key: string;
   provider: ProviderId;
+  /** `quotaKey()`: `claude`, or `claude@work` for an extra account. The popover target and the animation key. */
+  quotaKey: string;
   quota: ProviderQuota;
   /** outer → inner; empty when the provider has no usable window */
   arcs: RingArc[];
@@ -96,6 +98,7 @@ export function buildRingItems(snap: AppSnapshot | null, s: Settings): RingItem[
     items.push({
       key,
       provider: quota.provider,
+      quotaKey: quotaKey(quota),
       quota,
       arcs,
       labelWindow,
@@ -112,7 +115,7 @@ export function buildRingItems(snap: AppSnapshot | null, s: Settings): RingItem[
       for (const arcs of groups) {
         push(
           quota,
-          `${quota.provider}:group`,
+          `${quotaKey(quota)}:group`,
           arcs,
           (depth) => rampFor(quota.provider, depth),
           labelWindowOf(arcs)
@@ -126,7 +129,7 @@ export function buildRingItems(snap: AppSnapshot | null, s: Settings): RingItem[
       const w = group[0] ?? null;
       push(
         quota,
-        w ? `${quota.provider}:${w.kind}:${slot}` : `${quota.provider}:none`,
+        w ? `${quotaKey(quota)}:${w.kind}:${slot}` : `${quotaKey(quota)}:none`,
         group,
         () => accentFor(quota.provider, slot),
         w

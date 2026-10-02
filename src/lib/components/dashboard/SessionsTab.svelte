@@ -7,9 +7,13 @@
   import { st } from '$lib/session-labels.svelte';
   import type { AnalysisSettings as Config, SessionDetail, SessionListQuery, SessionListResult, SessionSummary } from '$lib/session-types';
   import { analysisDefaults, mergeMessagePages, pageBounds, sessionIdentity } from '$lib/sessions';
+  import { filtersFromParams } from '$lib/session-insights';
   import { sessionViewState } from '$lib/session-ui-state';
+  import { VIEW_REQUEST_EVENT, type ViewRequest } from '$lib/palette-nav';
   import AnalysisSettings from './AnalysisSettings.svelte';
   import SessionEvaluation from './SessionEvaluation.svelte';
+  import Segmented from './history/Segmented.svelte';
+  import InsightsView from './sessions/InsightsView.svelte';
 
   const initial = { ...sessionViewState.query };
   let query = $state<SessionListQuery>({ ...initial });
@@ -23,6 +27,9 @@
   let error = $state(''), detailError = $state(''), notice = $state('');
   let configOpen = $state(false), confirmClear = $state(false), alias = $state('');
   let pane = $state<'messages' | 'metrics' | 'evaluation'>('messages');
+  let view = $state<'browse' | 'insights'>(sessionViewState.view), fromInsights = $state(false);
+  $effect(() => { sessionViewState.view = view; });
+  const viewOptions = $derived([['browse', st('browse')], ['insights', st('insights')]] as const);
   let evaluationOpened = $state(false);
   let turnIds = $state<string[]>([]), highlighted = $state('');
   let listVersion = 0, detailVersion = 0, metadataVersion = 0, disposed = false;
@@ -81,11 +88,17 @@
   }
   function apply(event?: SubmitEvent) {
     event?.preventDefault();
+    commitFilters(); result = null; void loadList();
+  }
+  function commitFilters() {
     const end = to ? new Date(`${to}T00:00:00`) : null;
     if (end) end.setDate(end.getDate() + 1);
     query = { search: search.trim(), provider: provider || null, project: project.trim() || null, sort, offset: 0, limit: 25,
       from: from ? new Date(`${from}T00:00:00`).toISOString() : null, to: end?.toISOString() ?? null };
-    result = null; void loadList();
+  }
+  /** Insights rows open the same detail pane the list uses. */
+  function openFromInsights(providerId: string, sessionId: string) {
+    fromInsights = true; view = 'browse'; void openSession(providerId, sessionId);
   }
   function page(offset: number) { query.offset = offset; void loadList(); }
   async function settingsSaved(next: Config) {
@@ -121,10 +134,20 @@
     if (element) element.scrollIntoView({ block: 'nearest', behavior: 'instant' }); else notice = st('evidenceMissing');
   }
   onMount(() => {
+    // the command palette asks an already mounted tab to switch sub-view
+    const onViewRequest = (e: Event) => { const r = (e as CustomEvent<ViewRequest>).detail; if (r.tab === 'sessions') { view = r.view; fromInsights = false; } };
+    window.addEventListener(VIEW_REQUEST_EVENT, onViewRequest);
     const params = new URLSearchParams(window.location.search);
     const linkedSession = params.get('session');
     const linkedProvider = params.get('provider');
     if (linkedSession && (linkedProvider === 'claude' || linkedProvider === 'codex')) selected = { provider: linkedProvider, sessionId: linkedSession };
+    const linkedFilters = filtersFromParams(params);
+    if (linkedFilters) {
+      provider = linkedFilters.provider ?? ''; project = linkedFilters.project ?? '';
+      from = linkedFilters.from ? localDateInput(Date.parse(linkedFilters.from)) : ''; to = linkedFilters.to ? localDateInput(Date.parse(linkedFilters.to) - 1) : '';
+      commitFilters();
+    }
+    if (params.get('view') === 'insights') view = 'insights'; else if (params.get('view') === 'browse') view = 'browse';
     const linkedPane = params.get('pane');
     if (linkedPane === 'metrics' || linkedPane === 'evaluation') pane = linkedPane;
     void loadList();
@@ -136,26 +159,30 @@
     // A title/prompt-only change need not add token events.
     void onIngestProgress(stats => { if (!stats.running) refresh(); }).then(un => disposed ? un() : unlisten = un).catch(() => {});
     document.addEventListener('visibilitychange', resume);
-    return () => { disposed = true; listVersion++; detailVersion++; clearTimeout(timer); unlisten?.(); document.removeEventListener('visibilitychange', resume); };
+    return () => { disposed = true; listVersion++; detailVersion++; clearTimeout(timer); unlisten?.(); document.removeEventListener('visibilitychange', resume); window.removeEventListener(VIEW_REQUEST_EVENT, onViewRequest); };
   });
 </script>
 
 <section class="sessions">
-  <header class="workspace-head"><div><span class="eyebrow">{st('workspace')}</span><h2>{st('title')}</h2><p>{st('subtitle')}</p></div><button class="btn" onclick={() => configOpen = !configOpen}>{st('settings')}</button></header>
+  <header class="workspace-head"><div><span class="eyebrow">{st('workspace')}</span><h2>{st('title')}</h2><p>{st('subtitle')}</p></div><div class="head-actions"><Segmented options={viewOptions} value={view} label={st('viewLabel')} onchange={(v) => { view = v; fromInsights = false; }} /><button class="btn" onclick={() => configOpen = !configOpen}>{st('settings')}</button></div></header>
   {#if configOpen}<AnalysisSettings value={config} onsave={(next) => void settingsSaved(next)} onclose={() => configOpen = false} />{/if}
   <form class="filters card" onsubmit={apply}>
     <input class="field search" aria-label={st('search')} placeholder={st('search')} bind:value={search} />
-    <select class="field" aria-label={st('all')} bind:value={provider}><option value="">{st('all')}</option><option value="claude">Claude</option><option value="codex">Codex</option></select>
-    <select class="field" aria-label={st('recent')} bind:value={sort}><option value="recent">{st('recent')}</option><option value="tokens">{st('tokens')}</option><option value="title">{st('name')}</option></select>
+    <select class="field" aria-label={st('all')} bind:value={provider}><option value="">{st('all')}</option><option value="claude">{providerDisplayName('claude')}</option><option value="codex">{providerDisplayName('codex')}</option></select>
+    <select class="field" aria-label={st('recent')} bind:value={sort} disabled={view === 'insights'}><option value="recent">{st('recent')}</option><option value="tokens">{st('tokens')}</option><option value="title">{st('name')}</option></select>
     <input class="field project-filter" aria-label={st('project')} placeholder={st('project')} bind:value={project} />
     <label>{st('from')}<input class="field" type="date" bind:value={from} max={to || undefined} /></label><label>{st('to')}<input class="field" type="date" bind:value={to} min={from || undefined} /></label>
     <button class="btn" type="submit">{st('apply')}</button><button class="btn" type="button" onclick={() => { search = ''; provider = ''; project = ''; from = ''; to = ''; sort = 'recent'; apply(); }}>{st('reset')}</button>
   </form>
   {#if error}<p class="error" role="alert">{error} <button class="btn" onclick={() => void loadList()}>{st('retry')}</button></p>{/if}
+  {#if view === 'insights'}
+    <InsightsView {query} onopen={openFromInsights} />
+  {:else}
+  {#if fromInsights}<button class="link back" onclick={() => { view = 'insights'; fromInsights = false; }}>← {st('backToList')}</button>{/if}
   <div class="workspace">
     <aside class="card list-panel" aria-label={st('title')} aria-busy={listLoading}>
       <div class="list-heading"><span>{bounds.first}–{bounds.last} / {result?.total ?? 0}</span><button class="link" onclick={() => void loadList()} disabled={listLoading}>{listLoading ? st('loading') : st('refresh')}</button></div>
-      {#if result?.rows.length}<div class="session-list">{#each result.rows as row (sessionIdentity(row.provider, row.sessionId))}{@const models = modelNames(row)}<button class="session-row" class:active={identity === sessionIdentity(row.provider, row.sessionId)} aria-pressed={identity === sessionIdentity(row.provider, row.sessionId)} onclick={() => void openSession(row.provider, row.sessionId)}><span class="row-meta"><span>{providerDisplayName(row.provider)}</span><span>{new Date(row.lastTs).toLocaleDateString()}</span></span><strong>{row.title}</strong><span class="row-project" title={row.project}>{projectName(row.project)} · {st(row.titleSource)}</span><span class="row-models" title={models}>{st('models')}: {models}</span><span class="row-stats"><b>{formatTokens(row.totalTokens)}</b> tokens <span>{formatEstimatedCost(row)}</span></span></button>{/each}</div>{:else}<p class="empty">{listLoading ? st('loading') : st('empty')}</p>{/if}
+      {#if result?.rows.length}<div class="session-list">{#each result.rows as row (sessionIdentity(row.provider, row.sessionId))}{@const models = modelNames(row)}<button class="session-row" class:active={identity === sessionIdentity(row.provider, row.sessionId)} aria-pressed={identity === sessionIdentity(row.provider, row.sessionId)} onclick={() => void openSession(row.provider, row.sessionId)}><span class="row-meta"><span>{providerDisplayName(row.provider)}</span><span>{new Date(row.lastTs).toLocaleDateString()}</span></span><strong>{row.title}</strong><span class="row-project" title={row.project}>{projectName(row.project)} · {st(row.titleSource)}</span><span class="row-models" title={models}>{st('models')}: {models}</span><span class="row-stats"><b>{formatTokens(row.totalTokens)}</b> {st('tokens')} <span>{formatEstimatedCost(row)}</span></span></button>{/each}</div>{:else}<p class="empty">{listLoading ? st('loading') : st('empty')}</p>{/if}
       <nav class="pager" aria-label={st('title')}><button class="btn" disabled={bounds.previous === null || listLoading} onclick={() => page(bounds.previous!)}>{st('previous')}</button><button class="btn" disabled={bounds.next === null || listLoading} onclick={() => page(bounds.next!)}>{st('next')}</button></nav>
     </aside>
     <div class="card detail" aria-busy={detailLoading}>
@@ -183,10 +210,11 @@
       {:else}<div class="empty selection"><span class="selection-icon" aria-hidden="true">↗</span><p>{st('select')}</p></div>{/if}
     </div>
   </div>
+  {/if}
 </section>
 
 <style>
-  .sessions { display: grid; gap: 1rem; } .workspace-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+  .sessions { display: grid; gap: 1rem; } .head-actions { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; } .back { justify-self:start; } .workspace-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; }
   h2,h3,p { margin:0; } h2 { font-size:1.55rem; letter-spacing:-.035em; margin:.3rem 0; } .workspace-head p { color:var(--muted); font-size:.85rem; }
   .eyebrow { font: .66rem ui-monospace,monospace; letter-spacing:.08em; color:var(--focus); } .filters { display:flex; flex-wrap:wrap; gap:.55rem; padding:.8rem; align-items:center; }
   .filters .search { flex:1 1 260px; } .filters label { display:flex; align-items:center; gap:.35rem; color:var(--muted); font-size:.75rem; } .project-filter { flex:1 1 180px; }

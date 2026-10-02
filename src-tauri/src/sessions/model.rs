@@ -87,3 +87,99 @@ pub struct SessionContentPage {
     pub warnings: Vec<String>,
     pub source_updated_at: i64,
 }
+
+/// One session reduced to the numbers the insights view plots. Titles are the
+/// usual alias/native/fallback ones; no transcript content is included.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightSession {
+    pub provider: String,
+    pub session_id: String,
+    pub title: String,
+    pub project: String,
+    pub last_ts: String,
+    pub total_tokens: i64,
+    /// `None` when any request of the session has no price.
+    pub cost_usd: Option<f64>,
+    pub active_duration_ms: Option<i64>,
+    pub user_turns: i64,
+    pub tool_calls: i64,
+    pub tool_failures: i64,
+    pub repeated_tool_calls: i64,
+    pub failure_rate: Option<f64>,
+    pub repeat_rate: Option<f64>,
+    /// Subset of `failures`, `repeats`.
+    pub flags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightKpis {
+    pub sessions: i64,
+    pub priced_sessions: i64,
+    pub median_cost_usd: Option<f64>,
+    pub median_active_ms: Option<f64>,
+    pub median_turns: Option<f64>,
+    pub tool_calls: i64,
+    pub tool_failures: i64,
+    pub repeated_tool_calls: i64,
+    pub failure_rate: Option<f64>,
+    pub repeat_rate: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistogramBin {
+    pub from: f64,
+    pub to: f64,
+    pub count: i64,
+}
+
+/// Log-scale histogram of positive values; zeros are counted separately.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Histogram {
+    pub bins: Vec<HistogramBin>,
+    pub zero_count: i64,
+    pub sample: i64,
+    pub median: Option<f64>,
+    pub p90: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolStat {
+    pub tool: String,
+    pub calls: i64,
+    pub failures: i64,
+    pub failure_rate: f64,
+    pub sessions: i64,
+}
+
+/// Rules behind the warning chips, so the UI can state them exactly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InsightThresholds {
+    pub min_failures: i64,
+    pub failure_rate: f64,
+    pub min_repeats: i64,
+    pub repeat_rate: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInsights {
+    /// Matching sessions before the analysis cap.
+    pub total_sessions: i64,
+    pub truncated: bool,
+    pub kpis: InsightKpis,
+    pub cost_histogram: Histogram,
+    pub duration_histogram: Histogram,
+    pub points: Vec<InsightSession>,
+    pub top_cost: Vec<InsightSession>,
+    pub top_duration: Vec<InsightSession>,
+    pub top_failures: Vec<InsightSession>,
+    pub top_repeats: Vec<InsightSession>,
+    pub tools: Vec<ToolStat>,
+    pub thresholds: InsightThresholds,
+}

@@ -1,9 +1,13 @@
 //! Tauri builder wiring. [PLATFORM owns this file]
 //! Command handler list must stay in sync with docs/ARCHITECTURE.md §5.
 
+pub mod backup;
+pub mod cli;
 pub mod commands;
 pub mod evaluation;
 pub mod export;
+pub mod export_snapshot;
+pub mod focus;
 pub mod model;
 pub mod scheduler;
 pub mod sessions;
@@ -67,13 +71,16 @@ pub fn run() {
             // SQLite (WAL) must not live in the Windows roaming profile, which
             // may be a redirected network share. Same path as before elsewhere.
             let roaming_dir = app.path().app_data_dir().expect("app data dir");
-            let data_dir = match app.path().app_local_data_dir() {
-                // Keep a database that an earlier version already created.
-                Ok(local) if !roaming_dir.join("usage.db").exists() => local,
-                _ => roaming_dir,
-            };
+            let data_dir = state::pick_data_dir(roaming_dir, app.path().app_local_data_dir().ok());
             std::fs::create_dir_all(&config_dir).ok();
             std::fs::create_dir_all(&data_dir).ok();
+            // A restore staged by the previous run is swapped in here, before
+            // anything opens settings.json or usage.db.
+            match backup::apply_pending(&config_dir, &data_dir) {
+                Ok(Some(info)) => log::info!("restored a backup from {}", info.path),
+                Ok(None) => {}
+                Err(e) => log::error!("restore failed: {e:#}"),
+            }
             app.manage(state::AppState::new(config_dir, data_dir));
             // Pricing revisions have their own state and schedule. They never
             // install an app update or apply a price table on their own.
@@ -96,6 +103,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             sessions::list_sessions,
+            sessions::get_session_insights,
             sessions::get_session_detail,
             sessions::set_session_alias,
             evaluation::get_analysis_settings,
@@ -114,6 +122,7 @@ pub fn run() {
             commands::get_usage_calendar,
             commands::get_usage_sessions,
             commands::get_quota_history,
+            commands::get_window_usage,
             commands::get_pricing,
             commands::set_pricing,
             commands::refresh_pricing,
@@ -124,13 +133,30 @@ pub fn run() {
             commands::reingest_logs,
             commands::get_providers,
             commands::get_app_info,
+            commands::diagnostics::get_diagnostics,
+            commands::diagnostics::open_folder,
+            commands::settings_io::export_settings,
+            commands::settings_io::import_settings,
+            commands::settings_io::get_settings_history,
+            commands::settings_io::restore_settings_version,
+            commands::alerts::send_test_notification,
+            commands::alerts::get_notification_permission,
+            commands::alerts::get_weekly_summary,
+            commands::onboarding::get_provider_setup,
+            commands::accounts::check_account_dir,
+            commands::accounts::pick_account_folder,
             export::export_usage_csv,
+            export::save_share_card,
+            backup::backup_data,
+            backup::restore_data,
+            backup::restart_app,
             // updater
             updater::get_update_status,
             updater::check_for_updates,
             updater::install_update,
             // platform
             window::shortcuts::get_shortcut_status,
+            window::shortcuts::get_shortcut_registrations,
             window::sidebar_set_expanded,
             window::sidebar_relayout,
             window::sidebar_drag,
@@ -142,6 +168,7 @@ pub fn run() {
             window::open_dashboard,
             window::apply_window_settings,
             window::get_monitors,
+            window::toggle_sidebar,
             window::quit_app,
             window::debug_log,
         ])

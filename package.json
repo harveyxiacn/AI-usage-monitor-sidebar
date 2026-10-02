@@ -1,6 +1,6 @@
 {
   "name": "ai-usage-sidebar",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Always-on-top edge sidebar showing Claude Code / Codex rate-limit quotas and token usage history",
   "type": "module",
   "scripts": {
@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "check:agents": "node scripts/check-agents-settings.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "playwright test --config=playwright.unit.config.ts",
     "test:e2e": "playwright test --project=chromium",

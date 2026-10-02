@@ -56,24 +56,15 @@ test('the punch card shows every weekday and labels each cell', async ({ page })
   expect(labelled).toMatch(/\d\d:00/);
 });
 
-test('the sessions view sorts server-capped rows and exports them as CSV', async ({ page }) => {
+test('the sessions view is a summary that exports CSV and hands its filters to the Sessions tab', async ({ page }) => {
   await openHistory(page);
   await page.getByRole('group', { name: 'Table', exact: true })
     .getByRole('button', { name: 'Sessions', exact: true }).click();
 
-  await expect(page.getByRole('columnheader', { name: /^Session/ })).toBeVisible();
-  await expect(page.getByRole('columnheader', { name: 'Models / reasoning effort used', exact: true })).toBeVisible();
-  const rows = page.locator('.table-wrap tbody tr');
-  expect(await rows.count()).toBeGreaterThan(0);
-
-  // the default order is the server's: biggest session first
-  const total = page.getByRole('columnheader', { name: /^Total/ });
-  await expect(total).toHaveAttribute('aria-sort', 'descending');
-  await total.getByRole('button').click();
-  await expect(total).toHaveAttribute('aria-sort', 'ascending');
-  const durations = page.getByRole('columnheader', { name: /^Duration/ });
-  await durations.getByRole('button').click();
-  await expect(durations).toHaveAttribute('aria-sort', 'descending');
+  // a lightweight summary, not a second full table
+  await expect(page.getByRole('heading', { name: 'Largest sessions by tokens', exact: true })).toBeVisible();
+  expect(await page.locator('.top-sessions li').count()).toBeGreaterThan(0);
+  await expect(page.locator('.table-wrap')).toHaveCount(0);
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
@@ -81,22 +72,23 @@ test('the sessions view sorts server-capped rows and exports them as CSV', async
   expect(download.suggestedFilename()).toMatch(/^ai-usage-sessions-.*\.csv$/);
   const csv = await readFile((await download.path())!, 'utf8');
   expect(csv).toContain('session_id,provider,project,first_activity,last_activity,duration_ms,models');
-  expect(csv.trim().split(/\r?\n/)).toHaveLength(await rows.count() + 1);
+  expect(csv.trim().split(/\r?\n/).length).toBeGreaterThan(1);
   // identifiers and counters only — no prompt or response text anywhere
   expect(csv).not.toMatch(/prompt|message|content/i);
+
+  await page.getByRole('button', { name: 'Open insights', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Sessions', exact: true })).toBeVisible();
+  await expect(page.getByText('Median cost / session', { exact: true })).toBeVisible();
 });
 
-test('a monthly budget draws the burn-up against the budget when showing cost', async ({ page }) => {
-  const seeded = `?settings=${encodeURIComponent(JSON.stringify({ monthlyBudgetUsd: 250 }))}`;
-  await openHistory(page, seeded);
+test('a monthly budget draws the burn-up in the Cost & budget view, reached by deep link', async ({ page }) => {
+  const seeded = `?tab=history&view=cost&settings=${encodeURIComponent(JSON.stringify({ monthlyBudgetUsd: 250 }))}`;
+  await page.goto(`/dashboard${seeded}`);
 
   const budget = page.getByRole('heading', { name: 'Monthly budget', exact: true });
   await expect(budget).toBeVisible();
-  // tokens are not money: the panel says what to switch to instead of guessing
-  await expect(page.getByText('Switch “Show” to Est. cost to see the budget.')).toBeVisible();
-
-  await page.getByRole('group', { name: 'Show', exact: true })
-    .getByRole('button', { name: 'Est. cost', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'History view', exact: true }).getByRole('button', { name: 'Cost & budget', exact: true }))
+    .toHaveAttribute('aria-pressed', 'true');
   const stat = page.getByRole('status').filter({ hasText: 'of the monthly budget used' });
   await expect(stat).toBeVisible();
   await expect(stat).toContainText(/on pace for \$[\d,]+\.\d\d of \$250\.00/);
@@ -106,7 +98,10 @@ test('a monthly budget draws the burn-up against the budget when showing cost', 
   await page.screenshot({ path: test.info().outputPath('budget.png') });
 });
 
-test('no budget setting means no budget panel', async ({ page }) => {
+test('no budget setting means no budget chart, and the Cost view says how to set one', async ({ page }) => {
   await openHistory(page);
   await expect(page.getByRole('heading', { name: 'Monthly budget', exact: true })).toHaveCount(0);
+  await page.getByRole('group', { name: 'History view', exact: true }).getByRole('button', { name: 'Cost & budget', exact: true }).click();
+  await expect(page.getByText('No monthly budget is set.')).toBeVisible();
+  await expect(page.locator('canvas[aria-label*="monthly budget"]')).toHaveCount(0);
 });

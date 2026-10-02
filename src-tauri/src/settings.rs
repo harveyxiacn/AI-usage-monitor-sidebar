@@ -6,7 +6,8 @@
 //! The file is also **watched**, so a user or an AI agent can edit it while
 //! the app runs (see `watch`).
 
-use crate::model::{ColorSettings, ProviderSettings, Settings, SizeSettings};
+use super::settings_history;
+use crate::model::{AccountSettings, ColorSettings, ProviderSettings, Settings, SizeSettings};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -32,21 +33,42 @@ pub fn load(config_dir: &Path) -> Settings {
             return Settings::default();
         }
     };
-    parse(&text).unwrap_or_else(|| {
+    let Some(mut settings) = parse(&text) else {
         log::warn!("{} is not valid JSON, using defaults", path.display());
-        Settings::default()
-    })
+        return Settings::default();
+    };
+    // A settings file that predates the first-run wizard belongs to someone
+    // who already uses the app: never greet them with it. Only start-up does
+    // this; a later external edit is merged like any other.
+    if lacks_onboarded_key(&text) {
+        settings.onboarded = true;
+    }
+    settings
 }
 
 /// Turn the *contents* of a settings file into usable settings, or `None`
 /// when it is not valid JSON (a half-written file, say). `merge` is
 /// field-by-field, so a single bad field cannot poison the rest.
 pub fn parse(text: &str) -> Option<Settings> {
-    let value: Value = serde_json::from_str(text).ok()?;
+    let value: Value = serde_json::from_str(without_bom(text)).ok()?;
     Some(merge(&Settings::default(), &value))
 }
 
-/// Shallow merge of a JSON patch onto `base`.
+/// Windows PowerShell 5 (`Out-File -Encoding utf8`) and some editors save
+/// UTF-8 with a byte-order mark, which JSON does not allow. Without this, such
+/// a file was "not valid JSON": an edit never applied, and at the next start
+/// every setting fell back to its default.
+fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+/// `true` for a valid settings object that has no `onboarded` key.
+fn lacks_onboarded_key(text: &str) -> bool {
+    serde_json::from_str::<Value>(without_bom(text))
+        .ok()
+        .and_then(|v| v.as_object().map(|o| !o.contains_key("onboarded")))
+        .unwrap_or(false)
+}
 ///
 /// Known setting groups merge per key, including fields inside providers.
 /// Fields that fail to deserialize are logged and skipped. The result is
@@ -63,7 +85,13 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         let mut candidate = current.clone();
         if matches!(
             key.as_str(),
-            "providers" | "colors" | "sizes" | "thresholds" | "sidebarItems"
+            "providers"
+                | "colors"
+                | "sizes"
+                | "thresholds"
+                | "sidebarItems"
+                | "subscriptionUsd"
+                | "webhook"
         ) {
             // per-key merge so a patch can toggle one provider / one colour only
             let mut merged = match current.get(key.as_str()) {
@@ -165,8 +193,31 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.collapsed_width = s.collapsed_width.clamp(2, 24);
     s.auto_hide_delay_ms = s.auto_hide_delay_ms.min(600_000);
     s.popover_timeout_sec = s.popover_timeout_sec.min(600);
+    // 0 = off, -1 = until turned off, otherwise an epoch-ms deadline.
+    s.focus_until = s.focus_until.max(-1);
     // 0 = budget line off; the cap keeps a typo out of the chart's y-axis.
     s.monthly_budget_usd = clamp_f64(s.monthly_budget_usd, 0.0, 1_000_000.0, 0.0);
+    // 0 = unknown subscription price; a typo cannot make the ratio absurd.
+    for v in s.subscription_usd.values_mut() {
+        *v = clamp_f64(*v, 0.0, 10_000.0, 0.0);
+    }
+    s.quota_retention_days = s.quota_retention_days.min(3650);
+    // a variable *name*: a pasted key (lowercase, dashes) falls back to the default
+    s.openrouter_key_env = s.openrouter_key_env.trim().to_string();
+    if !crate::commands::providers::openrouter::is_valid_key_env(&s.openrouter_key_env) {
+        s.openrouter_key_env = Settings::default().openrouter_key_env;
+    }
+    s.custom_presets = clamp_presets(std::mem::take(&mut s.custom_presets));
+    s.accounts = clamp_accounts(std::mem::take(&mut s.accounts));
+
+    // The webhook only ever speaks https; a half-typed or plain-http URL is
+    // kept (so the field does not blank while editing) but cannot be enabled.
+    s.webhook.url = s.webhook.url.trim().chars().take(2048).collect();
+    if s.webhook.enabled && crate::commands::pricing::validate_url(&s.webhook.url).is_err() {
+        s.webhook.enabled = false;
+    }
+    s.skipped_version = s.skipped_version.trim().chars().take(64).collect();
+    s.last_seen_version = s.last_seen_version.trim().chars().take(64).collect();
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);
@@ -194,6 +245,7 @@ pub fn clamp(mut s: Settings) -> Settings {
     s.colors.claude = hex_or(&s.colors.claude, &dc.claude);
     s.colors.codex = hex_or(&s.colors.codex, &dc.codex);
     s.colors.copilot = hex_or(&s.colors.copilot, &dc.copilot);
+    s.colors.openrouter = hex_or(&s.colors.openrouter, &dc.openrouter);
     s.colors.warn = hex_or(&s.colors.warn, &dc.warn);
     s.colors.critical = hex_or(&s.colors.critical, &dc.critical);
     s.colors.surface = hex_or(&s.colors.surface, "");
@@ -215,6 +267,86 @@ pub fn clamp(mut s: Settings) -> Settings {
             });
     }
     s
+}
+
+/// Most extra accounts a user can configure.
+pub const MAX_ACCOUNTS: usize = 6;
+const MAX_ACCOUNT_LABEL_CHARS: usize = 40;
+const MAX_ACCOUNT_ID_CHARS: usize = 24;
+
+/// Providers that can have extra accounts.
+pub fn supports_accounts(provider: &str) -> bool {
+    matches!(
+        provider,
+        crate::commands::providers::CLAUDE_ID | crate::commands::providers::CODEX_ID
+    )
+}
+
+/// `[a-z0-9-]{1,24}`
+pub fn is_valid_account_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ACCOUNT_ID_CHARS
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Keep the valid accounts: known provider, slug id (unique, first wins),
+/// absolute config dir, non-empty label of at most 40 characters. At most
+/// `MAX_ACCOUNTS` survive. An entry that is invalid is dropped, never
+/// "repaired" into pointing somewhere the user did not choose.
+fn clamp_accounts(accounts: Vec<AccountSettings>) -> Vec<AccountSettings> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for mut a in accounts {
+        a.id = a.id.trim().to_string();
+        a.label = a.label.trim().to_string();
+        a.config_dir = a.config_dir.trim().to_string();
+        let valid = supports_accounts(&a.provider)
+            && is_valid_account_id(&a.id)
+            && !a.label.is_empty()
+            && a.label.chars().count() <= MAX_ACCOUNT_LABEL_CHARS
+            && std::path::Path::new(&a.config_dir).is_absolute();
+        if !valid {
+            log::warn!("settings: dropping invalid account `{}`", a.id);
+            continue;
+        }
+        if !seen.insert(a.id.clone()) {
+            log::warn!("settings: dropping duplicate account id `{}`", a.id);
+            continue;
+        }
+        out.push(a);
+        if out.len() == MAX_ACCOUNTS {
+            break;
+        }
+    }
+    out
+}
+
+/// Most custom presets a user can keep.
+pub const MAX_CUSTOM_PRESETS: usize = 10;
+const MAX_PRESET_NAME_CHARS: usize = 40;
+
+/// Presets are name → patch objects. Anything else is dropped, a preset may
+/// not carry presets or the transient focus deadline, and only the first ten
+/// (by name) survive.
+fn clamp_presets(
+    presets: std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, Value> {
+    presets
+        .into_iter()
+        .filter_map(|(name, mut patch)| {
+            let name = name.trim().to_string();
+            if name.is_empty() || name.chars().count() > MAX_PRESET_NAME_CHARS {
+                return None;
+            }
+            let object = patch.as_object_mut()?;
+            object.remove("customPresets");
+            object.remove("focusUntil");
+            Some((name, patch))
+        })
+        .take(MAX_CUSTOM_PRESETS)
+        .collect()
 }
 
 fn clamp_f64(v: f64, min: f64, max: f64, fallback: f64) -> f64 {
@@ -298,14 +430,74 @@ fn persist_patch(
     patch: &Value,
     notify: impl FnOnce(&Settings),
 ) -> Result<Settings> {
+    persist_with(
+        settings,
+        config_dir,
+        |current| merge(current, patch),
+        notify,
+    )
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// Remember `previous` in the undo ring before it is replaced. Never fails the
+/// caller: a history that cannot be written only costs the undo entry.
+fn remember(config_dir: &Path, previous: &Settings, force: bool) {
+    if let Err(e) = settings_history::record(config_dir, previous, now_ms(), force) {
+        log::warn!("could not record the settings history: {e:#}");
+    }
+}
+
+/// Shared by every write: derive the next settings from the current ones,
+/// remember the replaced version, save, store and notify, all under one lock.
+fn persist_with(
+    settings: &parking_lot::RwLock<Settings>,
+    config_dir: &Path,
+    next: impl FnOnce(&Settings) -> Settings,
+    notify: impl FnOnce(&Settings),
+) -> Result<Settings> {
     // Hold one write lock through read/merge/save/notify so concurrent windows
     // cannot overwrite patches or deliver stale events after newer settings.
     let mut current = settings.write();
-    let merged = merge(&current, patch);
+    let merged = next(&current);
     save(config_dir, &merged)?;
+    if merged != *current {
+        remember(config_dir, &current, false);
+    }
     *current = merged.clone();
     notify(&merged);
     Ok(merged)
+}
+
+/// Make version `index` of the undo ring (0 = the newest) the live settings.
+/// The version it replaces goes into the ring, so a restore can be undone too.
+pub fn restore_version(app: &AppHandle, index: usize) -> Result<Settings> {
+    let state = app.state::<AppState>();
+    let versions = settings_history::load(&state.config_dir);
+    let version = versions
+        .get(index)
+        .with_context(|| format!("no saved settings version #{index}"))?;
+    // Go through `merge` onto the defaults so a hand-edited history file is
+    // clamped like any other input.
+    let target = merge(
+        &Settings::default(),
+        &serde_json::to_value(&version.settings).context("serialize version")?,
+    );
+    let mut current = state.settings.write();
+    if target == *current {
+        return Ok(target);
+    }
+    save(&state.config_dir, &target)?;
+    // A restore is a deliberate step, never part of a slider burst.
+    remember(&state.config_dir, &current, true);
+    *current = target.clone();
+    emit_updated(app, &target);
+    Ok(target)
 }
 
 /// Toggle `autoHide` from outside the command layer (the tray menu).
@@ -319,6 +511,9 @@ fn emit_updated(app: &AppHandle, settings: &Settings) {
     // A changed pricing source invalidates any in-memory offer and, where no
     // complete local table exists, reloads the matching applied cache.
     crate::commands::pricing::settings_changed(app, settings);
+    crate::export_snapshot::on_settings_changed(app, settings.export_snapshot);
+    // a removed / switched-off extra account leaves the bar at once
+    crate::scheduler::accounts_changed(app, settings.clone());
     if let Err(e) = app.emit(events::SETTINGS_UPDATED, settings) {
         log::warn!("could not emit {}: {e}", events::SETTINGS_UPDATED);
     }
@@ -364,11 +559,32 @@ pub fn reload_action(
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ReloadAction::Wait;
     };
-    match parse(text) {
+    match parse(text).map(|next| keep_bookkeeping(next, text, in_memory)) {
         None => ReloadAction::Wait,
         Some(next) if next == *in_memory => ReloadAction::Ignore,
         Some(next) => ReloadAction::Apply(Box::new(next)),
     }
+}
+
+/// The app's own records, not preferences: an external edit that does not
+/// mention one (a partial file, a hand-written one, one from before the key
+/// existed) keeps the live value instead of resetting it to the default —
+/// otherwise editing `settings.json` would bring back the first-run wizard,
+/// the release notes or a skipped update.
+fn keep_bookkeeping(mut next: Settings, text: &str, live: &Settings) -> Settings {
+    let Ok(Value::Object(file)) = serde_json::from_str::<Value>(without_bom(text)) else {
+        return next;
+    };
+    if !file.contains_key("onboarded") {
+        next.onboarded = live.onboarded;
+    }
+    if !file.contains_key("lastSeenVersion") {
+        next.last_seen_version = live.last_seen_version.clone();
+    }
+    if !file.contains_key("skippedVersion") {
+        next.skipped_version = live.skipped_version.clone();
+    }
+    next
 }
 
 /// True when a watcher event concerns `settings.json` itself. The watch is on
@@ -394,6 +610,7 @@ fn apply_external(app: &AppHandle) {
         match reload_action(on_disk.as_deref(), own.as_deref(), &current) {
             ReloadAction::Ignore | ReloadAction::Wait => return,
             ReloadAction::Apply(next) => {
+                remember(&state.config_dir, &current, false);
                 *current = (*next).clone();
                 *next
             }
@@ -455,6 +672,26 @@ mod tests {
     use crate::commands::test_support::tempdir;
     use crate::model::{Edge, PercentPosition, RingMode, SidebarItems, Theme};
     use serde_json::json;
+
+    #[test]
+    fn openrouter_is_registered_off_and_its_key_variable_must_be_a_name() {
+        let base = Settings::default();
+        assert!(
+            !base.providers["openrouter"].enabled,
+            "experimental: opt-in only"
+        );
+        assert_eq!(base.providers["openrouter"].order, 3);
+        assert_eq!(base.openrouter_key_env, "OPENROUTER_API_KEY");
+        assert_eq!(
+            merge(&base, &json!({"openrouterKeyEnv": "MY_OR_KEY"})).openrouter_key_env,
+            "MY_OR_KEY"
+        );
+        // a pasted key is not a variable name: back to the default
+        assert_eq!(
+            merge(&base, &json!({"openrouterKeyEnv": "sk-or-v1-abc"})).openrouter_key_env,
+            "OPENROUTER_API_KEY"
+        );
+    }
 
     #[test]
     fn merge_replaces_scalars_and_keeps_the_rest() {
@@ -627,6 +864,39 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_visual_settings_default_validate_and_round_trip() {
+        use crate::model::{LabelContent, RingStyle};
+        let base = Settings::default();
+        assert_eq!(base.label_content, LabelContent::Percent);
+        assert_eq!(base.ring_style, RingStyle::Ring);
+        assert!(base.sidebar_animations);
+
+        let old = merge(&base, &json!({"percentMode": "remaining"}));
+        assert_eq!(old.label_content, LabelContent::Percent);
+        assert_eq!(old.ring_style, RingStyle::Ring);
+
+        let invalid = merge(
+            &base,
+            &json!({"labelContent": "nope", "ringStyle": 3, "sidebarAnimations": "x"}),
+        );
+        assert_eq!(invalid.label_content, LabelContent::Percent);
+        assert_eq!(invalid.ring_style, RingStyle::Ring);
+        assert!(invalid.sidebar_animations);
+
+        let set = merge(
+            &base,
+            &json!({"labelContent": "both", "ringStyle": "bar", "sidebarAnimations": false}),
+        );
+        assert_eq!(set.label_content, LabelContent::Both);
+        assert_eq!(set.ring_style, RingStyle::Bar);
+        assert!(!set.sidebar_animations);
+        let wire = serde_json::to_value(&set).unwrap();
+        assert_eq!(wire["labelContent"], "both");
+        assert_eq!(wire["ringStyle"], "bar");
+        assert_eq!(wire["sidebarAnimations"], false);
+    }
+
+    #[test]
     fn percent_position_defaults_for_old_files_and_round_trips_center() {
         let base = Settings::default();
         assert_eq!(base.percent_position, PercentPosition::Below);
@@ -649,6 +919,23 @@ mod tests {
                 .percent_position,
             PercentPosition::Center
         );
+    }
+
+    #[test]
+    fn tray_display_defaults_to_icon_and_ignores_unknown_values() {
+        let base = Settings::default();
+        assert_eq!(base.tray_display, crate::model::TrayDisplay::Icon);
+        let old = merge(&base, &json!({"theme": "light"}));
+        assert_eq!(old.tray_display, crate::model::TrayDisplay::Icon);
+        let invalid = merge(&base, &json!({"trayDisplay": "title"}));
+        assert_eq!(invalid.tray_display, crate::model::TrayDisplay::Icon);
+        let percent = merge(&base, &json!({"trayDisplay": "percent"}));
+        assert_eq!(percent.tray_display, crate::model::TrayDisplay::Percent);
+        let wire = serde_json::to_value(&percent).unwrap();
+        assert_eq!(wire["trayDisplay"], "percent");
+        // an invalid value does not undo an earlier valid one
+        let kept = merge(&percent, &json!({"trayDisplay": 7}));
+        assert_eq!(kept.tray_display, crate::model::TrayDisplay::Percent);
     }
 
     #[test]
@@ -717,6 +1004,22 @@ mod tests {
     }
 
     #[test]
+    fn subscription_prices_are_per_provider_and_clamped() {
+        let base = Settings::default();
+        assert_eq!(base.subscription_usd.get("claude"), Some(&0.0));
+        let m = merge(
+            &base,
+            &json!({"subscriptionUsd": {"claude": 100, "codex": -3}}),
+        );
+        assert_eq!(m.subscription_usd["claude"], 100.0);
+        assert_eq!(m.subscription_usd["codex"], 0.0);
+        let big = merge(&base, &json!({"subscriptionUsd": {"claude": 1e9}}));
+        assert_eq!(big.subscription_usd["claude"], 10_000.0);
+        // a partial patch keeps the other provider's entry
+        assert!(big.subscription_usd.contains_key("codex"));
+    }
+
+    #[test]
     fn thresholds_stay_ordered_and_in_range() {
         let base = Settings::default();
         let m = merge(
@@ -765,6 +1068,116 @@ mod tests {
         assert!(back.auto_hide);
         assert_eq!(back.vertical_offset, -120);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_make_the_file_invalid() {
+        let text = "\u{feff}{\"edge\":\"left\",\"exportSnapshot\":true}";
+        let parsed = parse(text).expect("a BOM-prefixed file is valid settings");
+        assert!(parsed.export_snapshot);
+        assert_ne!(parsed.edge, Settings::default().edge);
+        assert!(lacks_onboarded_key(text));
+        assert!(matches!(
+            reload_action(Some(text.as_bytes()), None, &Settings::default()),
+            ReloadAction::Apply(_)
+        ));
+    }
+
+    #[test]
+    fn an_external_edit_keeps_the_app_records_it_does_not_mention() {
+        let live = Settings {
+            onboarded: true,
+            last_seen_version: "0.6.0".into(),
+            skipped_version: "0.6.1".into(),
+            ..Settings::default()
+        };
+        // a partial, hand-written file: the preference applies, the records stay
+        let ReloadAction::Apply(next) = reload_action(Some(br#"{"edge":"left"}"#), None, &live)
+        else {
+            panic!("an edit must apply");
+        };
+        assert!(next.onboarded);
+        assert_eq!(next.last_seen_version, "0.6.0");
+        assert_eq!(next.skipped_version, "0.6.1");
+        assert_ne!(next.edge, live.edge, "the edited preference applies");
+        // a file that does name them still wins
+        let ReloadAction::Apply(next) = reload_action(
+            Some(br#"{"onboarded":false,"lastSeenVersion":"","skippedVersion":""}"#),
+            None,
+            &live,
+        ) else {
+            panic!("an edit must apply");
+        };
+        assert!(
+            !next.onboarded && next.last_seen_version.is_empty() && next.skipped_version.is_empty()
+        );
+    }
+
+    #[test]
+    fn only_a_settings_file_from_before_the_wizard_counts_as_onboarded() {
+        let dir = tempdir();
+        assert!(
+            !load(&dir).onboarded,
+            "no file: a fresh install sees the wizard"
+        );
+
+        std::fs::write(settings_path(&dir), r#"{"edge":"left"}"#).unwrap();
+        assert!(
+            load(&dir).onboarded,
+            "an existing file without the key: upgraded user"
+        );
+
+        std::fs::write(settings_path(&dir), r#"{"edge":"left","onboarded":false}"#).unwrap();
+        assert!(
+            !load(&dir).onboarded,
+            "an explicit false (wizard unfinished) is kept"
+        );
+
+        std::fs::write(settings_path(&dir), "{ not json").unwrap();
+        assert!(
+            !load(&dir).onboarded,
+            "a broken file is not evidence of a user"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_webhook_merges_per_key_and_only_enables_with_an_https_url() {
+        let base = Settings::default();
+        let merged = merge(
+            &base,
+            &json!({"webhook": {"url": "  https://ntfy.sh/my-topic  ", "kind": "ntfy"}}),
+        );
+        assert_eq!(merged.webhook.url, "https://ntfy.sh/my-topic", "trimmed");
+        assert_eq!(merged.webhook.kind, crate::model::WebhookKind::Ntfy);
+        let merged = merge(&merged, &json!({"webhook": {"enabled": true}}));
+        assert!(merged.webhook.enabled);
+        assert_eq!(
+            merged.webhook.kind,
+            crate::model::WebhookKind::Ntfy,
+            "kind survives"
+        );
+
+        let plain = merge(&merged, &json!({"webhook": {"url": "http://ntfy.sh/t"}}));
+        assert!(!plain.webhook.enabled, "plain http can never be enabled");
+        assert_eq!(
+            plain.webhook.url, "http://ntfy.sh/t",
+            "but the text is kept for editing"
+        );
+        let bad_kind = merge(&merged, &json!({"webhook": {"kind": "carrier-pigeon"}}));
+        assert_eq!(
+            bad_kind.webhook.kind,
+            crate::model::WebhookKind::Ntfy,
+            "invalid value ignored"
+        );
+    }
+
+    #[test]
+    fn the_new_notification_settings_default_to_quiet_and_on_by_type() {
+        let s = Settings::default();
+        assert!(!s.notifications && !s.weekly_summary && !s.webhook.enabled);
+        assert!(s.threshold_notifications && s.budget_notifications && s.forecast_notifications);
+        assert!(!s.onboarded && s.skipped_version.is_empty() && s.last_seen_version.is_empty());
     }
 
     #[test]
@@ -842,6 +1255,24 @@ mod tests {
         assert!(!merged.forecast_notifications);
         assert!(merged.notifications, "unrelated fields survive");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn focus_mode_defaults_off_and_rejects_nonsense_deadlines() {
+        let d = Settings::default();
+        assert_eq!((d.focus_until, d.focus_hides_sidebar), (0, false));
+        let on = merge(&d, &json!({"focusUntil": 1_900_000_000_000_i64}));
+        assert_eq!(on.focus_until, 1_900_000_000_000);
+        assert_eq!(merge(&d, &json!({"focusUntil": -1})).focus_until, -1);
+        assert_eq!(
+            merge(&d, &json!({"focusUntil": -50})).focus_until,
+            -1,
+            "clamped"
+        );
+        assert_eq!(
+            merge(&on, &json!({"focusUntil": "soon"})).focus_until,
+            on.focus_until
+        );
     }
 
     #[test]
@@ -1007,7 +1438,106 @@ mod tests {
         assert_eq!(saved, *current.read());
         assert_eq!(emitted.lock().len(), 2);
         assert_eq!(emitted.lock().last(), Some(&saved));
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        // settings.json and its history, no temp files left behind
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["settings.history.json", "settings.json"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn every_real_change_remembers_the_version_it_replaced() {
+        let dir = tempdir();
+        let current = parking_lot::RwLock::new(Settings::default());
+        persist_patch(&current, &dir, &json!({"theme": "light"}), |_| {}).unwrap();
+        // an identical patch is not a change and adds no undo entry
+        persist_patch(&current, &dir, &json!({"theme": "light"}), |_| {}).unwrap();
+        let versions = settings_history::load(&dir);
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].settings.theme, Theme::Dark);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn custom_presets_are_capped_named_and_never_nested() {
+        let mut patch = serde_json::Map::new();
+        for i in 0..14 {
+            patch.insert(
+                format!("p{i:02}"),
+                json!({"edge": "left", "customPresets": {"x": {}}, "focusUntil": -1}),
+            );
+        }
+        patch.insert("not-an-object".into(), json!(5));
+        patch.insert("  ".into(), json!({}));
+        patch.insert("x".repeat(41), json!({}));
+        let merged = merge(&Settings::default(), &json!({"customPresets": patch}));
+        assert_eq!(merged.custom_presets.len(), MAX_CUSTOM_PRESETS);
+        let first = &merged.custom_presets["p00"];
+        assert_eq!(first, &json!({"edge": "left"}), "nested keys are stripped");
+        assert!(!merged.custom_presets.contains_key("not-an-object"));
+    }
+
+    fn acct(id: &str, provider: &str, dir: &str) -> serde_json::Value {
+        json!({"id": id, "provider": provider, "label": "Work", "configDir": dir})
+    }
+
+    #[test]
+    fn accounts_default_to_none_and_old_files_load_without_the_key() {
+        assert!(Settings::default().accounts.is_empty());
+        let loaded = parse(r#"{"language":"en"}"#).unwrap();
+        assert!(loaded.accounts.is_empty());
+    }
+
+    #[test]
+    fn accounts_are_validated_deduplicated_and_capped() {
+        let abs = std::env::temp_dir().display().to_string();
+        let merged = merge(
+            &Settings::default(),
+            &json!({"accounts": [
+                acct("work", "claude", &abs),
+                acct("work", "codex", &abs),            // duplicate id
+                acct("Bad_Id", "claude", &abs),         // not a slug
+                acct("", "claude", &abs),               // empty id
+                acct(&"x".repeat(25), "claude", &abs),  // too long
+                acct("rel", "claude", "relative/dir"),  // not absolute
+                acct("cop", "copilot", &abs),           // provider without accounts
+                {"id": "lbl", "provider": "claude", "label": "  ", "configDir": abs.clone()},
+                {"id": "lbl2", "provider": "claude", "label": "l".repeat(41), "configDir": abs.clone()},
+                {"id": "home", "provider": "codex", "label": " Home ", "configDir": abs.clone(), "enabled": false},
+            ]}),
+        );
+        let ids: Vec<&str> = merged.accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["work", "home"]);
+        assert!(merged.accounts[0].enabled, "enabled defaults to true");
+        assert_eq!(merged.accounts[1].label, "Home", "trimmed");
+        assert!(!merged.accounts[1].enabled);
+
+        let many: Vec<_> = (0..10)
+            .map(|i| acct(&format!("a{i}"), "claude", &abs))
+            .collect();
+        let capped = merge(&Settings::default(), &json!({ "accounts": many }));
+        assert_eq!(capped.accounts.len(), MAX_ACCOUNTS);
+        assert_eq!(capped.accounts[0].id, "a0", "the first ones survive");
+    }
+
+    #[test]
+    fn the_account_list_is_replaced_as_a_whole_and_round_trips() {
+        let abs = std::env::temp_dir().display().to_string();
+        let one = merge(
+            &Settings::default(),
+            &json!({"accounts": [acct("a", "claude", &abs)]}),
+        );
+        let two = merge(&one, &json!({"accounts": [acct("b", "codex", &abs)]}));
+        assert_eq!(two.accounts.len(), 1);
+        assert_eq!(two.accounts[0].id, "b");
+        let again: Settings = serde_json::from_value(serde_json::to_value(&two).unwrap()).unwrap();
+        assert_eq!(again.accounts, two.accounts);
+        // an unrelated patch keeps them
+        assert_eq!(merge(&two, &json!({"edge": "left"})).accounts, two.accounts);
+        let cleared = merge(&two, &json!({"accounts": []}));
+        assert!(cleared.accounts.is_empty());
     }
 }

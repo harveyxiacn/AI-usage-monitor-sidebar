@@ -76,6 +76,26 @@ pub fn load_auth() -> Option<AuthFile> {
     serde_json::from_str(&text).ok()
 }
 
+/// The Codex home of the account `ctx` is bound to: the extra account's own
+/// dir, else `$CODEX_HOME` / `~/.codex`.
+fn home_of(ctx: &ProviderCtx) -> Option<PathBuf> {
+    match &ctx.account {
+        Some(a) => Some(a.config_dir.clone()),
+        None => codex_home(),
+    }
+}
+
+/// `auth.json` of an extra account's Codex home.
+pub fn auth_path_in(dir: &Path) -> PathBuf {
+    dir.join("auth.json")
+}
+
+/// Login of an extra account (`<dir>/auth.json`).
+pub fn load_auth_from(dir: &Path) -> Option<AuthFile> {
+    let text = std::fs::read_to_string(auth_path_in(dir)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 // ---------- JWT claims (no signature verification) ----------
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -618,11 +638,15 @@ pub fn rate_limits_in_file(path: &Path) -> Option<LogRateLimits> {
 /// Build a degraded quota out of the local session logs, falling back to the
 /// on-disk cache when the logs have nothing either.
 fn from_local_logs(ctx: &ProviderCtx, status: ProviderStatus, message: &str) -> ProviderQuota {
-    let from_log = [log_root(), archived_log_root()]
-        .into_iter()
-        .flatten()
-        .filter_map(|root| rate_limits_from_logs(&root))
-        .max_by_key(|limits| observed_ms(limits.observed_at.as_deref()));
+    let home = home_of(ctx);
+    let from_log = [
+        home.as_ref().map(|h| h.join("sessions")),
+        home.as_ref().map(|h| h.join("archived_sessions")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|root| rate_limits_from_logs(&root))
+    .max_by_key(|limits| observed_ms(limits.observed_at.as_deref()));
     let Some(rl) = from_log else {
         return degraded(ctx, CODEX_ID, DISPLAY_NAME, status, message);
     };
@@ -654,6 +678,18 @@ fn from_local_logs(ctx: &ProviderCtx, status: ProviderStatus, message: &str) -> 
     q
 }
 
+/// Same clock-skew margin as the Claude provider.
+const EXPIRY_SKEW_SECS: i64 = 60;
+
+/// `true` when the stored access token is expired or about to be.
+fn auth_needs_refresh(auth: &AuthFile, now_secs: i64) -> bool {
+    auth.tokens
+        .as_ref()
+        .and_then(|t| t.access_token.as_deref())
+        .and_then(parse_jwt_claims)
+        .is_some_and(|c| c.is_expired(now_secs.saturating_add(EXPIRY_SKEW_SECS)))
+}
+
 // ---------- provider ----------
 
 pub struct CodexProvider {
@@ -676,8 +712,12 @@ impl Provider for CodexProvider {
         DISPLAY_NAME
     }
 
+    fn account(&self) -> Option<&super::AccountRef> {
+        self.ctx.account.as_ref()
+    }
+
     fn info(&self) -> ProviderInfo {
-        let auth = load_auth();
+        let auth = self.load();
         let claims = auth
             .as_ref()
             .and_then(|a| a.tokens.as_ref())
@@ -699,19 +739,51 @@ impl Provider for CodexProvider {
             id: CODEX_ID.into(),
             display_name: DISPLAY_NAME.into(),
             logged_in,
-            credential_path: credentials_path().map(|p| p.display().to_string()),
-            log_path: log_root().map(|p| p.display().to_string()),
+            credential_path: match &self.ctx.account {
+                Some(a) => Some(auth_path_in(&a.config_dir).display().to_string()),
+                None => credentials_path().map(|p| p.display().to_string()),
+            },
+            log_path: home_of(&self.ctx).map(|h| h.join("sessions").display().to_string()),
             plan_label: claims.and_then(|c| plan_label(c.plan_type.as_deref())),
             experimental: false,
         }
     }
 
     async fn fetch(&self, http: &reqwest::Client) -> ProviderQuota {
-        let Some(auth) = load_auth() else {
+        let Some(first) = self.load() else {
             let mut q = empty_quota(CODEX_ID, DISPLAY_NAME, ProviderStatus::NotLoggedIn);
-            q.error = Some("Not logged in — run `codex login` to sign in".into());
-            return q;
+            q.error = Some(match &self.ctx.account {
+                Some(a) => format!(
+                    "Not logged in — run `CODEX_HOME={} codex login` to sign in",
+                    a.config_dir.display()
+                ),
+                None => "Not logged in — run `codex login` to sign in".into(),
+            });
+            return super::tag_account(q, self.account());
         };
+        // The Codex CLI refreshes auth.json itself: an expired-looking token
+        // gets one fresh read of the file before it is reported as expired.
+        let now = chrono::Utc::now().timestamp();
+        let auth = if auth_needs_refresh(&first, now) {
+            self.load().unwrap_or(first)
+        } else {
+            first
+        };
+        super::tag_account(self.fetch_with(http, auth).await, self.account())
+    }
+}
+
+impl CodexProvider {
+    /// Login of this instance's account.
+    fn load(&self) -> Option<AuthFile> {
+        match &self.ctx.account {
+            Some(a) => load_auth_from(&a.config_dir),
+            None => load_auth(),
+        }
+    }
+
+    /// Everything after the credentials have been read.
+    async fn fetch_with(&self, http: &reqwest::Client, auth: AuthFile) -> ProviderQuota {
         let token = auth
             .tokens
             .as_ref()
@@ -731,21 +803,29 @@ impl Provider for CodexProvider {
             .or_else(|| claims.account_id.clone())
             .unwrap_or_default();
 
-        if claims.is_expired(chrono::Utc::now().timestamp()) {
+        if claims.is_expired(
+            chrono::Utc::now()
+                .timestamp()
+                .saturating_add(EXPIRY_SKEW_SECS),
+        ) {
             log::info!("codex: access token expired, falling back to session logs");
             return from_local_logs(&self.ctx, ProviderStatus::TokenExpired, EXPIRED_MESSAGE);
         }
 
-        let mut req = http
-            .get(USAGE_URL)
-            .bearer_auth(&token)
-            .header("User-Agent", self.ctx.user_agent.clone())
-            .header("Accept", "application/json");
-        if !account_id.is_empty() {
-            req = req.header("ChatGPT-Account-Id", account_id);
-        }
-
-        let resp = match req.send().await {
+        let url = self.ctx.endpoint(USAGE_URL);
+        let resp = match super::send_with_retry(&self.ctx, || {
+            let mut req = http
+                .get(&url)
+                .bearer_auth(&token)
+                .header("User-Agent", self.ctx.user_agent.clone())
+                .header("Accept", "application/json");
+            if !account_id.is_empty() {
+                req = req.header("ChatGPT-Account-Id", account_id.clone());
+            }
+            req
+        })
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 log::warn!("codex usage request failed: {e}");
@@ -1206,5 +1286,88 @@ mod tests {
     /// directory and read each other's session logs.
     pub(crate) fn tempdir() -> PathBuf {
         crate::commands::test_support::tempdir()
+    }
+
+    // ---------- expiry margin and fetch against a local stub ----------
+
+    fn auth_with_exp(exp: i64) -> AuthFile {
+        AuthFile {
+            auth_mode: Some("chatgpt".into()),
+            tokens: Some(AuthTokens {
+                access_token: Some(synthetic_jwt(&serde_json::json!({ "exp": exp }))),
+                account_id: None,
+            }),
+            ..AuthFile::default()
+        }
+    }
+
+    #[test]
+    fn a_codex_token_counts_as_expired_a_minute_early() {
+        let now = 1_800_000_000;
+        assert!(!auth_needs_refresh(&auth_with_exp(now + 3_600), now));
+        assert!(auth_needs_refresh(
+            &auth_with_exp(now + EXPIRY_SKEW_SECS),
+            now
+        ));
+        assert!(auth_needs_refresh(&auth_with_exp(now - 1), now));
+        assert!(!auth_needs_refresh(&AuthFile::default(), now));
+    }
+
+    use crate::commands::test_support::StubServer;
+    use std::time::Duration;
+
+    async fn fetch_stub(server: &StubServer) -> ProviderQuota {
+        let provider = CodexProvider::new(ProviderCtx {
+            api_base: Some(server.base.clone()),
+            retry_delay: Duration::from_millis(5),
+            ..ProviderCtx::default()
+        });
+        let far_future = chrono::Utc::now().timestamp() + 86_400;
+        provider
+            .fetch_with(&reqwest::Client::new(), auth_with_exp(far_future))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_200_answer_becomes_codex_windows() {
+        let server = StubServer::start(vec![("200 OK", vec![], PLUS.to_string())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Ok);
+        assert_eq!(q.windows.len(), 2);
+        assert_eq!(q.source, DataSource::Api);
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_401_is_final_for_codex() {
+        let server = StubServer::start(vec![("401 Unauthorized", vec![], "{}".into())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::TokenExpired);
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_429_keeps_retry_after_for_codex() {
+        let server = StubServer::start(vec![(
+            "429 Too Many Requests",
+            vec![("Retry-After", "90")],
+            "{}".into(),
+        )]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::RateLimited);
+        assert!(q.next_attempt_at.is_some());
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_5xx_is_retried_once_for_codex() {
+        let server = StubServer::start(vec![("504 Gateway Timeout", vec![], "{}".into())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Error);
+        assert_eq!(server.hits(), 2);
+        // A plain 500 is not a gateway hiccup: no retry.
+        let server = StubServer::start(vec![("500 Internal Server Error", vec![], "{}".into())]);
+        assert_eq!(fetch_stub(&server).await.status, ProviderStatus::Error);
+        assert_eq!(server.hits(), 1);
     }
 }

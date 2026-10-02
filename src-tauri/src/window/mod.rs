@@ -25,6 +25,8 @@ pub mod popover;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod tray;
+pub mod tray_presets;
+pub mod tray_status;
 
 use crate::model::*;
 use crate::window::monitors::LogicalRect;
@@ -603,6 +605,13 @@ pub async fn debug_log(msg: String) -> Result<(), String> {
     if cfg!(debug_assertions) {
         log::info!("[webview] {msg}");
     }
+    Ok(())
+}
+
+/// The tray's "Show/Hide sidebar", for the dashboard's command palette.
+#[tauri::command]
+pub async fn toggle_sidebar(app: AppHandle) -> Result<(), String> {
+    tray::toggle_sidebar(&app);
     Ok(())
 }
 

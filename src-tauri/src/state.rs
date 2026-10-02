@@ -134,6 +134,18 @@ impl PollClocks {
     }
 }
 
+/// The directory for `usage.db`, `snapshot.json` and the caches. SQLite (WAL)
+/// must not live in the Windows roaming profile, which may be a redirected
+/// network share, so the local dir is preferred — except where an earlier
+/// version already created the database in the roaming one. Shared with the
+/// `--print` CLI, which has no Tauri path resolver.
+pub fn pick_data_dir(roaming: PathBuf, local: Option<PathBuf>) -> PathBuf {
+    match local {
+        Some(local) if !roaming.join("usage.db").exists() => local,
+        _ => roaming,
+    }
+}
+
 pub struct AppState {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -196,7 +208,7 @@ impl AppState {
                 continue;
             }
             if let Some(ms) = providers::rfc3339_to_ms(&q.fetched_at) {
-                poll_clocks.last_poll_ms.insert(q.provider.clone(), ms);
+                poll_clocks.last_poll_ms.insert(q.key(), ms);
             }
         }
 

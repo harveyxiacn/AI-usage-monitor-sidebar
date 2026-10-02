@@ -1,0 +1,50 @@
+{
+  "minimal": {
+    "ringMode": "primary",
+    "surfaceStyle": "solid",
+    "percentPosition": "below",
+    "autoHide": true,
+    "sidebarItems": {
+      "fiveHour": true,
+      "weekly": true,
+      "scoped": false,
+      "other": false,
+      "logo": true,
+      "percentLabel": false,
+      "moreButton": false
+    }
+  },
+  "power": {
+    "ringMode": "all",
+    "surfaceStyle": "glass",
+    "percentPosition": "center",
+    "refreshIntervalSec": 30,
+    "adaptiveRefresh": true,
+    "notifications": true,
+    "forecastNotifications": true,
+    "sidebarItems": {
+      "fiveHour": true,
+      "weekly": true,
+      "scoped": true,
+      "other": true,
+      "logo": true,
+      "percentLabel": true,
+      "moreButton": true
+    }
+  },
+  "screenShare": {
+    "hideAccountEmail": true,
+    "notifications": false,
+    "autoHide": true,
+    "autoHideDelayMs": 500,
+    "popoverTimeoutSec": 5
+  },
+  "cyber": {
+    "theme": "dark",
+    "surfaceStyle": "cyber",
+    "cyberAccent": "neon",
+    "ringMode": "concentric",
+    "percentPosition": "center",
+    "opacity": 1
+  }
+}

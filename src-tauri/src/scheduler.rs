@@ -11,6 +11,8 @@
 //! * **ingest loop** — first scan 2 s after start, then every 60 s, plus a
 //!   `notify` file watcher on the log roots debounced by 3 s. The same watcher
 //!   feeds the per-provider "last activity" clock the refresh loop reads.
+//! * **maintenance loop** — daily quota-sample retention/thinning, WAL
+//!   checkpoint and `PRAGMA optimize` (`settings.quotaRetentionDays`).
 //! * **event listener** — the tray emits `refresh-requested`; opening the
 //!   dashboard cancels the adaptive stretch.
 //!
@@ -18,10 +20,7 @@
 //! SQLite inside `spawn_blocking`.
 
 use crate::commands::{forecast, ingest, providers, store};
-use crate::model::{
-    events, AppSnapshot, DataSource, ForecastConfidence, IngestStats, ProviderStatus, QuotaWindow,
-    Settings, WindowKind,
-};
+use crate::model::{events, AppSnapshot, DataSource, IngestStats, ProviderStatus, Settings};
 use crate::state::{AppState, Backoff, PollClocks};
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashSet};
@@ -30,7 +29,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Listener, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 /// App-wide event the tray (platform layer) emits to force a refresh.
 pub const REFRESH_REQUESTED: &str = "refresh-requested";
@@ -40,14 +38,21 @@ const INGEST_INTERVAL_MS: i64 = 60_000;
 /// Quiet period after the last file-system event before ingesting.
 const WATCH_DEBOUNCE_MS: i64 = 3_000;
 const TICK: Duration = Duration::from_secs(1);
+const MAINTENANCE_FIRST_DELAY: Duration = Duration::from_secs(300);
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 pub fn start(app: AppHandle) {
     let dirty = Arc::new(Mutex::new(DirtyFiles::default()));
     let clocks = app.state::<AppState>().poll_clocks.clone();
     spawn_log_watcher(dirty.clone(), clocks);
+    // Budget alerts and the weekly summary run on their own slow timer.
+    crate::commands::alerts::start(app.clone());
 
     let refresh_app = app.clone();
     tauri::async_runtime::spawn(async move { refresh_loop(refresh_app).await });
+
+    let maintenance_app = app.clone();
+    tauri::async_runtime::spawn(async move { maintenance_loop(maintenance_app).await });
 
     let ingest_app = app.clone();
     tauri::async_runtime::spawn(async move { ingest_loop(ingest_app, dirty).await });
@@ -69,6 +74,35 @@ pub fn start(app: AppHandle) {
     });
 }
 
+/// Daily database housekeeping (`store::maintain_quota_samples`). The first
+/// pass runs a few minutes after start so it never competes with start-up.
+async fn maintenance_loop(app: AppHandle) {
+    tokio::time::sleep(MAINTENANCE_FIRST_DELAY).await;
+    loop {
+        let (db, retention_days) = {
+            let state = app.state::<AppState>();
+            let days = state.settings.read().quota_retention_days;
+            (state.db.clone(), days)
+        };
+        if let Some(db) = db {
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                store::maintain_quota_samples(&db, store::now_ms(), retention_days)
+            })
+            .await;
+            match result {
+                Ok(Ok(stats)) => log::info!(
+                    "maintenance: {} expired and {} thinned quota samples removed",
+                    stats.expired,
+                    stats.thinned
+                ),
+                Ok(Err(e)) => log::warn!("database maintenance failed: {e:#}"),
+                Err(e) => log::warn!("database maintenance task failed: {e}"),
+            }
+        }
+        tokio::time::sleep(MAINTENANCE_INTERVAL).await;
+    }
+}
+
 // ---------- adaptive polling ----------
 
 /// Lower bound on `refreshIntervalSec` (also enforced by `settings::clamp`).
@@ -87,8 +121,11 @@ const LEARNED_MAX_SEC: u64 = 900;
 
 /// The floor below which a provider is never polled, whatever the user
 /// configured. Only Claude needs one today.
+///
+/// `provider` is a registry key; every Claude account has the floor of its
+/// own (`claude@work` is polled independently of `claude`).
 pub fn provider_min_interval_secs(provider: &str) -> u64 {
-    match provider {
+    match crate::model::split_key(provider).0 {
         providers::CLAUDE_ID => CLAUDE_MIN_INTERVAL_SEC,
         _ => MIN_INTERVAL_SEC,
     }
@@ -203,14 +240,24 @@ fn poll_input(
     }
 }
 
-/// The enabled providers, in settings order. Disabled ones never need a poll.
+/// The enabled providers, in settings order, each followed by its enabled
+/// extra accounts (`claude@work`). Disabled ones never need a poll.
 fn pollable_providers(settings: &Settings) -> Vec<String> {
-    settings
-        .providers
-        .iter()
-        .filter(|(id, _)| providers::is_enabled(settings, id))
-        .map(|(id, _)| id.clone())
-        .collect()
+    let mut out = Vec::new();
+    for id in settings.providers.keys() {
+        if !providers::is_enabled(settings, id) {
+            continue;
+        }
+        out.push(id.clone());
+        out.extend(
+            settings
+                .accounts
+                .iter()
+                .filter(|a| a.enabled && a.provider == *id)
+                .map(|a| crate::model::provider_key(id, Some(&a.id))),
+        );
+    }
+    out
 }
 
 /// True when at least one provider's next poll time has arrived.
@@ -229,9 +276,54 @@ fn any_provider_due(app: &AppHandle, now_ms: i64) -> bool {
 
 // ---------- quota refresh ----------
 
+/// Drop the quotas of extra accounts that are no longer configured, enabled or
+/// allowed by their provider's switch. Returns `true` when something went.
+pub fn retain_configured_accounts(snapshot: &mut AppSnapshot, settings: &Settings) -> bool {
+    let before = snapshot.providers.len();
+    snapshot.providers.retain(|q| match &q.account_id {
+        None => true,
+        Some(id) => {
+            providers::is_enabled(settings, &q.provider)
+                && settings
+                    .accounts
+                    .iter()
+                    .any(|a| a.enabled && a.provider == q.provider && a.id == *id)
+        }
+    });
+    snapshot.providers.len() != before
+}
+
+/// Settings changed: take a removed or switched-off extra account out of the
+/// snapshot right away instead of waiting for the next poll (a new or
+/// re-enabled one is simply polled on the next one-second tick). Runs on the
+/// async runtime because the caller still holds the settings lock.
+pub fn accounts_changed(app: &AppHandle, settings: Settings) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let pruned = {
+            let mut snapshot = state.snapshot.write();
+            retain_configured_accounts(&mut snapshot, &settings).then(|| snapshot.clone())
+        };
+        if let Some(snapshot) = pruned {
+            if let Err(e) = app.emit(events::SNAPSHOT_UPDATED, &snapshot) {
+                log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
+            }
+            crate::window::tray::sync_usage(&app, &snapshot);
+        }
+    });
+}
+
+/// Whether the timer may poll providers on its own. "Pause polling" stops
+/// only this; explicit refreshes (button, tray) and log ingestion carry on.
+pub fn auto_polling_allowed(settings: &Settings) -> bool {
+    !settings.polling_paused
+}
+
 async fn refresh_loop(app: AppHandle) {
     loop {
-        if any_provider_due(&app, store::now_ms()) {
+        let paused = !auto_polling_allowed(&app.state::<AppState>().settings.read());
+        if !paused && any_provider_due(&app, store::now_ms()) {
             refresh(&app, None, true).await;
         }
         tokio::time::sleep(TICK).await;
@@ -309,10 +401,10 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
         let before = backoff.clone();
         let done = store::now_ms();
         for q in &mut snapshot.providers {
-            let fetched =
-                !skipped.contains(&q.provider) && only.as_deref().is_none_or(|id| id == q.provider);
+            let key = q.key();
+            let fetched = !skipped.contains(&key) && only.as_deref().is_none_or(|id| id == key);
             if fetched {
-                let entry = backoff.entry(q.provider.clone()).or_default();
+                let entry = backoff.entry(key.clone()).or_default();
                 match q.status {
                     ProviderStatus::RateLimited => {
                         let wait = retry_after_secs(q, done);
@@ -320,7 +412,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
                         // Once per 429, so the log can answer "how often?".
                         log::warn!(
                             "{}: rate limited (HTTP 429), waiting {}s; learned interval ×{}",
-                            q.provider,
+                            key,
                             wait,
                             entry.factor()
                         );
@@ -332,7 +424,7 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             }
             if q.status == ProviderStatus::RateLimited {
                 // Replace the server's answer with the time we will really try.
-                let input = poll_input(&settings, &clocks, &backoff, &q.provider, done);
+                let input = poll_input(&settings, &clocks, &backoff, &key, done);
                 q.next_attempt_at = providers::rfc3339_from_unix_ms(next_poll_due_ms(&input));
             }
         }
@@ -353,10 +445,9 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
                     continue;
                 }
                 let plan = q.plan_label.as_deref().or(q.plan.as_deref());
-                if let Err(e) =
-                    store::quota::insert_quota_samples(&db, &q.provider, plan, &q.windows)
-                {
-                    log::warn!("could not store quota samples for {}: {e:#}", q.provider);
+                let key = q.key();
+                if let Err(e) = store::quota::insert_quota_samples(&db, &key, plan, &q.windows) {
+                    log::warn!("could not store quota samples for {key}: {e:#}");
                 }
             }
             forecast::attach(&db, &mut to_store, store::now_ms());
@@ -367,12 +458,15 @@ pub async fn refresh(app: &AppHandle, only: Option<String>, respect_backoff: boo
             snapshot = enriched;
             *app.state::<AppState>().snapshot.write() = snapshot.clone();
         }
-        notify_forecasts(app, &snapshot);
     }
+
+    crate::export_snapshot::write_if_enabled(app, &snapshot);
+    crate::commands::alerts::on_snapshot(app, &snapshot);
 
     if let Err(e) = app.emit(events::SNAPSHOT_UPDATED, &snapshot) {
         log::warn!("could not emit {}: {e}", events::SNAPSHOT_UPDATED);
     }
+    crate::window::tray::sync_usage(app, &snapshot);
     snapshot
 }
 
@@ -395,144 +489,8 @@ fn should_sample(
     q.status == ProviderStatus::Ok
         && q.source == DataSource::Api
         && !q.windows.is_empty()
-        && !skipped.contains(&q.provider)
-        && only.is_none_or(|id| id == q.provider)
-}
-
-// ---------- predictive notifications ----------
-
-/// A "you will run out early" warning has to buy the user at least this much
-/// time to be worth an interruption.
-const FORECAST_NOTIFY_LEAD_MS: i64 = 5 * 60 * 1000;
-
-/// `provider|kind|scope` → the reset (unix ms) the window was already warned
-/// about, so each window is announced at most once per reset period. Entries
-/// are forgotten once their reset has passed. It lives here rather than in
-/// `AppState` so the whole predictive-notification path is in one place.
-static FORECAST_NOTIFIED: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
-
-/// A window that is on pace to run out before it resets.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ForecastAlert {
-    /// deduplication key, stable across refreshes
-    key: String,
-    /// the reset this alert belongs to (unix ms)
-    resets_at_ms: i64,
-    /// how long before that reset the window is projected to hit 100 %
-    early_by_ms: i64,
-}
-
-/// Decide whether `w` deserves a predictive notification. Pure: the settings
-/// gate and the once-per-period bookkeeping are applied by the caller.
-fn forecast_alert(provider: &str, w: &QuotaWindow, now_ms: i64) -> Option<ForecastAlert> {
-    let f = w.forecast.as_ref()?;
-    // A guess we ourselves call "low" must never wake the user.
-    if f.confidence == ForecastConfidence::Low {
-        return None;
-    }
-    let exhausts_at = forecast::parse_ms(f.exhausts_at.as_deref()?)?;
-    let resets_at = forecast::parse_ms(w.resets_at.as_deref()?)?;
-    let early_by_ms = resets_at - exhausts_at;
-    if early_by_ms < FORECAST_NOTIFY_LEAD_MS || exhausts_at <= now_ms {
-        return None;
-    }
-    Some(ForecastAlert {
-        key: format!(
-            "{provider}|{}|{}",
-            w.kind.as_str(),
-            w.scope.as_deref().unwrap_or("")
-        ),
-        resets_at_ms: resets_at,
-        early_by_ms,
-    })
-}
-
-/// `true` the first time this alert is seen for its reset period.
-fn claim_alert(alert: &ForecastAlert, now_ms: i64) -> bool {
-    let mut seen = FORECAST_NOTIFIED.lock();
-    seen.retain(|_, resets_at| *resets_at > now_ms);
-    if seen.get(&alert.key) == Some(&alert.resets_at_ms) {
-        return false;
-    }
-    seen.insert(alert.key.clone(), alert.resets_at_ms);
-    true
-}
-
-/// Notification title + body. The native side carries the same two catalogues
-/// as the tray menu (see `window::tray::prefers_chinese`).
-fn alert_text(
-    display_name: &str,
-    w: &QuotaWindow,
-    early_by_ms: i64,
-    chinese: bool,
-) -> (String, String) {
-    let kind = match (w.kind, chinese) {
-        (WindowKind::FiveHour, false) => "5-hour".to_string(),
-        (WindowKind::FiveHour, true) => "5 小时".to_string(),
-        (WindowKind::SevenDay, false) => "weekly".to_string(),
-        (WindowKind::SevenDay, true) => "每周".to_string(),
-        (WindowKind::Other, _) => w.label.clone(),
-    };
-    let window = match w.scope.as_deref() {
-        Some(scope) => format!("{kind} · {scope}"),
-        None => kind,
-    };
-    let minutes = (early_by_ms / 60_000).max(1);
-    let (h, m) = (minutes / 60, minutes % 60);
-    if chinese {
-        let lead = if h > 0 {
-            format!("{h} 小时 {m} 分钟")
-        } else {
-            format!("{m} 分钟")
-        };
-        (
-            format!("{display_name} {window}限额"),
-            format!("按当前速度，将在重置前约 {lead}用尽"),
-        )
-    } else {
-        let lead = if h > 0 {
-            format!("{h} h {m} min")
-        } else {
-            format!("{m} min")
-        };
-        (
-            format!("{display_name} {window} limit"),
-            format!("On pace to run out ~{lead} before it resets"),
-        )
-    }
-}
-
-/// Warn about every window that is on pace to run out before its reset.
-/// Gated by `notifications` **and** `forecastNotifications`.
-fn notify_forecasts(app: &AppHandle, snapshot: &AppSnapshot) {
-    let settings = {
-        let state = app.state::<AppState>();
-        let settings = state.settings.read().clone();
-        settings
-    };
-    if !(settings.notifications && settings.forecast_notifications) {
-        return;
-    }
-    let now = store::now_ms();
-    let chinese = crate::window::tray::prefers_chinese(&settings);
-    for q in &snapshot.providers {
-        if q.status != ProviderStatus::Ok {
-            continue;
-        }
-        for w in &q.windows {
-            let Some(alert) = forecast_alert(&q.provider, w, now) else {
-                continue;
-            };
-            if !claim_alert(&alert, now) {
-                continue;
-            }
-            let (title, body) = alert_text(&q.display_name, w, alert.early_by_ms, chinese);
-            log::info!("forecast notification: {title} — {body}");
-            if let Err(e) = app.notification().builder().title(title).body(body).show() {
-                log::warn!("could not show the forecast notification: {e}");
-            }
-        }
-    }
+        && !skipped.contains(&q.key())
+        && only.is_none_or(|id| id == q.key())
 }
 
 // ---------- log ingestion ----------
@@ -557,6 +515,14 @@ impl DirtyFiles {
         } else {
             self.overflow = true;
         }
+    }
+    /// Request a full reconciliation (events may have been lost).
+    fn mark_overflow(&mut self, now: i64) {
+        if self.first_change == 0 {
+            self.first_change = now;
+        }
+        self.last_change = now;
+        self.overflow = true;
     }
     fn ready(&self, now: i64) -> bool {
         self.first_change > 0
@@ -677,13 +643,58 @@ fn emit_progress(app: &AppHandle, stats: &IngestStats) {
     }
 }
 
+/// How often the watcher thread re-checks which roots exist.
+const WATCH_RETRY: Duration = Duration::from_secs(60);
+/// Minimum gap between two logged watcher errors.
+const WATCH_ERROR_LOG_MS: i64 = 300_000;
+
+/// A watched root: its path and a cheap identity (creation time in ms, when
+/// the file system reports one) so a deleted-and-recreated directory is
+/// noticed even though the path is unchanged.
+type RootIdentity = (PathBuf, Option<i64>);
+
+fn root_identity(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+}
+
+/// Compare the roots that exist now with the ones currently watched.
+/// Returns `(to_unwatch, to_watch)`: watches whose root vanished or was
+/// recreated are dropped, and every existing root that is not (or no longer)
+/// watched is added.
+fn plan_watches(
+    existing: &[RootIdentity],
+    watched: &[RootIdentity],
+) -> (Vec<PathBuf>, Vec<RootIdentity>) {
+    let stale = watched
+        .iter()
+        .filter(|w| !existing.contains(w))
+        .map(|(path, _)| path.clone())
+        .collect();
+    let missing = existing
+        .iter()
+        .filter(|e| !watched.contains(e))
+        .cloned()
+        .collect();
+    (stale, missing)
+}
+
 /// Watch the log roots and record the time of the newest change, globally
 /// (for the ingest debounce) and per provider (for the adaptive interval).
 /// Runs on its own thread which owns the watcher for the lifetime of the app.
+/// Every `WATCH_RETRY` the set of existing roots is re-checked, so a root that
+/// appears later (CLI installed after the app) or is deleted and recreated is
+/// picked up without a restart.
 fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks>>) {
     std::thread::spawn(move || {
         use notify::{RecursiveMode, Watcher};
-        let roots = ingest::roots();
+        use std::sync::mpsc::RecvTimeoutError;
+        let mut roots = ingest::roots();
         seed_activity(&roots, &clocks);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = match notify::recommended_watcher(move |res| {
@@ -695,29 +706,71 @@ fn spawn_log_watcher(dirty: Arc<Mutex<DirtyFiles>>, clocks: Arc<Mutex<PollClocks
                 return;
             }
         };
-        let mut watched = 0;
-        for root in &roots {
-            match watcher.watch(&root.path, RecursiveMode::Recursive) {
-                Ok(()) => watched += 1,
-                Err(e) => log::debug!("cannot watch {}: {e}", root.path.display()),
+        let mut watched: Vec<RootIdentity> = Vec::new();
+        let mut last_error_log_ms = 0i64;
+        let mut next_check = std::time::Instant::now();
+        loop {
+            if std::time::Instant::now() >= next_check {
+                next_check = std::time::Instant::now() + WATCH_RETRY;
+                let fresh = ingest::roots();
+                let existing: Vec<RootIdentity> = fresh
+                    .iter()
+                    .map(|r| (r.path.clone(), root_identity(&r.path)))
+                    .collect();
+                let (stale, missing) = plan_watches(&existing, &watched);
+                for path in &stale {
+                    let _ = watcher.unwatch(path);
+                }
+                watched.retain(|w| !stale.contains(&w.0));
+                let mut changed = !stale.is_empty();
+                for root in missing {
+                    match watcher.watch(&root.0, RecursiveMode::Recursive) {
+                        Ok(()) => {
+                            log::debug!("watching {}", root.0.display());
+                            watched.push(root);
+                            changed = true;
+                        }
+                        Err(e) => log::debug!("cannot watch {}: {e}", root.0.display()),
+                    }
+                }
+                roots = fresh;
+                if changed {
+                    // Anything written while a root was unwatched is unseen.
+                    seed_activity(&roots, &clocks);
+                    dirty.lock().mark_overflow(store::now_ms());
+                }
             }
-        }
-        if watched == 0 {
-            return;
-        }
-        while let Ok(event) = rx.recv() {
-            if let Ok(ev) = event {
-                if ev.kind.is_modify() || ev.kind.is_create() {
-                    let now = store::now_ms();
-                    let mut guard = clocks.lock();
-                    for path in &ev.paths {
-                        if let Some(provider) = provider_for_path(&roots, path) {
-                            guard.last_activity_ms.insert(provider.to_string(), now);
-                            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                                dirty.lock().enqueue(provider, path.clone(), now);
+            let wait = next_check.saturating_duration_since(std::time::Instant::now());
+            let event = match rx.recv_timeout(wait) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
+            match event {
+                Ok(ev) => {
+                    if ev.kind.is_modify() || ev.kind.is_create() {
+                        let now = store::now_ms();
+                        let mut guard = clocks.lock();
+                        for path in &ev.paths {
+                            if let Some(provider) = provider_for_path(&roots, path) {
+                                guard.last_activity_ms.insert(provider.to_string(), now);
+                                if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                                    dirty.lock().enqueue(provider, path.clone(), now);
+                                }
                             }
                         }
                     }
+                }
+                Err(e) => {
+                    // The backend lost events (overflow, deleted root, ...):
+                    // rescan everything and re-check the roots right away.
+                    let now = store::now_ms();
+                    if now - last_error_log_ms >= WATCH_ERROR_LOG_MS {
+                        last_error_log_ms = now;
+                        log::warn!("log watcher error ({e}); scheduling a full rescan");
+                    }
+                    dirty.lock().mark_overflow(now);
+                    next_check = std::time::Instant::now();
                 }
             }
         }
@@ -798,125 +851,6 @@ mod tests {
         assert!(!should_sample(&quota, None, &empty));
     }
 
-    // ---------- predictive notifications ----------
-
-    use crate::model::QuotaForecast;
-
-    const NOW: i64 = 1_789_430_400_000; // 2026-09-15T00:00:00Z
-    const RESETS_AT: &str = "2026-09-15T02:00:00Z"; // NOW + 2 h
-
-    /// A 5-hour window projected to run out `early_by` minutes before it resets.
-    fn alerting_window(early_by_min: i64, confidence: ForecastConfidence) -> QuotaWindow {
-        let exhausts = NOW + (120 - early_by_min) * 60_000;
-        QuotaWindow {
-            kind: WindowKind::FiveHour,
-            label: "5-hour".into(),
-            window_seconds: Some(18_000),
-            used_percent: 82.0,
-            resets_at: Some(RESETS_AT.into()),
-            scope: None,
-            is_primary: true,
-            forecast: Some(QuotaForecast {
-                projected_percent_at_reset: 140.0,
-                exhausts_at: crate::commands::providers::rfc3339_from_unix_ms(exhausts),
-                rate_percent_per_hour: 29.0,
-                confidence,
-            }),
-        }
-    }
-
-    #[test]
-    fn only_a_confident_early_exhaustion_is_worth_a_notification() {
-        let w = alerting_window(25, ForecastConfidence::High);
-        let alert = forecast_alert("claude", &w, NOW).expect("high confidence, 25 min early");
-        assert_eq!(alert.key, "claude|five_hour|");
-        assert_eq!(alert.early_by_ms, 25 * 60_000);
-        assert!(forecast_alert(
-            "claude",
-            &alerting_window(25, ForecastConfidence::Medium),
-            NOW
-        )
-        .is_some());
-
-        // low confidence, too little lead time, and no forecast at all
-        assert!(
-            forecast_alert("claude", &alerting_window(25, ForecastConfidence::Low), NOW).is_none()
-        );
-        assert!(
-            forecast_alert("claude", &alerting_window(4, ForecastConfidence::High), NOW).is_none()
-        );
-        let mut w = alerting_window(25, ForecastConfidence::High);
-        w.forecast = None;
-        assert!(forecast_alert("claude", &w, NOW).is_none());
-
-        // a projection that only reaches 100 % at the reset has no exhausts_at
-        let mut w = alerting_window(25, ForecastConfidence::High);
-        w.forecast.as_mut().unwrap().exhausts_at = None;
-        assert!(forecast_alert("claude", &w, NOW).is_none());
-
-        // the scope is part of the key, so per-model limits warn separately
-        let mut w = alerting_window(25, ForecastConfidence::High);
-        w.scope = Some("Fable".into());
-        assert_eq!(
-            forecast_alert("claude", &w, NOW).unwrap().key,
-            "claude|five_hour|Fable"
-        );
-    }
-
-    #[test]
-    fn a_window_is_announced_once_per_reset_period() {
-        let base = ForecastAlert {
-            key: "test-provider|five_hour|".into(),
-            resets_at_ms: NOW + 2 * 3_600_000,
-            early_by_ms: 25 * 60_000,
-        };
-        assert!(claim_alert(&base, NOW), "first time wins");
-        assert!(!claim_alert(&base, NOW), "same reset period stays quiet");
-
-        // the next period is a new warning
-        let next = ForecastAlert {
-            resets_at_ms: base.resets_at_ms + 5 * 3_600_000,
-            ..base.clone()
-        };
-        assert!(claim_alert(&next, NOW + 3 * 3_600_000));
-        // …and the elapsed period is forgotten rather than accumulated
-        assert!(!FORECAST_NOTIFIED
-            .lock()
-            .values()
-            .any(|resets_at| *resets_at <= NOW + 3 * 3_600_000));
-    }
-
-    #[test]
-    fn the_notification_text_names_the_provider_window_and_lead_time() {
-        let w = alerting_window(25, ForecastConfidence::High);
-        assert_eq!(
-            alert_text("Claude", &w, 25 * 60_000, false),
-            (
-                "Claude 5-hour limit".to_string(),
-                "On pace to run out ~25 min before it resets".to_string()
-            )
-        );
-        assert_eq!(
-            alert_text("Claude", &w, 25 * 60_000, true),
-            (
-                "Claude 5 小时限额".to_string(),
-                "按当前速度，将在重置前约 25 分钟用尽".to_string()
-            )
-        );
-
-        let mut weekly = w.clone();
-        weekly.kind = WindowKind::SevenDay;
-        weekly.scope = Some("Fable".into());
-        assert_eq!(
-            alert_text("Claude", &weekly, 150 * 60_000, false).0,
-            "Claude weekly · Fable limit"
-        );
-        assert_eq!(
-            alert_text("Claude", &weekly, 150 * 60_000, false).1,
-            "On pace to run out ~2 h 30 min before it resets"
-        );
-    }
-
     fn input(idle_secs: Option<u64>, last_poll_ms: i64) -> PollInput {
         PollInput {
             configured_secs: 60,
@@ -937,6 +871,16 @@ mod tests {
             idle_secs: idle,
             ..input(idle, 0)
         })
+    }
+
+    #[test]
+    fn paused_polling_stops_only_the_timer() {
+        let mut settings = Settings::default();
+        assert!(auto_polling_allowed(&settings));
+        settings.polling_paused = true;
+        assert!(!auto_polling_allowed(&settings));
+        // ingestion has no such switch: it keys off `ingest_enabled` only
+        assert!(settings.ingest_enabled);
     }
 
     #[test]
@@ -1174,5 +1118,116 @@ mod tests {
         );
         assert!(dirty.take().1, "a bounded queue reconciles after overflow");
         assert!(dirty.paths.is_empty());
+    }
+
+    #[test]
+    fn watch_plan_adds_late_roots_and_rewatches_recreated_ones() {
+        let a = (PathBuf::from("/a"), Some(1));
+        let b = (PathBuf::from("/b"), Some(2));
+        let (stale, missing) = plan_watches(&[a.clone(), b.clone()], &[]);
+        assert!(stale.is_empty());
+        assert_eq!(missing, vec![a.clone(), b.clone()]);
+        let (stale, missing) = plan_watches(std::slice::from_ref(&a), std::slice::from_ref(&a));
+        assert!(stale.is_empty() && missing.is_empty());
+        let (stale, missing) = plan_watches(std::slice::from_ref(&a), &[a.clone(), b.clone()]);
+        assert_eq!(stale, vec![b.0.clone()]);
+        assert!(missing.is_empty());
+        // Same path, new identity (deleted and recreated): unwatch and re-add.
+        let a2 = (PathBuf::from("/a"), Some(9));
+        let (stale, missing) = plan_watches(std::slice::from_ref(&a2), std::slice::from_ref(&a));
+        assert_eq!(stale, vec![a.0.clone()]);
+        assert_eq!(missing, vec![a2]);
+    }
+
+    #[test]
+    fn a_watcher_error_requests_a_full_reconciliation() {
+        let mut dirty = DirtyFiles::default();
+        dirty.mark_overflow(1_000);
+        assert!(dirty.ready(1_000 + WATCH_DEBOUNCE_MS));
+        let (paths, overflow) = dirty.take();
+        assert!(paths.is_empty() && overflow);
+    }
+
+    #[test]
+    fn every_enabled_account_is_polled_on_its_own_with_its_own_floor() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            pollable_providers(&settings),
+            ["claude", "codex"],
+            "no extra accounts: exactly the providers of before"
+        );
+        let abs = std::env::temp_dir().display().to_string();
+        let acct = |id: &str, provider: &str, enabled: bool| crate::model::AccountSettings {
+            id: id.into(),
+            provider: provider.into(),
+            label: id.into(),
+            config_dir: abs.clone(),
+            enabled,
+        };
+        settings.accounts = vec![
+            acct("work", "claude", true),
+            acct("off", "claude", false),
+            acct("home", "codex", true),
+        ];
+        assert_eq!(
+            pollable_providers(&settings),
+            ["claude", "claude@work", "codex", "codex@home"]
+        );
+        settings.providers.get_mut("claude").unwrap().enabled = false;
+        assert_eq!(pollable_providers(&settings), ["codex", "codex@home"]);
+
+        assert_eq!(provider_min_interval_secs("claude@work"), 120);
+        assert_eq!(provider_min_interval_secs("codex@home"), MIN_INTERVAL_SEC);
+
+        // separate backoff: an error of one account does not delay the other
+        let mut backoff = std::collections::HashMap::new();
+        backoff
+            .entry("claude@work".to_string())
+            .or_insert_with(Backoff::default)
+            .on_error(1_000);
+        let clocks = PollClocks::default();
+        let primary = poll_input(&settings, &clocks, &backoff, "claude", 2_000);
+        let work = poll_input(&settings, &clocks, &backoff, "claude@work", 2_000);
+        assert_eq!(primary.backoff_until_ms, 0);
+        assert!(work.backoff_until_ms > 2_000);
+        assert_eq!(primary.min_interval_secs, work.min_interval_secs);
+    }
+
+    #[test]
+    fn a_removed_or_disabled_account_is_pruned_from_the_snapshot() {
+        let quota = |account: Option<&str>| {
+            let mut q = providers::empty_quota("claude", "Claude Code", ProviderStatus::Ok);
+            q.account_id = account.map(str::to_string);
+            q
+        };
+        let abs = std::env::temp_dir().display().to_string();
+        let mut settings = Settings {
+            accounts: vec![crate::model::AccountSettings {
+                id: "work".into(),
+                provider: "claude".into(),
+                label: "Work".into(),
+                config_dir: abs,
+                enabled: true,
+            }],
+            ..Settings::default()
+        };
+        let mut snap = AppSnapshot {
+            providers: vec![quota(None), quota(Some("work")), quota(Some("gone"))],
+            ..AppSnapshot::default()
+        };
+        assert!(retain_configured_accounts(&mut snap, &settings));
+        let keys: Vec<String> = snap.providers.iter().map(|q| q.key()).collect();
+        assert_eq!(keys, ["claude", "claude@work"]);
+        assert!(
+            !retain_configured_accounts(&mut snap, &settings),
+            "nothing left to prune"
+        );
+        settings.accounts[0].enabled = false;
+        assert!(retain_configured_accounts(&mut snap, &settings));
+        assert_eq!(
+            snap.providers.len(),
+            1,
+            "the primary account is never pruned"
+        );
     }
 }

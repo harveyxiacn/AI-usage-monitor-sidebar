@@ -33,6 +33,12 @@ const test = base.extend<{ historyRequests: PendingHistory[] }>({
         case 'plugin:event|listen': return ++listenerId;
         case 'plugin:event|unlisten': return;
         case 'get_usage_history':
+          // The project ranking asks for month buckets; it is a separate panel
+          // and must not count as (or hold up) the table's own query.
+          if (args.query!.bucket === 'month') return { rows: [], totals: emptyTotals(), byProvider: {}, projects: [], costApproximate: false };
+          // Overview's "today" summary (no groupByProject) is a separate panel too; it
+          // re-reads on every snapshot, so it must neither be counted nor settle.
+          if (args.query!.groupByProject === undefined) return { rows: [], totals: emptyTotals(), byProvider: {}, projects: [], costApproximate: false };
           return new Promise<HistoryResult>((resolve, reject) => {
             requests.push({ provider: args.query!.provider, resolve, reject });
           });
@@ -65,7 +71,7 @@ const test = base.extend<{ historyRequests: PendingHistory[] }>({
           }
           try { return await invoke(command, args); }
           finally {
-            if (command === 'get_usage_history') {
+            if (command === 'get_usage_history' && (args as { query?: { bucket?: string; groupByProject?: boolean } }).query?.bucket !== 'month' && (args as { query?: { groupByProject?: boolean } }).query?.groupByProject !== undefined) {
               // A test-owned acknowledgement lets assertions wait for the
               // delayed response instead of relying on a wall-clock timeout.
               document.documentElement.dataset.settledHistory = String(++settledHistory);
@@ -100,8 +106,8 @@ async function openHistory(page: Page, requests: PendingHistory[]) {
   await expect.poll(() => requests.length).toBe(1);
   expect(requests[0].provider).toBeNull();
   requests[0].resolve(result('claude', 111));
-  await expect(page.locator('tbody tr')).toHaveCount(1);
-  await expect(page.locator('tbody .strong')).toHaveText('111');
+  await expect(page.locator('.table-wrap tbody tr')).toHaveCount(1);
+  await expect(page.locator('.table-wrap tbody .strong')).toHaveText('111');
 }
 
 for (const outcome of ['success', 'error'] as const) {
@@ -115,8 +121,8 @@ for (const outcome of ['success', 'error'] as const) {
     expect(historyRequests[2].provider).toBe('codex');
 
     historyRequests[2].resolve(result('codex', 432));
-    await expect(page.locator('tbody tr td:nth-child(2)')).toHaveText('Codex');
-    await expect(page.locator('tbody .strong')).toHaveText('432');
+    await expect(page.locator('.table-wrap tbody tr td:nth-child(2)')).toHaveText('Codex');
+    await expect(page.locator('.table-wrap tbody .strong')).toHaveText('432');
     if (outcome === 'success') historyRequests[1].resolve(result('claude', 999));
     else historyRequests[1].reject(new Error('stale history failure'));
 
@@ -124,8 +130,8 @@ for (const outcome of ['success', 'error'] as const) {
     // Flush the render following the acknowledged IPC completion.
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
     await expect(page.locator('#provider')).toHaveValue('codex');
-    await expect(page.locator('tbody tr td:nth-child(2)')).toHaveText('Codex');
-    await expect(page.locator('tbody .strong')).toHaveText('432');
+    await expect(page.locator('.table-wrap tbody tr td:nth-child(2)')).toHaveText('Codex');
+    await expect(page.locator('.table-wrap tbody .strong')).toHaveText('432');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Export CSV', exact: true })).toBeEnabled();
   });
@@ -143,24 +149,26 @@ test('changing the provider recovers after a history request fails', async ({ pa
   await page.locator('#provider').selectOption('codex');
   await expect.poll(() => historyRequests.length).toBe(3);
   historyRequests[2].resolve(result('codex', 567));
-  await expect(page.locator('tbody tr td:nth-child(2)')).toHaveText('Codex');
-  await expect(page.locator('tbody .strong')).toHaveText('567');
+  await expect(page.locator('.table-wrap tbody tr td:nth-child(2)')).toHaveText('Codex');
+  await expect(page.locator('.table-wrap tbody .strong')).toHaveText('567');
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Export CSV', exact: true })).toBeEnabled();
 });
 
 test('a background time refresh preserves the chart and rows while fetching', async ({ page, historyRequests }) => {
-  await page.clock.install();
+  // The minute tick only re-queries across local midnight (a different window,
+  // which rightly clears the rows). Coming back to the window re-reads the same
+  // window in place: that is the refresh that must keep the old content.
   await openHistory(page, historyRequests);
   const canvas = page.locator('canvas').last();
   await expect(canvas).toBeVisible();
   await canvas.evaluate((node) => node.setAttribute('data-original-chart', 'yes'));
-  await page.clock.fastForward(60_000);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => historyRequests.length).toBe(2);
-  await expect(page.locator('tbody .strong')).toHaveText('111');
+  await expect(page.locator('.table-wrap tbody .strong')).toHaveText('111');
   await expect(page.locator('canvas[data-original-chart="yes"]')).toBeVisible();
   historyRequests[1].resolve(result('claude', 222));
-  await expect(page.locator('tbody .strong')).toHaveText('222');
+  await expect(page.locator('.table-wrap tbody .strong')).toHaveText('222');
   await expect(page.locator('canvas[data-original-chart="yes"]')).toBeVisible();
 });
 
@@ -174,9 +182,9 @@ test('empty log scans do not reload history; new events update it in place', asy
   expect(historyRequests).toHaveLength(1);
   await page.evaluate(() => Reflect.get(window, '__emitIngest')(1));
   await expect.poll(() => historyRequests.length).toBe(2);
-  await expect(page.locator('tbody .strong')).toHaveText('111');
+  await expect(page.locator('.table-wrap tbody .strong')).toHaveText('111');
   historyRequests[1].resolve(result('claude', 333));
-  await expect(page.locator('tbody .strong')).toHaveText('333');
+  await expect(page.locator('.table-wrap tbody .strong')).toHaveText('333');
 });
 
 for (const scenario of [
@@ -196,7 +204,7 @@ for (const scenario of [
     historyRequests[0].resolve(data);
     const card = page.locator('article.cmp').filter({ hasText: 'Codex' });
     await expect(card.locator('dd').last()).toHaveText(scenario.expected);
-    await expect(page.locator('tbody tr td').last()).toHaveText(scenario.expected);
+    await expect(page.locator('.table-wrap tbody tr td').last()).toHaveText(scenario.expected);
     if (scenario.full == null && scenario.known != null) {
       await expect(card).toContainText(`${scenario.missing} unpriced requests are excluded`);
     } else {

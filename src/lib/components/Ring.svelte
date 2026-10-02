@@ -25,14 +25,34 @@
   default 56px ring, scaled by ringSize/56 and capped to the inner disc) so it
   always clears the innermost stroke; the size is handed to the `logo` snippet.
 
+  A status badge sits on the 1-o'clock edge and differs by *shape*, not only by
+  colour: "!" (not signed in), a padlock (login expired), a clock (rate-limited)
+  or a solid red dot (error). Past a threshold the arc's end cap also changes:
+  a dark dot at the warn level, a dark bar across the stroke at the critical one.
+
   An arc may also carry `projectedPercent`: a hairline tick across the stroke at
-  the "at this pace, here at the reset" angle (see forecast.ts). It is opt-in
-  per arc so a low-confidence guess never marks up a 56px ring.
+  the "at this pace, here at the reset" angle (see forecast.ts), plus a
+  translucent dashed arc from the current value to that angle. It is opt-in
+  per arc so a low-confidence guess never marks up a 56px ring. When the
+  projection reaches 100 % a small hourglass badge ("will run out") sits on the
+  ring's 11 o'clock edge.
+
+  An arc may carry a one-shot `fx` ('warn' | 'critical' | 'reset'); changing
+  `fxId` replays it: an outward ~600 ms pulse ring for a threshold crossing, a
+  brief full-ring flash for a reset. Both are disabled by reduced motion.
+
+  Text: `layout` (see sidebar-visuals.ts `labelLayout`) says what goes in the
+  centre and what next to the ring; without it the old percent-only behaviour
+  applies. `inline` puts the text to the right of the ring (top/bottom edges).
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { severityColor, severityOf, clampPercent, shortPercent } from '$lib/format';
+  import { severityColor, severityOf, clampPercent, shortPercent, type Severity } from '$lib/format';
   import { clampSize, settings } from '$lib/stores/settings.svelte';
+  import { arcPath, forecastArcRange, willRunOut, type LabelLayout } from '$lib/sidebar-visuals';
+  import type { RingEventKind } from '$lib/ring-events';
+  import RunOutBadge from './RunOutBadge.svelte';
+  import StatusBadge from './StatusBadge.svelte';
   import type { PercentMode, PercentPosition, ProviderStatus, Thresholds } from '$lib/types';
 
   export interface RingArcView {
@@ -46,6 +66,9 @@
      * when a forecast is trustworthy enough, see `forecastTickPercent`.
      */
     projectedPercent?: number | null;
+    /** one-shot animation; replayed whenever `fxId` changes */
+    fx?: RingEventKind | null;
+    fxId?: number;
   }
 
   interface Props {
@@ -63,6 +86,10 @@
     showPercentLabel?: boolean;
     percentMode?: PercentMode;
     percentPosition?: PercentPosition;
+    /** what to write in the centre / beside the ring; overrides the percent-only default */
+    layout?: LabelLayout | null;
+    /** text to the right of the ring instead of below it */
+    inline?: boolean;
     status?: ProviderStatus;
     loading?: boolean;
     interactive?: boolean;
@@ -81,6 +108,8 @@
     showPercentLabel = false,
     percentMode = 'used',
     percentPosition = 'below',
+    layout = null,
+    inline = false,
     status = 'ok',
     loading = false,
     interactive = false,
@@ -93,7 +122,15 @@
   const dim = $derived(clampSize('ringSize', size ?? settings.value.sizes.ringSize));
   const configuredSw = $derived(clampSize('ringStroke', stroke ?? settings.value.sizes.ringStroke));
   const c = $derived(dim / 2);
-  const centerPercent = $derived(showPercentLabel && percentPosition === 'center');
+  const label = $derived(loading ? '' : shortPercent(labelPercent, percentMode));
+  const text = $derived<LabelLayout>(
+    layout ?? {
+      center: showPercentLabel && percentPosition === 'center' ? label : null,
+      main: showPercentLabel && percentPosition !== 'center' ? label : null,
+      sub: null,
+    }
+  );
+  const centerPercent = $derived(text.center != null);
   /**
    * Three regular arcs can leave no room at the minimum 40px ring size. In
    * centre-percent mode reserve a readable inner disc and tighten only the
@@ -130,13 +167,27 @@
     };
   }
 
+  /**
+   * Centre of the arc's end cap and the radial direction there, for the
+   * threshold marker. Null while the arc is empty (nothing to mark).
+   */
+  function endCap(r: number, shown: number) {
+    if (shown <= 0) return null;
+    const angle = ((shown / 100) * 360 - 90) * (Math.PI / 180);
+    const [cosA, sinA] = [Math.cos(angle), Math.sin(angle)];
+    return { x: c + r * cosA, y: c + r * sinA, dx: cosA, dy: sinA };
+  }
+
   /** Geometry + resolved colour for every arc, outer → inner. */
   const drawn = $derived.by(() =>
     arcs.map((a, i) => {
       const r = (dim - sw) / 2 - i * (sw + effectiveGap);
       const circumference = 2 * Math.PI * r;
       const shown = a.percent == null ? 0 : shownPercent(a.percent);
+      const severity: Severity = severityOf(a.percent, thresholds);
       return {
+        severity,
+        cap: severity === 'normal' ? null : endCap(r, shown),
         r,
         circumference,
         // a ring whose own usage crossed a threshold turns amber / red even
@@ -145,6 +196,12 @@
         dashOffset: circumference * (1 - shown / 100),
         known: a.percent != null,
         projected: a.projectedPercent == null ? null : tick(r, a.projectedPercent),
+        forecastPath: (() => {
+          const range = forecastArcRange(a.percent, a.projectedPercent ?? null, percentMode);
+          return range ? arcPath(c, r, range.from, range.to) : '';
+        })(),
+        fx: a.fx ?? null,
+        fxId: a.fxId ?? 0,
       };
     })
   );
@@ -159,17 +216,15 @@
   );
 
   const dimmed = $derived(loading || arcs.length === 0 || status === 'not_logged_in');
-  const badge = $derived(
-    status === 'not_logged_in' ? 'warn' : status === 'token_expired' || status === 'error' ? 'dot' : null
-  );
-  const label = $derived(loading ? '' : shortPercent(labelPercent, percentMode));
+  /** some arc is on pace to hit its limit before the reset */
+  const runsOut = $derived(!loading && arcs.some((a) => willRunOut(a.projectedPercent)));
   /** 100% is the widest label. Keep it inside even for a 40px, three-arc ring. */
   const centerFontSize = $derived(Math.max(0.5, Math.min(0.8, (Math.max(innerR, 0) * 2) / 40)));
 
   const px = (v: number) => `${v / 16}rem`;
 </script>
 
-<div class="ring-wrap" class:interactive style:--ring-size={px(dim)}>
+<div class="ring-wrap" class:interactive class:inline style:--ring-size={px(dim)}>
   <div class="ring" class:dimmed class:loading aria-label={ariaLabel} role={ariaLabel ? 'img' : undefined}>
     <svg viewBox="0 0 {dim} {dim}" width={px(dim)} height={px(dim)} aria-hidden="true">
       <!-- logo backdrop -->
@@ -180,6 +235,17 @@
         {#each drawn as d, i (i)}
           <!-- track -->
           <circle class="ring-track" cx={c} cy={c} r={d.r} fill="none" stroke="var(--surface-track)" stroke-width={sw} />
+          <!-- forecast: dashed, translucent run from now to the projected value -->
+          {#if !loading && d.known && d.forecastPath}
+            <path
+              class="forecast-arc"
+              d={d.forecastPath}
+              fill="none"
+              stroke={d.color}
+              stroke-width={Math.max(1.6, sw * 0.55)}
+              stroke-dasharray="2 2.2"
+            />
+          {/if}
           <!-- value arc -->
           {#if !loading && d.known}
             <circle
@@ -197,6 +263,35 @@
               transform="rotate(-90 {c} {c})"
             />
           {/if}
+          <!-- non-colour severity cue on the end cap -->
+          {#if !loading && d.known && d.cap}
+            {#if d.severity === 'critical'}
+              <line
+                class="cap-mark"
+                x1={d.cap.x - d.cap.dx * sw * 0.42}
+                y1={d.cap.y - d.cap.dy * sw * 0.42}
+                x2={d.cap.x + d.cap.dx * sw * 0.42}
+                y2={d.cap.y + d.cap.dy * sw * 0.42}
+                stroke-width={Math.max(1.4, sw * 0.32)}
+              />
+            {:else}
+              <circle class="cap-dot" cx={d.cap.x} cy={d.cap.y} r={Math.max(0.9, sw * 0.17)} />
+            {/if}
+          {/if}
+          <!-- one-shot animation: outward pulse (threshold) or flash (reset) -->
+          {#if !loading && d.known && d.fx}
+            {#key d.fxId}
+              <circle
+                class="fx fx-{d.fx === 'reset' ? 'flash' : 'pulse'}"
+                cx={c}
+                cy={c}
+                r={d.r}
+                fill="none"
+                stroke={d.fx === 'reset' ? 'var(--text)' : d.color}
+                stroke-width={sw}
+              />
+            {/key}
+          {/if}
           <!-- forecast: where this arc lands at the reset -->
           {#if !loading && d.known && d.projected}
             <line class="tick-halo" {...d.projected} />
@@ -207,19 +302,19 @@
     </svg>
     <span class="center" class:percent-center={centerPercent} style:--center-font-size={`${centerFontSize}rem`}>
       {#if centerPercent}
-        <span class="center-pct" class:dimmed>{label}</span>
+        <span class="center-pct" class:dimmed>{text.center}</span>
       {:else}
         {@render logo?.(logoSize)}
       {/if}
     </span>
-    {#if badge === 'warn'}
-      <span class="badge badge-warn" aria-hidden="true">!</span>
-    {:else if badge === 'dot'}
-      <span class="badge badge-dot" aria-hidden="true"></span>
-    {/if}
+    <StatusBadge {status} />
+    {#if runsOut}<RunOutBadge />{/if}
   </div>
-  {#if showPercentLabel && !centerPercent}
-    <span class="pct" class:dimmed>{label}</span>
+  {#if text.main != null}
+    <span class="txt" class:inline>
+      <span class="pct" class:dimmed>{text.main}</span>
+      {#if text.sub}<span class="pct sub" class:dimmed>{text.sub}</span>{/if}
+    </span>
   {/if}
 </div>
 
@@ -240,7 +335,7 @@
     transition: transform var(--dur-ui) var(--ease-out), opacity var(--dur-ui) var(--ease-out);
   }
 
-  .ring svg {
+  .ring > svg {
     display: block;
     position: absolute;
     inset: 0;
@@ -250,12 +345,23 @@
     transform: scale(1.06);
   }
 
-  .ring.dimmed {
+  /* Dim the drawing only: a status badge on a greyed ring is the very thing the
+     user has to read, so it stays at full strength. */
+  .ring.dimmed > svg,
+  .ring.dimmed > .center {
     opacity: 0.45;
   }
 
   .ring.loading {
     animation: ring-pulse 1.4s ease-in-out infinite;
+  }
+
+  /* reduced motion: a static, dimmed ring instead of the pulse */
+  @media (prefers-reduced-motion: reduce) {
+    .ring.loading {
+      animation: none;
+      opacity: 0.4;
+    }
   }
 
   @keyframes ring-pulse {
@@ -288,6 +394,16 @@
   .tick-halo {
     stroke: rgb(var(--bar-bg-rgb) / 0.85);
     stroke-width: 2.6;
+  }
+
+  /* end-cap markers: cut out of the arc in the pill's own background colour */
+  .cap-dot {
+    fill: rgb(var(--bar-bg-rgb) / 0.9);
+  }
+
+  .cap-mark {
+    stroke: rgb(var(--bar-bg-rgb) / 0.9);
+    stroke-linecap: butt;
   }
 
   .tick {
@@ -324,31 +440,79 @@
     color: var(--muted);
   }
 
-  .badge {
-    position: absolute;
-    /* sit on the ring's 1-o'clock edge, half outside the circle */
-    top: -0.0625rem;
-    right: -0.0625rem;
-    display: grid;
-    place-items: center;
-    border-radius: 999px;
-    box-shadow: 0 0 0 0.125rem rgb(var(--bar-bg-rgb) / 0.9);
+  /* the arc's own colour, see-through and dashed: "this is where it is heading" */
+  .forecast-arc {
+    opacity: 0.45;
+    stroke-linecap: butt;
   }
 
-  .badge-warn {
-    width: 0.875rem;
-    height: 0.875rem;
-    background: var(--warn);
-    color: #141414;
-    font-size: 0.625rem;
-    font-weight: 800;
-    line-height: 1;
+  /* the pulse grows past the viewBox; the pill's padding leaves it room */
+  .ring > svg {
+    overflow: visible;
   }
 
-  .badge-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    background: var(--warn);
+  .fx {
+    pointer-events: none;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  .fx-pulse {
+    animation: fx-pulse 600ms ease-out 1 both;
+  }
+
+  .fx-flash {
+    animation: fx-flash 700ms ease-out 1 both;
+  }
+
+  @keyframes fx-pulse {
+    from {
+      opacity: 0.85;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(1.4);
+    }
+  }
+
+  @keyframes fx-flash {
+    0% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fx {
+      display: none;
+    }
+  }
+
+  .ring-wrap.inline {
+    flex-direction: row;
+    gap: 0.5rem;
+  }
+
+  .txt {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.0625rem;
+  }
+
+  .txt.inline {
+    align-items: flex-start;
+    white-space: nowrap;
+  }
+
+  .pct.sub {
+    min-height: 0;
+    font-size: calc(var(--label-size, 0.8125rem) * 0.82);
+    font-weight: 500;
+    color: var(--muted);
   }
 
   .pct {

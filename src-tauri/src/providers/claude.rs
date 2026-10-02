@@ -15,7 +15,8 @@ use crate::model::{
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub const DISPLAY_NAME: &str = "Claude Code";
@@ -68,6 +69,32 @@ impl Credentials {
     }
 }
 
+/// Treat a token as expired this long before its stated expiry, so a clock
+/// that runs slightly ahead of Anthropic's does not send a dead token.
+pub const EXPIRY_SKEW_MS: i64 = 60_000;
+
+impl Credentials {
+    /// Expired, or about to be (`EXPIRY_SKEW_MS`).
+    pub fn needs_refresh(&self, now_ms: i64) -> bool {
+        self.is_expired(now_ms.saturating_add(EXPIRY_SKEW_MS))
+    }
+}
+
+/// Decide which credentials a fetch may use. Claude Code refreshes its own
+/// token in the background, so when the ones read first look expired the
+/// file/Keychain is read once more (`reload`) before giving up. `None` means
+/// the login really is expired.
+pub fn usable_credentials(
+    first: Credentials,
+    now_ms: i64,
+    reload: impl FnOnce() -> Option<Credentials>,
+) -> Option<Credentials> {
+    if !first.needs_refresh(now_ms) {
+        return Some(first);
+    }
+    reload().filter(|c| !c.needs_refresh(now_ms))
+}
+
 /// `$CLAUDE_CONFIG_DIR` or `~/.claude`.
 pub fn config_dir() -> Option<PathBuf> {
     match std::env::var("CLAUDE_CONFIG_DIR") {
@@ -97,6 +124,38 @@ pub fn credential_source() -> Option<String> {
 /// `~/.claude/projects` — the session-log root.
 pub fn log_root() -> Option<PathBuf> {
     config_dir().map(|d| d.join("projects"))
+}
+
+/// Credentials file of an extra account's config dir.
+pub fn credentials_path_in(dir: &Path) -> PathBuf {
+    dir.join(".credentials.json")
+}
+
+/// Credentials of an extra account: its `<dir>/.credentials.json` only.
+///
+/// The macOS Keychain is deliberately not consulted. Claude Code files the
+/// login of a non-default `CLAUDE_CONFIG_DIR` under a *different* Keychain
+/// service name, and which one could not be verified (only the default
+/// `Claude Code-credentials` is documented), so guessing it would risk
+/// reading the primary account's token for the wrong account.
+pub fn load_credentials_from(dir: &Path) -> Option<Credentials> {
+    let text = std::fs::read_to_string(credentials_path_in(dir)).ok()?;
+    parse_credentials(&text)
+}
+
+/// Why an extra account has no usable login, for the status line.
+pub fn account_login_hint(dir: &Path, macos: bool) -> String {
+    if macos && !credentials_path_in(dir).is_file() {
+        return format!(
+            "No credentials file in {} — on macOS an extra Claude account is only supported \
+             when `.credentials.json` exists there (Claude Code keeps its login in the Keychain)",
+            dir.display()
+        );
+    }
+    format!(
+        "Not logged in — run `CLAUDE_CONFIG_DIR={} claude` and sign in with /login",
+        dir.display()
+    )
 }
 
 /// Read the credentials file (or, on macOS, the Keychain item).
@@ -459,7 +518,12 @@ struct CachedProfile {
     rate_limit_tier: Option<String>,
 }
 
-static PROFILE_CACHE: Mutex<Option<(Instant, u64, CachedProfile)>> = Mutex::new(None);
+/// One entry per access token (so two accounts do not evict each other).
+static PROFILE_CACHE: Mutex<Option<HashMap<u64, (Instant, CachedProfile)>>> = Mutex::new(None);
+
+/// More distinct tokens than accounts can ever exist; a rotating token would
+/// otherwise leave one dead entry per refresh behind.
+const PROFILE_CACHE_MAX: usize = 16;
 
 fn token_cache_key(token: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -470,16 +534,18 @@ fn token_cache_key(token: &str) -> u64 {
 
 fn cached_profile(token: &str) -> Option<CachedProfile> {
     let guard = PROFILE_CACHE.lock();
-    let (at, key, p) = guard.as_ref()?;
-    if *key == token_cache_key(token) && at.elapsed() < PROFILE_TTL {
-        Some(p.clone())
-    } else {
-        None
-    }
+    let (at, p) = guard.as_ref()?.get(&token_cache_key(token))?;
+    (at.elapsed() < PROFILE_TTL).then(|| p.clone())
 }
 
 fn store_profile(token: &str, p: CachedProfile) {
-    *PROFILE_CACHE.lock() = Some((Instant::now(), token_cache_key(token), p));
+    let mut guard = PROFILE_CACHE.lock();
+    let map = guard.get_or_insert_with(HashMap::new);
+    map.retain(|_, (at, _)| at.elapsed() < PROFILE_TTL);
+    if map.len() >= PROFILE_CACHE_MAX {
+        map.clear();
+    }
+    map.insert(token_cache_key(token), (Instant::now(), p));
 }
 
 /// Test/diagnostic helper: forget the cached profile.
@@ -503,7 +569,7 @@ impl ClaudeProvider {
             return Some(p);
         }
         let resp = http
-            .get(PROFILE_URL)
+            .get(self.ctx.endpoint(PROFILE_URL))
             .bearer_auth(token)
             .header("anthropic-beta", OAUTH_BETA)
             .header("User-Agent", self.ctx.user_agent.clone())
@@ -538,15 +604,25 @@ impl Provider for ClaudeProvider {
         DISPLAY_NAME
     }
 
+    fn account(&self) -> Option<&super::AccountRef> {
+        self.ctx.account.as_ref()
+    }
+
     fn info(&self) -> ProviderInfo {
-        let creds = load_credentials();
+        let creds = self.load();
         let now = chrono::Utc::now().timestamp_millis();
         ProviderInfo {
             id: CLAUDE_ID.into(),
             display_name: DISPLAY_NAME.into(),
             logged_in: creds.as_ref().map(|c| !c.is_expired(now)).unwrap_or(false),
-            credential_path: credential_source(),
-            log_path: log_root().map(|p| p.display().to_string()),
+            credential_path: match &self.ctx.account {
+                Some(a) => Some(credentials_path_in(&a.config_dir).display().to_string()),
+                None => credential_source(),
+            },
+            log_path: match &self.ctx.account {
+                Some(a) => Some(a.config_dir.join("projects").display().to_string()),
+                None => log_root().map(|p| p.display().to_string()),
+            },
             plan_label: creds.as_ref().and_then(|c| {
                 plan_label(c.subscription_type.as_deref(), c.rate_limit_tier.as_deref())
             }),
@@ -555,17 +631,44 @@ impl Provider for ClaudeProvider {
     }
 
     async fn fetch(&self, http: &reqwest::Client) -> ProviderQuota {
-        let Some(creds) = load_credentials() else {
+        super::tag_account(self.fetch_primary_or_account(http).await, self.account())
+    }
+}
+
+impl ClaudeProvider {
+    /// Credentials of this instance's account.
+    fn load(&self) -> Option<Credentials> {
+        match &self.ctx.account {
+            Some(a) => load_credentials_from(&a.config_dir),
+            None => load_credentials(),
+        }
+    }
+
+    /// The Keychain cache only exists for the primary account.
+    fn forget(&self) {
+        if self.ctx.account.is_none() {
+            forget_cached_credentials();
+        }
+    }
+
+    async fn fetch_primary_or_account(&self, http: &reqwest::Client) -> ProviderQuota {
+        let Some(first) = self.load() else {
             let mut q = empty_quota(CLAUDE_ID, DISPLAY_NAME, ProviderStatus::NotLoggedIn);
-            q.error = Some("Not logged in — run `claude` to sign in".into());
+            q.error = Some(match &self.ctx.account {
+                Some(a) => account_login_hint(&a.config_dir, cfg!(target_os = "macos")),
+                None => "Not logged in — run `claude` to sign in".into(),
+            });
             return q;
         };
         let now_ms = chrono::Utc::now().timestamp_millis();
-        if creds.is_expired(now_ms) {
-            log::info!("claude: access token expired");
+        let reload = || {
             // A stale Keychain read must not keep an expired token alive
             // after the user has re-run `claude`.
-            forget_cached_credentials();
+            self.forget();
+            self.load()
+        };
+        let Some(creds) = usable_credentials(first, now_ms, reload) else {
+            log::info!("claude: access token expired");
             return degraded(
                 &self.ctx,
                 CLAUDE_ID,
@@ -573,16 +676,21 @@ impl Provider for ClaudeProvider {
                 ProviderStatus::TokenExpired,
                 EXPIRED_MESSAGE,
             );
-        }
+        };
+        self.fetch_usage(http, creds).await
+    }
 
-        let resp = http
-            .get(USAGE_URL)
-            .bearer_auth(&creds.access_token)
-            .header("anthropic-beta", OAUTH_BETA)
-            .header("User-Agent", self.ctx.user_agent.clone())
-            .header("Accept", "application/json")
-            .send()
-            .await;
+    /// The usage request itself, for credentials already judged usable.
+    async fn fetch_usage(&self, http: &reqwest::Client, creds: Credentials) -> ProviderQuota {
+        let url = self.ctx.endpoint(USAGE_URL);
+        let resp = super::send_with_retry(&self.ctx, || {
+            http.get(&url)
+                .bearer_auth(&creds.access_token)
+                .header("anthropic-beta", OAUTH_BETA)
+                .header("User-Agent", self.ctx.user_agent.clone())
+                .header("Accept", "application/json")
+        })
+        .await;
 
         let resp = match resp {
             Ok(r) => r,
@@ -600,7 +708,7 @@ impl Provider for ClaudeProvider {
 
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            forget_cached_credentials();
+            self.forget();
             return degraded(
                 &self.ctx,
                 CLAUDE_ID,
@@ -854,5 +962,191 @@ mod tests {
         // the fixture's extra_usage is disabled, so a real response is clean
         let usage: UsageResponse = serde_json::from_str(FIXTURE).unwrap();
         assert!(map_extras(&usage).is_empty());
+    }
+
+    // ---------- expiry decision ----------
+
+    fn creds(expires_at_ms: Option<i64>) -> Credentials {
+        Credentials {
+            access_token: "tok".into(),
+            expires_at_ms,
+            ..Credentials::default()
+        }
+    }
+
+    #[test]
+    fn a_token_is_refreshed_a_minute_before_it_expires() {
+        let now = 1_000_000;
+        assert!(!creds(Some(now + EXPIRY_SKEW_MS + 1)).needs_refresh(now));
+        assert!(creds(Some(now + EXPIRY_SKEW_MS)).needs_refresh(now));
+        assert!(creds(Some(now - 1)).needs_refresh(now));
+        assert!(!creds(None).needs_refresh(now), "no expiry means valid");
+        // `is_expired` itself stays exact (it drives the "logged in" flag).
+        assert!(!creds(Some(now + 1)).is_expired(now));
+    }
+
+    #[test]
+    fn an_expired_token_gets_one_reload_before_the_login_is_declared_expired() {
+        let now = 1_000_000;
+        // Fresh credentials are used as they are; no reload happens.
+        let used = usable_credentials(creds(Some(now + 3_600_000)), now, || {
+            panic!("must not reload a valid token")
+        });
+        assert!(used.is_some());
+        // Expired on first read, refreshed by Claude Code in the meantime.
+        let mut fresh = creds(Some(now + 3_600_000));
+        fresh.access_token = "new".into();
+        let used = usable_credentials(creds(Some(now - 5)), now, || Some(fresh)).unwrap();
+        assert_eq!(used.access_token, "new");
+        // Still expired after the reload, or unreadable: the login is expired.
+        assert!(
+            usable_credentials(creds(Some(now - 5)), now, || Some(creds(Some(now - 5)))).is_none()
+        );
+        assert!(usable_credentials(creds(Some(now - 5)), now, || None).is_none());
+    }
+
+    // ---------- fetch against a local stub ----------
+
+    use crate::commands::test_support::StubServer;
+
+    fn stub_provider(server: &StubServer) -> ClaudeProvider {
+        ClaudeProvider::new(ProviderCtx {
+            api_base: Some(server.base.clone()),
+            retry_delay: Duration::from_millis(5),
+            ..ProviderCtx::default()
+        })
+    }
+
+    async fn fetch_stub(server: &StubServer) -> ProviderQuota {
+        let http = reqwest::Client::new();
+        stub_provider(server).fetch_usage(&http, creds(None)).await
+    }
+
+    #[tokio::test]
+    async fn a_200_answer_becomes_windows() {
+        let server = StubServer::start(vec![("200 OK", vec![], FIXTURE.to_string())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Ok);
+        assert!(!q.windows.is_empty());
+        assert_eq!(q.source, DataSource::Api);
+    }
+
+    #[tokio::test]
+    async fn a_401_is_final_and_reported_as_an_expired_login() {
+        let server = StubServer::start(vec![("401 Unauthorized", vec![], "{}".into())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::TokenExpired);
+        assert_eq!(server.hits(), 1, "401 is never retried");
+    }
+
+    #[tokio::test]
+    async fn a_429_keeps_retry_after_and_is_never_retried() {
+        let server = StubServer::start(vec![(
+            "429 Too Many Requests",
+            vec![("Retry-After", "120")],
+            "{}".into(),
+        )]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::RateLimited);
+        assert!(q.next_attempt_at.is_some());
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_503_is_retried_once_and_then_reported() {
+        let server = StubServer::start(vec![("503 Service Unavailable", vec![], "{}".into())]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Error);
+        assert_eq!(server.hits(), 2, "exactly one retry");
+    }
+
+    #[tokio::test]
+    async fn a_transient_502_followed_by_a_200_succeeds() {
+        let server = StubServer::start(vec![
+            ("502 Bad Gateway", vec![], "{}".into()),
+            ("200 OK", vec![], FIXTURE.to_string()),
+        ]);
+        let q = fetch_stub(&server).await;
+        assert_eq!(q.status, ProviderStatus::Ok);
+    }
+
+    #[test]
+    fn the_profile_cache_keeps_one_entry_per_token() {
+        clear_profile_cache();
+        store_profile("synthetic-token-a", CachedProfile::default());
+        store_profile("synthetic-token-b", CachedProfile::default());
+        assert!(cached_profile("synthetic-token-a").is_some());
+        assert!(cached_profile("synthetic-token-b").is_some());
+        clear_profile_cache();
+    }
+
+    #[test]
+    fn an_extra_account_reads_its_own_file_and_explains_a_missing_login() {
+        let dir = crate::commands::test_support::tempdir();
+        assert!(load_credentials_from(&dir).is_none());
+        std::fs::write(
+            credentials_path_in(&dir),
+            r#"{"claudeAiOauth":{"accessToken":"synthetic","subscriptionType":"pro"}}"#,
+        )
+        .unwrap();
+        let c = load_credentials_from(&dir).unwrap();
+        assert_eq!(c.subscription_type.as_deref(), Some("pro"));
+
+        let hint = account_login_hint(&dir, false);
+        assert!(hint.contains("CLAUDE_CONFIG_DIR=") && hint.contains("/login"));
+        std::fs::remove_file(credentials_path_in(&dir)).unwrap();
+        let mac = account_login_hint(&dir, true);
+        assert!(mac.contains("macOS") && mac.contains(".credentials.json"));
+        // with the file present macOS gives the normal sign-in hint
+        std::fs::write(credentials_path_in(&dir), "{}").unwrap();
+        assert!(!account_login_hint(&dir, true).contains("macOS"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_extra_account_is_tagged_and_caches_separately() {
+        let server = StubServer::start(vec![("200 OK", vec![], FIXTURE.to_string())]);
+        let data = crate::commands::test_support::tempdir();
+        let home = crate::commands::test_support::tempdir();
+        std::fs::write(
+            credentials_path_in(&home),
+            r#"{"claudeAiOauth":{"accessToken":"synthetic-work-token","expiresAt":4102444800000}}"#,
+        )
+        .unwrap();
+        let ctx = ProviderCtx {
+            api_base: Some(server.base.clone()),
+            retry_delay: Duration::from_millis(5),
+            ..ProviderCtx::with_data_dir(&data)
+        };
+        let provider = ClaudeProvider::new(ctx.with_account(super::super::AccountRef {
+            id: "work".into(),
+            label: "Work".into(),
+            config_dir: home.clone(),
+        }));
+        let q = provider.fetch(&reqwest::Client::new()).await;
+        assert_eq!(q.status, ProviderStatus::Ok);
+        assert_eq!(q.provider, "claude");
+        assert_eq!(q.account_id.as_deref(), Some("work"));
+        assert_eq!(q.account_label.as_deref(), Some("Work"));
+        assert_eq!(q.display_name, "Claude Code · Work");
+        assert_eq!(q.key(), "claude@work");
+        assert!(data.join("cache").join("quota-claude@work.json").is_file());
+        assert!(!data.join("cache").join("quota-claude.json").exists());
+
+        // an account without a login is its own status, with its own hint
+        let empty = crate::commands::test_support::tempdir();
+        let missing = ClaudeProvider::new(ctx.with_account(super::super::AccountRef {
+            id: "side".into(),
+            label: "Side".into(),
+            config_dir: empty.clone(),
+        }));
+        let q = missing.fetch(&reqwest::Client::new()).await;
+        assert_eq!(q.status, ProviderStatus::NotLoggedIn);
+        assert_eq!(q.account_id.as_deref(), Some("side"));
+        let hint = q.error.unwrap();
+        assert!(hint.contains("CLAUDE_CONFIG_DIR=") || hint.contains("macOS"));
+        for d in [data, home, empty] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 }

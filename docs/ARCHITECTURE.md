@@ -149,6 +149,24 @@ OS keychain, with an AES-256-GCM-obfuscated file as the fallback) and Cursor
 are written up with sources in **docs/PROVIDERS.md** §2 and §3 so the question
 is not re-opened without new information.
 
+### OpenRouter (experimental, unverified — 2026-10)
+
+Also built from published documentation only (`ProviderInfo.experimental` is
+`true`, off by default and absent from the snapshot until switched on). There
+is no CLI login to borrow: the key comes from the environment variable named by
+`openrouterKeyEnv` and is never stored. `GET /api/v1/key` yields a "Credits"
+window when the key has a limit, otherwise `/api/v1/credits` (management keys
+only) gives an informational balance. No local logs, so no history of tokens.
+Details and mapping: **docs/PROVIDERS.md §4**.
+
+### Multiple accounts (Claude Code, Codex)
+
+The primary account of each provider is implicit; extra accounts come from
+`Settings.accounts` (at most 6). Each is its own provider instance addressed by
+the registry key `claude@work` (`model::split_key`), with its own cache, backoff and
+poll clock; Claude's 120 s floor applies per account. Extra accounts are quota
+only. See **docs/PROVIDERS.md §5**.
+
 ## 3. Repository layout & ownership
 
 ```
@@ -158,25 +176,46 @@ src/                      SvelteKit frontend                     [FRONTEND]
   routes/popover/         window "popover"  (route "/popover")
   routes/dashboard/       window "dashboard"(route "/dashboard")
   lib/types.ts            canonical TS types (mirror of model.rs)  [SHARED - edit only via contract]
+  lib/settings-defaults.ts contract defaults (Rust twin: impl Default for Settings)
   lib/api.ts              invoke() wrapper + browser mock         [FRONTEND owns, keep command names]
   lib/i18n/               en.json, zh-CN.json, t()
-  lib/components/         Ring.svelte, Popover.svelte, ...
-src-tauri/
-  src/lib.rs, main.rs     builder wiring, plugins, handler list   [PLATFORM]
-  src/window/             sidebar/popover/dashboard window logic, tray, autostart, monitors  [PLATFORM]
-  src/model.rs            canonical Rust types (serde camelCase)  [SHARED - edit only via contract]
-  src/commands.rs         backend commands (thin wrappers)        [BACKEND]
-  src/state.rs            AppState (settings, snapshot cache, db) [BACKEND]
-  src/settings.rs         load/save settings.json                 [BACKEND]
-  src/providers/          claude.rs, codex.rs, copilot.rs, mod.rs (trait, registry) [BACKEND]
+  lib/components/         Ring.svelte, MiniBar.svelte, Popover.svelte, dashboard/ (tabs, history/, sessions/, settings/ cards), ...
+  lib/builtin-presets.json built-in presets, shared with the tray (Rust include)
   lib/providers.ts        provider-agnostic frontend helpers      [FRONTEND]
+src-tauri/
+  src/lib.rs, main.rs     builder wiring, plugins, invoke_handler list; main.rs also handles `--print` first [PLATFORM]
+  src/cli.rs              `ai-usage-sidebar --print`: reads snapshot.json, prints, exits (no window)  [BACKEND]
+  src/window/             sidebar/popover/dashboard window logic, drag.rs, hover.rs, monitors.rs, linux.rs [PLATFORM]
+    tray.rs               tray icon + menu (usage lines, presets, focus, pause polling)
+    tray_status.rs        pure tray content: usage lines, tooltip, severity dot, percent icon, system language
+    tray_presets.rs       pure helpers behind the Presets submenu
+    shortcuts.rs          optional global shortcuts + registration status
+  src/model.rs            canonical Rust types (serde camelCase)  [SHARED - edit only via contract]
+  src/commands.rs         backend commands (thin wrappers); mounts the modules below via #[path]  [BACKEND]
+  src/state.rs            AppState (settings, snapshot cache, db), data-dir choice [BACKEND]
+  src/settings.rs         load/merge/clamp/save settings.json, file watcher [BACKEND]
+  src/settings_history.rs undo ring (settings.history.json)       [BACKEND]
+  src/settings_io.rs      export / import / history / restore commands  [BACKEND]
+  src/diagnostics.rs      get_diagnostics, open_folder (redacted)  [BACKEND]
+  src/accounts.rs         extra-account commands (check_account_dir, pick_account_folder)  [BACKEND]
+  src/onboarding.rs       get_provider_setup (existence checks only)  [BACKEND]
+  src/providers/          claude.rs, codex.rs, copilot.rs, openrouter.rs, mod.rs (trait, registry, retry, cache) [BACKEND]
+  src/alerts/             mod.rs (timer, once-only state), threshold.rs, predictive.rs, budget.rs, summary.rs, notifier.rs (native + webhook, focus gate) [BACKEND]
+  src/focus.rs            focus / do-not-disturb helpers around focusUntil [BACKEND]
+  src/forecast.rs         quota projection, token-rate fallback, backtest [BACKEND]
   src/ingest/             jsonl parsers, incremental ingestion     [BACKEND]
-  src/store/              sqlite schema + queries                  [BACKEND]
+  src/store/              sqlite schema (v3) + queries, retention   [BACKEND]
+  src/sessions/           session index, queries, insights.rs (aggregate analytics) [BACKEND]
+  src/evaluation.rs       opt-in AI assessment, redaction          [BACKEND]
   src/pricing.rs          default pricing table + cost estimation [BACKEND]
-  src/scheduler.rs        periodic refresh + ingest, emits events  [BACKEND]
+  src/export.rs           CSV save, share-card PNG save            [BACKEND]
+  src/export_snapshot.rs  snapshot.json writer (schema 1)          [BACKEND]
+  src/backup.rs           backup / staged restore / restart        [BACKEND]
+  src/scheduler.rs        periodic refresh + ingest + maintenance, emits events  [BACKEND]
   src/updater.rs          in-app update check, never auto-installs [PLATFORM]
   tauri.conf.json, capabilities/, icons/                          [PLATFORM]
-docs/                     this file, PLATFORM.md, reference images
+docs/                     this file, PLATFORM.md, PROVIDERS.md, SESSIONS.md, STATUSLINE.md, PERFORMANCE.md, reference images
+scripts/                  check-i18n.mjs, check-agents-settings.mjs, install-linux.sh, smoke-linux.sh
 .github/workflows/        CI builds for linux/macos/windows        [PLATFORM]
 ```
 
@@ -210,7 +249,13 @@ Key semantics:
   `confidence` (`low|medium|high`) comes from the sample count and the share of
   the estimation horizon they cover. Too few samples, too short or stale a
   history, a flat/negative slope, an already-full window or a projection within
-  one percentage point of the current value all mean "no forecast". The UI only
+  one percentage point of the current value all mean "no forecast", except that
+  a series too short/brief/flat (integer percentages plateau at a low burn rate)
+  falls back, for non-scoped windows, to the provider's token events of the
+  current period scaled by that period's tokens-per-percent ratio (needs ≥ 2 %
+  used and ≥ 3 recent events); such a forecast is one confidence step lower
+  (`low` below 5 % used). `examples/forecast_backtest.rs` replays a DB copy and
+  reports the mean absolute error of both variants. The UI only
   marks the ring for `medium`/`high`.
 * `QuotaWindow.isPrimary`: exactly one window per provider is primary (the
   5‑hour window when the plan has one, else the weekly window).
@@ -230,6 +275,16 @@ Key semantics:
   are merely ageing, the UI presents them as stale, and
   `ProviderQuota.nextAttemptAt` (RFC 3339 UTC, else null) says when the
   scheduler will try again.
+* `ProviderQuota.accountId` / `accountLabel` are set only for an **extra
+  account** (`settings.accounts`, see docs/PROVIDERS.md §5) and are absent (not
+  `null`) for the primary account, so a primary entry serializes exactly as it
+  did before multi-account support. `displayName` of an extra account is
+  "Claude Code · Work". The **registry key** of a quota is
+  `provider` for the primary account and `provider@accountId` otherwise
+  (`ProviderQuota::key`, `quotaKey()` in `providers.ts`); everything that was
+  keyed by provider id — poll clocks, backoff, `refresh_now(provider)`, alert
+  dedupe, ring keys, the popover target, `snapshot.json` ids, the CLI filter — is
+  keyed by it.
 * `ProviderQuota.extras` is an optional, provider-neutral list of facts that
   are not rate-limit windows (credits, a spend limit that was hit, models the
   plan cannot use right now). Each item is
@@ -280,19 +335,23 @@ Key semantics:
 
 All commands are `async`-safe, return `Result<T, String>` on the Rust side and
 are called only through `src/lib/api.ts`. Argument names are camelCase on the
-JS side (Tauri converts to snake_case Rust parameters).
+JS side (Tauri converts to snake_case Rust parameters). Every command below is
+registered in the `invoke_handler` of `src-tauri/src/lib.rs`, and every
+registered command appears exactly once in this section (a registered command
+without a row, or a row without a registration, is a documentation bug).
 
 ### Backend (data) commands — `src-tauri/src/commands.rs`
 | command | args | returns |
 |---|---|---|
 | `get_snapshot` | – | `AppSnapshot` (cached, never blocks on network) |
-| `refresh_now` | `provider?: ProviderId` | `AppSnapshot` (forces network fetch) |
+| `refresh_now` | `provider?: ProviderId` (a registry key: `claude`, or `claude@work` for an extra account) | `AppSnapshot` (forces network fetch) |
 | `get_settings` | – | `Settings` |
-| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds`, `sidebarItems` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
+| `update_settings` | partial settings JSON; nested `providers`, `colors`, `sizes`, `thresholds`, `sidebarItems`, `subscriptionUsd`, `webhook` preserve untouched members | `Settings` (also emits `settings-updated` after persistence succeeds) |
 | `get_usage_history` | `query: HistoryQuery` | `HistoryResult` |
 | `get_usage_calendar` | `query: CalendarQuery` | `CalendarResult` (local-day calendar **and** weekday × hour punch card from one scan) |
 | `get_usage_sessions` | `query: SessionQuery` | `SessionsResult` (top `limit` sessions by tokens + the full-range count/totals) |
-| `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
+| `get_quota_history` | `query: QuotaHistoryQuery` (`provider`, optional `account`: absent = every account, `""` = the primary account only, `"work"` = that extra account) | `QuotaSample[]` (`account` absent for the primary account) |
+| `get_window_usage` | `query: WindowUsageQuery` (`provider`, `windows: [{from, to}]`, max 200) | `TokenTotals[]`, one per window, `[from, to)`; used to relate quota cycles to tokens |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
 | `get_price_update_status` | – | `PriceUpdateStatus` (cached status; never touches the network) |
@@ -303,7 +362,65 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `reingest_logs` | – | `IngestStats` (full rescan) |
 | `get_providers` | – | `ProviderInfo[]` |
 | `get_app_info` | – | `AppInfo` |
+
+### Settings tooling and diagnostics — `diagnostics.rs`, `settings_io.rs`, `settings_history.rs`
+| command | args | returns |
+|---|---|---|
+| `get_diagnostics` | – | `Diagnostics` — version, OS/arch, display backend, provider status (e-mails always masked), effective settings (`pricingUrl` stripped of credentials/query), log/config/data folders and the last 80 lines of the newest log, run through `evaluation::redact`. Never contains a token. |
+| `open_folder` | `which: "log" \| "config" \| "data"` | opens that folder in the file manager (a name, never a path) |
+| `export_settings` | – | `string \| null` (native save dialog, writes the effective `settings.json`; null on cancel) |
+| `import_settings` | – | `ImportResult \| null` (native open dialog, ≤ 1 MiB; goes through the normal `update_settings` merge so unknown/invalid values are ignored; `focusUntil` and `version` are never imported; `ignored` lists keys that were unknown, invalid or clamped) |
+| `get_settings_history` | – | `SettingsVersion[]` — the undo ring, newest first (see §7) |
+| `restore_settings_version` | `index: number` | `Settings` — makes ring entry `index` live; the version it replaces is pushed into the ring, so a restore can be undone |
+
+### Alerts and onboarding commands — `src-tauri/src/alerts/`, `onboarding.rs`
+| command | args | returns |
+|---|---|---|
+| `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
+| `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
+| `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
+| `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
+
+Alerts (`alerts/`): `on_snapshot` (called by the scheduler after each refresh)
+raises threshold-crossing and forecast alerts; a slow timer started from
+`scheduler::start` raises budget (80 % / 100 % of `monthlyBudgetUsd`, once per
+month) and weekly-summary alerts. Everything goes through
+`alerts::notifier::deliver`: the `notifications` master switch, then focus mode
+(which silences every channel), then the native notification and the optional
+webhook. Once-only bookkeeping for budget and summary lives in
+`alerts-state.json` in the data directory.
+
+### Account commands — `src-tauri/src/accounts.rs`
+| command | args | returns |
+|---|---|---|
+| `check_account_dir` | `provider`, `configDir` | `AccountCheck` (folder / credentials-file *existence* of a prospective extra account; contents are never read) |
+| `pick_account_folder` | – | `string \| null` (native folder dialog) |
+
+### Export, sharing and backup — `export.rs`, `backup.rs`
+| command | args | returns |
+|---|---|---|
 | `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
+| `save_share_card` | `png: number[], suggestedNameHint: string` | `string \| null` (native save dialog for the dashboard's usage share card; the bytes must be a PNG of at most 8 MiB; null on cancel) |
+| `backup_data` | `dest?: string` | `string \| null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
+| `restore_data` | `src?: string` | `BackupInfo \| null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
+| `restart_app` | – | – (relaunches the app) |
+
+### Sessions and evaluation commands — `src-tauri/src/sessions/`, `evaluation.rs`
+Semantics, limits and privacy rules are in §11; the contract is the signature.
+
+| command | args | returns |
+|---|---|---|
+| `list_sessions` | `query: SessionListQuery` (`from`, `to`, `provider`, `project`, `search`, `sort`, `offset`, `limit`) | `{rows, total, offset, limit}` |
+| `get_session_insights` | the same filters (paging and sort ignored) | `SessionInsights` (one aggregate over at most the newest 1000 sessions) |
+| `get_session_detail` | `provider`, `sessionId`, `offset?`, `limit?` | summary, bounded message page, turns, children, warnings |
+| `set_session_alias` | `provider`, `sessionId`, `alias` | local display name only |
+| `get_analysis_settings` | – | `AnalysisSettings` |
+| `save_analysis_settings` | `settings` | `AnalysisSettings` |
+| `prepare_session_evaluation` | `provider`, `sessionId`, `turnIds?` | the editable preview (no network request) |
+| `evaluate_session` | `preview` | the report (the only command that sends content) |
+| `get_session_evaluations` | `provider`, `sessionId` | saved reports |
+| `save_evaluation_review` | `id`, `requirements` | the human-reviewed report |
+| `clear_session_analysis` | `provider`, `sessionId` | `()` (removes that session's assessments and alias) |
 
 ### Updater commands — `src-tauri/src/updater.rs`
 | command | args | returns |
@@ -320,14 +437,17 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `sidebar_drag` | `phase: 'start'\|'move'\|'end'\|'cancel', dx: number, dy: number` (CSS px the pointer travelled since `start`, screen space) | the bar follows the pointer; on `end` it snaps to the nearest of the four edges of the monitor it was dropped on (distances normalised by the monitor's half extent, so the zones meet at its diagonals, with a small hysteresis in favour of the current edge for corner drops) and the result is persisted as `edge` / `monitor` / `verticalOffset` (emits `settings-updated`). `cancel` puts it back. |
 | `popover_show` | `req: PopoverRequest` | position popover next to the ring and show it; emits `popover-target` to the popover window |
 | `popover_relayout` | `width: number, height: number` (CSS px the popover content needs) | resize the popover window to fit content and re-anchor it next to the ring |
-| `popover_hide` | – | hide the popover now and unpin it (second click on the pinned ring). Hover-out hides an unpinned popover after 250 ms and a pinned one after 8 s. |
-| `popover_set_pinned` | `pinned: boolean` | pinned popovers ignore hover-out |
+| `popover_hide` | – | hide the popover now and unpin it (second click on the pinned ring). Hover-out hides an unpinned popover after 250 ms and a pinned one after 8 s; independently, any popover closes after `popoverTimeoutSec` (×6 while pinned) without pointer activity. |
+| `popover_set_pinned` | `pinned: boolean` | pinned popovers ignore the short hover-out delay |
 | `hover_report` | `source: "bar" \| "popover", hovered: boolean` | Rust keeps a hover state machine. `bar/true` expands a collapsed bar and cancels timers. When neither bar nor popover is hovered: the popover hides after ~250 ms (unless pinned) and, if `autoHide`, the bar collapses after `autoHideDelayMs`. |
-| `open_dashboard` | `tab?: "overview" \| "history" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` |
+| `open_dashboard` | `tab?: "overview" \| "history" \| "sessions" \| "settings"` | show/focus dashboard window, emits `dashboard-navigate` (omitted = `overview`) |
+| `toggle_sidebar` | – | shows/hides the bar window (the tray's "Show/Hide sidebar"; used by the command palette) |
 | `apply_window_settings` | – | re-read settings (edge, monitor, vertical position, opacity, autoHide, always-on-top) and reposition windows |
 | `get_monitors` | – | `MonitorInfo[]` |
 | `get_shortcut_status` | – | `ShortcutStatus` — why a configured global shortcut is not active (`null` = registered, or disabled because the setting is empty) |
+| `get_shortcut_registrations` | – | `ShortcutRegistrations` — per shortcut `{state: "off" \| "registered" \| "failed" \| "unsupported", message}`; `unsupported` = native Wayland session |
 | `quit_app` | – | exit |
+| `debug_log` | `msg: string` | writes `[webview] <msg>` to the log in debug builds only; a no-op in release builds |
 
 ### Events (Rust → JS, `listen()`)
 | event | payload | emitted by |
@@ -338,7 +458,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `popover-target` | `PopoverRequest` | platform, tells the popover window what to render |
 | `sidebar-state` | `SidebarState` | platform |
 | `dashboard-navigate` | `{ tab: string }` | platform |
-| `update-status` | `UpdateStatus` | updater, after every state change |
+| `update-status` | `UpdateStatus` | updater, after every state change and (throttled to ~4/s) while an install downloads (`downloaded` / `total` bytes) |
 | `price-update-status` | `PriceUpdateStatus` | pricing backend, after a source check, apply or status change |
 
 Each window's snapshot store also reconciles through `get_snapshot` every
@@ -359,8 +479,10 @@ store consumer removes the event listener, timer and lifecycle handlers.
 Linux notes: GNOME Wayland does not allow clients to position windows or stay
 on top, so on Linux the app forces `GDK_BACKEND=x11` (XWayland) unless
 `AI_USAGE_SIDEBAR_BACKEND=wayland` is set. With NVIDIA drivers WebKitGTK needs
-`WEBKIT_DISABLE_DMABUF_RENDERER=1`. Layer-shell support for wlroots/KDE is a
-follow-up.
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`. With `AI_USAGE_SIDEBAR_BACKEND=wayland` the bar
+docks natively through `wlr-layer-shell` where `gtk-layer-shell` and the compositor
+support it (unverified on real hardware; falls back to XWayland). See
+**docs/PLATFORM.md**.
 
 ## 7. Settings (`settings.json` in the app config dir)
 
@@ -372,13 +494,35 @@ end, and a positive offset moves towards the end. The two field names are kept
 as they are so existing `settings.json` files stay valid; the settings tab
 relabels the controls ("Horizontal align / offset") on a horizontal edge.
 
-See `Settings` in `types.ts`. Defaults: right edge, vertically centred, always
+See `Settings` in `types.ts`. The complete key list with defaults, ranges and meanings is
+the table in **AGENTS.md §5**, which `pnpm check:agents` keeps in step with
+`src/lib/settings-defaults.ts` and `impl Default for Settings` (the authority). Defaults: right edge, vertically centred, always
 shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member on, `percentMode="used"`, `percentPosition="below"`,
 `refreshIntervalSec=60`, `adaptiveRefresh=true`, dark theme, `surfaceStyle="glass"` (translucent liquid-glass pill/popover with specular highlight; `solid` = opaque, `cyber` = a neon sci-fi HUD painted by the frontend with no native backdrop), language `auto`, ingestion enabled,
 autostart off, thresholds warn 70 / critical 90, `notifications=false` with
 `forecastNotifications=true` (the predictive warning is on by default but only
 fires while `notifications` is on, at most once per window per reset period and
-only for a `medium`/`high` confidence forecast).
+only for a `medium`/`high` confidence forecast), `thresholdNotifications=true`
+and `budgetNotifications=true` (both also gated by `notifications`),
+`weeklySummary=false`, `webhook` off, `accounts=[]` (extra Claude Code / Codex
+accounts, at most 6, each `{id, provider, label, configDir, enabled}`; replaced
+as a whole by a patch, invalid entries dropped by `settings::clamp`), `onboarded=false` (a settings file that
+already exists without the key counts as onboarded).
+
+
+### Undo ring (`settings.history.json`)
+
+Before every settings write that changes something, the version it replaces is
+pushed into `settings.history.json` next to `settings.json` (newest first, at
+most 5; `settings_history.rs`). Edits less than 3 s apart are one *burst* and
+record only the version the burst started from, so dragging a slider does not
+fill the ring. A restore (`restore_settings_version`) always records. The file
+is best effort: if it cannot be read or written the settings save still
+succeeds. External edits of `settings.json` are recorded too.
+
+`customPresets` is a name → partial-patch map (at most 10 names of ≤ 40
+characters; patches may not carry `customPresets` or `focusUntil`). Presets are
+applied through `update_settings`, so every value is validated on use.
 
 ### Sidebar items (what the bar shows)
 
@@ -394,6 +538,40 @@ line height so it cannot overlap the arcs. `"center"` puts the percentage in
 the centre instead of the provider logo. Both positions follow
 `sidebarItems.percentLabel`; turning it off restores the centre logo when
 `sidebarItems.logo` is enabled. Existing settings default to `"below"`.
+
+### Sidebar visuals (labels, animations, compact mode)
+
+Pure rules live in `src/lib/sidebar-visuals.ts` (label layout, forecast arc
+geometry, collapsed-handle segments, popover column split), `src/lib/ring-events.ts`
+(snapshot diff for the animations) and `src/lib/quota-spark.ts` (24 h sparkline
+samples + a 60 s cache); each has a `tests/*.unit.ts`.
+
+- `labelContent` (`percent` | `reset` | `both`): the countdown is the terse
+  `1h12` / `45m` / `3d4h`, refreshed on the next reset-minute boundary. The
+  centre of a ring only fits the percentage, so `percentPosition="center"` keeps
+  it there and moves the countdown to the usual label slot. A top/bottom bar
+  writes the label to the right of each ring and then shows percent and
+  countdown unless `labelContent="reset"`.
+- `sidebarAnimations`: crossing into warn/critical plays one ~600 ms outward
+  pulse on that arc, a sharp drop (at least 25 points from at least 30) plays a
+  brief flash. The first snapshot and the first one after a threshold edit only
+  seed the baseline. Reduced motion hides both.
+- `ringStyle="bar"` (`MiniBar.svelte`): each provider is a logo dot plus one
+  slim bar per visible window (column on left/right edges, row on top/bottom).
+  Severity, forecast tick, the dashed forecast run and the status badge are all
+  kept and stay shape-coded. The sidebar still sizes the window by measuring the
+  painted element (`observeSize` -> `sidebar_relayout`), so no Rust change.
+- Forecast: next to the existing tick a translucent dashed arc runs from the
+  current value to the projected one (capped at 100 %). A projection of 100 %
+  adds an hourglass badge and the forecast text joins the group's aria-label.
+  Only arcs that already carry a tick (confidence above `low`) get any of it.
+- Collapsed handle: one equal segment per polled provider in that provider's
+  severity colour (all windows count, as for `barSeverity`); its title and aria
+  label name the busiest provider and its percentage.
+- Popover: each row has a 24 h used-% sparkline from `get_quota_history`,
+  fetched when the popover is shown and cached for a minute. On a top/bottom bar
+  with at least three rows the bubble is two columns (account-wide | per-model
+  limits, or the rows halved when there are no scoped windows).
 
 Rules, implemented in `src/lib/sidebar-items.ts` and unit-tested in
 `tests/sidebar-items.unit.ts`:
@@ -431,6 +609,20 @@ budget. When it is set and the History tab shows cost, the tab draws the
 month-to-date cumulative estimate against it and states the percentage used
 and the linear pace. It never affects quotas, notifications or billing.
 
+`subscriptionUsd` (map provider → USD per month, each 0 – 10 000, 0 = unknown)
+is what the user pays for a subscription. The History tab compares this month's
+API-equivalent *estimate* with it ("N× your subscription"), projects the month
+end at the current pace and draws it on the budget chart. Plan-based prices in
+Settings are hints only. `subscriptionUsd` is merged per key like `providers`.
+
+Quota cycles (History → quota panel): samples of a window are split by
+`resets_at` (deadlines closer than 5 minutes are one cycle); a cycle starts at
+`resets_at` minus the window length (5 h / 7 d by kind). The tokens (and
+estimated cost) of a cycle come from `get_window_usage` over that interval, and
+"tokens per 1 %" is the median over the last 8 completed cycles whose samples
+reach the end of the cycle and whose peak is at least 5 %. Only local session
+logs are counted, so the figure is an approximation.
+
 `cyberAccent` (`neon` | `matrix` | `amber` | `ice` | `synthwave`) picks the
 neon pair the `cyber` surface is painted with. `applyTheme` stamps it on
 `<html>` as `data-cyber`; `src/lib/styles/cyber.css` keys the pair, the plate
@@ -451,10 +643,10 @@ of these waits — the decision functions (`poll_interval_secs`,
 `next_poll_due_ms`, `should_poll`, `should_force_poll`) are pure and unit
 tested:
 
-* **floor** — Claude is never polled more often than every 120 s
-  (`CLAUDE_MIN_INTERVAL_SEC`). `/api/oauth/usage` shares its budget with
+* **floor** — every Claude account (the primary and each extra one) is never
+  polled more often than every 120 s (`CLAUDE_MIN_INTERVAL_SEC`). `/api/oauth/usage` shares its budget with
   Claude Code's own calls and a 5-hour window only moves ~1 % per 3 min, so a
-  shorter interval buys nothing and earns `HTTP 429`. Codex uses the
+  shorter interval buys nothing and earns `HTTP 429`. Every other provider uses the
   configured value (minimum 15 s).
 * **idle stretch** (`adaptiveRefresh`) — the log watcher records when each
   provider's session logs last changed; after ~10 min of quiet the interval
@@ -472,8 +664,25 @@ tested:
 
 The learned multiplier and both gates are persisted in
 `<data_dir>/cache/poll-state.json`, and the cached snapshot's `fetchedAt`
-counts as the last poll, so restarting the app does not produce a burst of
-requests.
+counts as the last poll, so restarting the app does not produce a burst of requests.
+
+### Resilience (`scheduler.rs`, `providers/`)
+
+* The log-watcher thread re-checks the log roots every 60 s. A root that
+  appears later, vanishes, or is deleted and recreated (creation time changes)
+  is re-watched, and any such change as well as any `notify` error queues a
+  full reconciliation, so events lost while a root was unwatched are recovered.
+  Watcher errors are logged at most once per 5 min.
+* A provider request is retried once after ~1.5 s on a connection error,
+  timeout, or HTTP 502/503/504 (`providers::send_with_retry`); 401/403/429 and
+  other statuses are final, and the retry happens inside the same fetch so the
+  Claude 120 s floor is unaffected.
+* Token expiry uses a 60 s margin. An expired-looking Claude or Codex token
+  triggers one fresh read of the credentials (the CLI may have refreshed them)
+  before `token_expired` is reported.
+* Forecasts load all window samples of a refresh with one lock and one prepared
+  statement (`store::quota::window_samples_many`).
+
 ### Updates
 
 `autoUpdateCheck` only governs the *automatic* check (30 s after start-up,
@@ -551,8 +760,9 @@ CREATE TABLE usage_events (
 CREATE INDEX idx_usage_ts ON usage_events(ts);
 CREATE TABLE quota_samples (
   id INTEGER PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT,
-  used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT, ts INTEGER NOT NULL);
-CREATE INDEX idx_quota_ts ON quota_samples(provider, ts);
+  used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT, ts INTEGER NOT NULL,
+  account TEXT NOT NULL DEFAULT '');   -- v3: '' = primary account
+CREATE INDEX idx_quota_account_ts ON quota_samples(provider, account, ts);
 CREATE TABLE ingest_files (
   path TEXT PRIMARY KEY, provider TEXT NOT NULL, size INTEGER NOT NULL,
   mtime INTEGER NOT NULL, byte_offset INTEGER NOT NULL, last_ingested_at INTEGER NOT NULL);
@@ -563,6 +773,18 @@ once so available logs replay to fill effort metadata without duplicate usage.
 Equal-token replays enrich metadata without replacing larger streaming totals;
 missing fields never erase a known effort for the same model. Deleted logs
 cannot supply missing metadata.
+
+Schema v3 (multi-account) adds `quota_samples.account TEXT NOT NULL DEFAULT ''`
+(`''` is the primary account, so every existing row migrates unchanged) and
+replaces `idx_quota_ts` by `idx_quota_account_ts`. The migration is idempotent
+(it checks for the column first, like v2) and runs in the same transaction as the
+version marker. Every function of `store/quota.rs` takes the registry key
+(`claude`, `claude@work`) and splits it: sample throttling, `window_samples*`
+(the forecast input), the history query, the retention thinning partition and
+the weekly "limits hit" grouping are all per account. A database written by v3
+cannot be opened by an older build (`unsupported database schema 3`).
+`usage_events` and the session tables are **not** per account (extra accounts
+are quota only).
 
 Ingestion is incremental (remember byte offset per file; if the file shrank or
 was rewritten without growth, re-parse from 0). File modification times are
@@ -582,6 +804,18 @@ agree on the same DST-aware local calendar. No extra index is warranted: the
 `(?N IS NULL OR col = ?N)` filters cannot be used as index prefixes, and the
 cost of these queries is reading the rows in range, which no index removes.
 
+**Retention and maintenance.** `quota_samples` is the only table that grows
+without a natural bound, so a daily pass (first run 5 min after start,
+`scheduler::maintenance_loop` → `store::maintain_quota_samples`) deletes
+samples older than `quotaRetentionDays` (default 365, 0 = keep forever, max
+3650) and thins samples older than 14 days to one row per
+(provider, account, kind, scope, hour): the row with the highest `used_percent`, so a
+cycle's peak survives. It then runs `PRAGMA wal_checkpoint(TRUNCATE)` and
+`PRAGMA optimize`, plus `incremental_vacuum` only when the file already uses
+`auto_vacuum=INCREMENTAL` (an existing database is never switched). Recent data
+(the forecast reads at most the last 24 h–7 d) is untouched, and `usage_events`
+are never deleted.
+
 Quota history shares the time/provider filters and keeps provider/kind/scope
 windows separate. Its curve and change list show used/remaining percentages,
 reset/plan transitions, and observed positive within-cycle deltas. It cannot
@@ -590,6 +824,25 @@ requires an advancing deadline plus a decreased percentage or the old deadline
 having passed; other decreases are labelled replenishment/correction. CSV
 exports the selected window’s observations. Token and session CSV also include
 raw reasoning effort and model variants.
+
+### Other files
+
+| File | Directory | Purpose |
+|---|---|---|
+| `settings.json` | config | the settings (watched; atomic writes) |
+| `settings.history.json` | config | undo ring, 5 versions (§7) |
+| `analysis-settings.json` | config | AI-assessment settings (§11) |
+| `pricing.json` | config | the user's saved price table, when any |
+| `usage.db` | data | SQLite database above (WAL) |
+| `snapshot.json` | data | machine-readable quota snapshot while `exportSnapshot` is on, schema 1 (`export_snapshot.rs`, docs/STATUSLINE.md); never holds e-mails or paths |
+| `alerts-state.json` | data | once-only bookkeeping for budget and weekly-summary alerts |
+| `cache/quota-<provider>[@<account>].json`, `cache/poll-state.json` | data | last-good quota per provider/account; learned poll multiplier and gates |
+| `pricing-remote.json` | data | cached source price table |
+| `restore-pending/`, `pre-restore/` | data | a staged backup restore, applied before the database opens at the next start; the replaced files (`backup::apply_pending`) |
+
+The data directory is the local app-data folder, except on Windows where an
+existing `usage.db` in the roaming folder keeps it there (`state::pick_data_dir`).
+The CLI `--print` computes the same directory without Tauri.
 
 ## 9. Cost estimation
 
@@ -681,6 +934,12 @@ takes `provider`, `sessionId`, optional `offset`/`limit` and returns the summary
 bounded message page, `totalMessages`, `nextOffset`, turns, children, warnings
 and `sourceUpdatedAt` (the indexed transcript source revision time).
 `set_session_alias(provider,sessionId,alias)` changes only the local display name.
+`get_session_insights(query)` takes the same filters (paging and sort ignored) and
+returns one aggregate for the Insights view: KPIs, log-scale cost and active-time
+histograms with median/P90, per-session points, four top lists, tool usage and the
+flag thresholds. It analyses at most the newest 1000 matching sessions
+(`truncated` says so), uses only metrics and tool-name metadata, never content,
+and is implemented in `sessions/insights.rs`.
 
 Metadata tables are additive: `session_metadata`, `session_aliases`,
 `session_sources`, `session_message_refs`, `session_turns`, `session_usage_links`.
@@ -689,12 +948,7 @@ no frontend command accepts an arbitrary file path. Parent links do not imply
 recursive summing. See [SESSIONS.md](SESSIONS.md) for metric semantics.
 
 `src-tauri/src/evaluation.rs` owns `analysis-settings.json`, preview preparation,
-explicit Chat Completions HTTP calls and the `session_evaluations` table. Commands:
-`get_analysis_settings()`, `save_analysis_settings(settings)`,
-`prepare_session_evaluation(provider,sessionId,turnIds?)`,
-`evaluate_session(preview)`, `get_session_evaluations(provider,sessionId)`,
-`save_evaluation_review(id,requirements)`, `clear_session_analysis(provider,sessionId)`.
-All are registered in `lib.rs` and wrapped in `src/lib/api.ts`.
+explicit Chat Completions HTTP calls and the `session_evaluations` table. Its commands are listed in §5.
 
 Content is opt-in, defaults off, and does not disable the metadata scanner.
 Evaluation endpoints are HTTPS or loopback HTTP, without credentials/query/fragment.
