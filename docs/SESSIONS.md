@@ -1,7 +1,9 @@
 # Session analysis / 会话分析
 
 The Sessions dashboard connects token use to the task that produced it. All
-indexing and normal statistics are local. AI evaluation is a separate, explicit
+indexing and normal statistics are local. Sessions come from the local logs of the
+primary Claude Code and Codex accounts; extra accounts (`accounts` setting) are
+quota only and have no sessions. AI evaluation is a separate, explicit
 action and is never triggered by polling, ingestion or navigation.
 
 ## Find a session
@@ -29,7 +31,8 @@ it works with local content off. At most the newest 1000 matching sessions are
 analysed. A session is flagged when it has at least 3 failed calls and 20% or
 more of its calls fail, or at least 5 repeated calls and 30% or more repeated;
 these are prompts to look, not proof of waste. History's Sessions table is a
-summary that opens this tab with the same filters.
+summary that opens this tab with the same filters (deep link
+`?tab=sessions&view=insights`).
 
 ## Local content and evidence
 
@@ -40,7 +43,8 @@ local content allows the UI to read bounded pages from those original files.
 Deleted or rewritten sources produce a warning instead of stale or unrelated
 text. Source logs remain owned by the CLI and may expire according to its policy.
 The adapter indexes supported text records, skips malformed or oversized JSONL
-lines (over 2 MiB), and does not interpret image/audio attachments. Message
+lines (over 2 MiB; the separate usage ingestion tolerates lines up to 8 MiB, so a
+very large line can still count its tokens without being indexed for display), and does not interpret image/audio attachments. Message
 display is capped at 12,000 characters per message and 120,000 per page; turn
 details show at most the first 500 observed turns. These limits mean a transcript
 view or assessment is not a guarantee of complete original conversation coverage.

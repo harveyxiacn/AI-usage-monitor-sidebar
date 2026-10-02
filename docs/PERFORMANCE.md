@@ -64,6 +64,13 @@ cargo test --locked synthetic_ --lib -- --ignored --nocapture --test-threads=1
 
 Both benchmarks passed their counter/result correctness assertions. Usage-byte figures exclude the separate metadata index's reads on both paths; the updated timing includes that index. Setup, cold startup, application rendering, on-disk SQLite latency and production release performance are outside this benchmark. No startup or frame-rate improvement is inferred from these numbers.
 
+## Polling floors and background work (v0.6)
+
+- Quota polling: `refreshIntervalSec` (default 60, minimum 15). Claude is never polled more often than every 120 s, **per account**: each extra account is its own provider instance with its own clock, so N Claude accounts cost N requests per 120 s at most. With `adaptiveRefresh`, a provider whose logs have been quiet for 10 min doubles its interval, after 30 min it is x5, capped at 10 min. Every `429` raises a learned multiplier (cap x8, 15 min) that relaxes only after five good polls. Opening the dashboard or an explicit refresh ends the idle stretch.
+- Retention: quota samples are kept `quotaRetentionDays` days (default 365, 0 = forever, maximum 3650) and thinned to one peak per hour after 14 days; `usage_events` are never deleted.
+- Alerts run on the snapshot the scheduler already has (no extra requests) plus one 5-minute timer for the budget and weekly-summary checks. The tray rebuilds menu items, tooltip and icon only when their content or severity changes. `snapshot.json` is one atomic write per snapshot, and only while `exportSnapshot` is on.
+- Window and hover timers are generation-counted tasks; there is no polling of window state except the 5 s geometry watchdog (off under layer-shell).
+
 ## Robustness and maintenance (v0.6)
 
 - The log watcher re-evaluates its roots every 60 s with one `read_dir`/metadata check per root; no polling of file contents is added. Watcher errors and root changes queue the existing bounded full reconciliation.

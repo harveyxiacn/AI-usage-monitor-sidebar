@@ -24,13 +24,17 @@ ai-usage-sidebar --print [--format json|line|statusline] [--provider claude]
 |---|---|
 | `line` (default) | `Claude 5h 73% (1h12m) · 7d 41% \| Codex 5h 12%` |
 | `statusline` | `CC 5h 73% 7d 41% \| CX 5h 12%` |
-| `json` | the snapshot file itself (see below) |
+| `json` | the snapshot (see below) on one line; filtered by `--provider` when given |
 
 * Percentages are **used** percent, per account-wide window. `(1h12m)` is the time
   until the first window resets. In `statusline`, a window at 90 % or more gets a
   trailing `!`, and a provider that needs attention (signed out, token expired,
   error) a trailing `?`. Per-model windows appear in `json` only.
-* `--provider claude` (or `codex`, `copilot`) limits the output to one provider.
+* `--provider claude` (or `codex`, `copilot`, `openrouter`) limits the output to one provider.
+  Extra accounts (Settings -> Accounts) have their own ids: `--provider claude@work`.
+  `--provider claude` means the primary account only.
+* In `statusline` a provider is abbreviated `CC` (Claude), `CX` (Codex), `GH` (Copilot),
+  `OP` (OpenRouter); an extra account adds its id, `CC@work`.
 
 Exit codes:
 
@@ -77,6 +81,8 @@ The settings page shows the exact path.
 }
 ```
 
+* `id` is the provider id, or `provider@account` for an extra account, which also
+  carries `"account": "work"` (absent for the primary account).
 * `status` is `ok`, `not_logged_in`, `token_expired`, `rate_limited`, `error` or
   `disabled`. A non-`ok` provider keeps its last known windows when it has any.
 * `kind` is `five_hour`, `seven_day` or `other`. Per-model windows carry a
@@ -166,3 +172,4 @@ Add `"custom/ai-usage"` to one of the module lists (`modules-right`, ...).
   stale after 15 minutes. Use `--format json` and read `updatedAt` yourself if you
   want old numbers anyway.
 * **Several providers.** Disabled providers are left out of `line` and `statusline`.
+  Every enabled account of a provider gets its own entry.
