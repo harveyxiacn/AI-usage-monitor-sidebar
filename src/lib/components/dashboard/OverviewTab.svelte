@@ -8,6 +8,8 @@
   import { onMount } from 'svelte';
   import ProviderLogo from '$lib/components/ProviderLogo.svelte';
   import QuotaExtras from '$lib/components/QuotaExtras.svelte';
+  import GettingStarted from './GettingStarted.svelte';
+  import WeeklySummaryCard from './WeeklySummaryCard.svelte';
   import Sparkline from '$lib/components/Sparkline.svelte';
   import WindowRow from '$lib/components/WindowRow.svelte';
   import { getQuotaHistory, getUsageHistory } from '$lib/api';
@@ -141,6 +143,8 @@
   {#if snapshot.error}<p class="hint bad" role="alert">{t('common.error', { message: snapshot.error })}</p>{/if}
   {#if historyError}<p class="hint bad" role="alert">{t('overview.historyError', { message: historyError })}</p>{/if}
 
+  <GettingStarted />
+
   {#if snapshot.loading}
     <p class="muted">{t('common.loading')}</p>
   {:else if providers.length === 0}
@@ -256,7 +260,10 @@
       {/each}
     </div>
   {/if}
+
+  <WeeklySummaryCard />
 </section>
+
 
 <style>
   .overview {
