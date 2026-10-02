@@ -188,7 +188,7 @@ object, not text) is never silently replaced: start-up uses the defaults in
 memory (a hot reload keeps the current settings), and before the app's next save
 it copies the file to `settings.json.bad-<ms>` next to it (newest 3 kept) so the
 user can recover it. A blank file is replaced without a copy. A non-boolean
-`onboarded` is ignored.
+`onboarded` is ignored (at start-up a valid file without a boolean one counts as onboarded).
 | Platform | Path |
 |---|---|
 | Linux | `~/.config/io.github.harveyxiacn.ai-usage-sidebar/settings.json` |

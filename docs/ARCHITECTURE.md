@@ -183,6 +183,8 @@ src/                      SvelteKit frontend                     [FRONTEND]
   lib/components/         Ring.svelte, MiniBar.svelte, Popover.svelte, dashboard/ (tabs, history/, sessions/, settings/ cards), ...
   lib/builtin-presets.json built-in presets, shared with the tray (Rust include)
   lib/providers.ts        provider-agnostic frontend helpers      [FRONTEND]
+  lib/settings-tiers.ts   basic / advanced / internal tier of every setting (docs/SETTINGS-AUDIT.md)  [FRONTEND]
+  lib/plan-advisor.ts     plan advisor: upgrade / downgrade / keep from quota cycles (pure, unit-tested)  [FRONTEND]
 src-tauri/
   src/lib.rs, main.rs     builder wiring, plugins, invoke_handler list; main.rs also handles `--print` first [PLATFORM]
   src/cli.rs              `ai-usage-sidebar --print`: reads snapshot.json, prints, exits (no window)  [BACKEND]
@@ -199,25 +201,28 @@ src-tauri/
   src/settings_io.rs      export / import / history / restore commands  [BACKEND]
   src/diagnostics.rs      get_diagnostics, open_folder (redacted)  [BACKEND]
   src/accounts.rs         extra-account commands (check_account_dir, pick_account_folder)  [BACKEND]
+  src/advisor/            decision support: routing.rs (cross-provider routing advice, pure over the snapshot), git.rs (opt-in commit attribution), mod.rs (get_routing_advice, get_project_commits)  [BACKEND]
   src/onboarding.rs       get_provider_setup (existence checks only)  [BACKEND]
   src/providers/          claude.rs, codex.rs, copilot.rs, openrouter.rs, mod.rs (trait, registry, retry, cache) [BACKEND]
   src/alerts/             mod.rs (timer, once-only state), threshold.rs, predictive.rs, budget.rs, summary.rs, notifier.rs (native + webhook, focus gate) [BACKEND]
   src/focus.rs            focus / do-not-disturb helpers around focusUntil [BACKEND]
   src/forecast.rs         quota projection, token-rate fallback, backtest [BACKEND]
   src/ingest/             jsonl parsers, incremental ingestion     [BACKEND]
-  src/store/              sqlite schema (v3) + queries, retention   [BACKEND]
+  src/store/              sqlite schema (v4) + queries, retention; mod.rs (MIGRATIONS), compat.rs (min_reader policy, pre-migration backups), quota.rs, usage.rs, windows.rs   [BACKEND]
+  src/upgrade_tests/      test-only: every released DB schema migrated by current code, every released settings file and a table of hostile ones (db.rs, settings_files.rs)  [BACKEND]
   src/sessions/           session index, queries, insights.rs (aggregate analytics) [BACKEND]
   src/evaluation.rs       opt-in AI assessment, redaction          [BACKEND]
   src/pricing.rs          default pricing table + cost estimation [BACKEND]
   src/export.rs           CSV save, share-card PNG save            [BACKEND]
   src/export_snapshot.rs  snapshot.json writer (schema 1)          [BACKEND]
-  src/backup.rs           backup / staged restore / restart        [BACKEND]
+  src/backup.rs           backup / staged restore / restart, db status, pre-upgrade backup commands  [BACKEND]
   src/scheduler.rs        periodic refresh + ingest + maintenance, emits events  [BACKEND]
   src/updater.rs          in-app update check, never auto-installs [PLATFORM]
   tauri.conf.json, capabilities/, icons/                          [PLATFORM]
-docs/                     this file, PLATFORM.md, PROVIDERS.md, SESSIONS.md, STATUSLINE.md, PERFORMANCE.md, reference images
-scripts/                  check-i18n.mjs, check-agents-settings.mjs, install-linux.sh, smoke-linux.sh
-.github/workflows/        CI builds for linux/macos/windows        [PLATFORM]
+docs/                     this file, PLATFORM.md, PROVIDERS.md, SESSIONS.md, STATUSLINE.md, PERFORMANCE.md, VALIDATION.md, RELEASING.md, SETTINGS-AUDIT.md, devlog/, releases/, reference images
+packaging/                winget / Homebrew / Scoop / AUR manifest templates (rendered by scripts/gen-packaging.py)
+scripts/                  check-i18n.mjs, check-agents-settings.mjs, install-linux.sh, smoke-linux.sh, smoke-macos.sh, smoke-windows.ps1, gen-packaging.py
+.github/workflows/        ci.yml (checks, builds, launch and upgrade smoke), release.yml (bundles, optional signing), distribute.yml (package-manager manifests)  [PLATFORM]
 ```
 
 Rules for parallel work:
@@ -386,7 +391,7 @@ without a row, or a row without a registration, is a documentation bug).
 |---|---|---|
 | `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
 | `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
-| `get_routing_advice` | – | `RoutingAdvice | null`: from the in-memory snapshot only, "consider provider B for the next ~N min" (or "no switch needed") with the numbers it rests on and a confidence; `null` = nothing worth saying. Rules and thresholds: `src-tauri/src/advisor/routing.rs` |
+| `get_routing_advice` | – | `RoutingAdvice \| null`: from the in-memory snapshot only, "consider provider B for the next ~N min" (or "no switch needed") with the numbers it rests on and a confidence; `null` = nothing worth saying. Rules and thresholds: `src-tauri/src/advisor/routing.rs` |
 | `get_project_commits` | `query: CommitsQuery` (`project` = exact recorded cwd, `from`, `to`, `provider?`, `refresh?`) | `CommitsResult`: commits of one project with attributed tokens / estimated cost / sessions. Opt-in (`gitAttribution`); runs a read-only `git log` (hash, time, subject) only for a cwd that is in `usage_events` and inside a git repo. Heuristic and limits: `src-tauri/src/advisor/git.rs` |
 | `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
 | `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
@@ -522,6 +527,24 @@ accounts, at most 6, each `{id, provider, label, configDir, enabled}`; replaced
 as a whole by a patch, invalid entries dropped by `settings::clamp`), `onboarded=false` (a settings file that
 already exists without the key counts as onboarded).
 
+
+### Tiers, loading and unreadable files
+
+Every setting has a tier in `src/lib/settings-tiers.ts` (`basic`, `advanced`,
+`internal`; currently 22 / 32 / 5 of the 59 keys) that decides only what the
+Settings tab shows by default; the file accepts every key whatever its tier
+(AGENTS.md §5 has the Tier column, docs/SETTINGS-AUDIT.md the reasoning). The
+removed mirror keys `showScopedRing` / `showPercentLabel` are still read
+(`migrate_legacy_keys` in Rust, `normalizePatch` in TS) into `sidebarItems` and
+never written.
+
+`settings::load` decodes the file as UTF-8 (BOM stripped) or UTF-16 (BOM), then
+merges field by field over the defaults and clamps. A file that is missing or
+unusable (not text, not valid JSON, not a JSON object) yields the defaults for
+that start; a hot reload of such a file is ignored. The unusable file is not
+deleted: before the next save `preserve_unusable` copies it to
+`settings.json.bad-<ms>` (newest 3 kept; a blank file gets no copy). `onboarded`
+is only honoured as a boolean (a valid file without one counts as onboarded at start-up). The test harness is `upgrade_tests/` (§3).
 
 ### Undo ring (`settings.history.json`)
 
@@ -771,8 +794,11 @@ CREATE TABLE usage_events (
   cache_write_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0, session_id TEXT, request_id TEXT NOT NULL,
-  cwd TEXT, source_file TEXT, reasoning_effort TEXT, UNIQUE(provider, request_id));
+  cwd TEXT, source_file TEXT, reasoning_effort TEXT,
+  account TEXT NOT NULL DEFAULT '',   -- v4: '' = primary account
+  UNIQUE(provider, request_id));
 CREATE INDEX idx_usage_ts ON usage_events(ts);
+CREATE INDEX idx_usage_account_ts ON usage_events(provider, account, ts);
 CREATE TABLE quota_samples (
   id INTEGER PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT,
   used_percent REAL NOT NULL, resets_at INTEGER, plan TEXT, ts INTEGER NOT NULL,
@@ -800,8 +826,8 @@ the weekly "limits hit" grouping are all per account. A database written by v3
 cannot be opened by v0.5 or older (`unsupported database schema 3`), see §8.1.
 Schema v4 (complete multi-account, v0.7) adds `usage_events.account TEXT NOT
 NULL DEFAULT ''` and `idx_usage_account_ts(provider, account, ts)`; additive, so
-`min_reader` stays 2 (a v0.6 build opens a v4 file and sees extra accounts'
-events as primary ones in its own totals). `UNIQUE(provider, request_id)` is
+`min_reader` stays 2 (a build that knows schema 3 and the `min_reader` rule could open it and would see extra accounts'
+events as primary ones; the shipped v0.5 / v0.6 refuse it outright, §8.1). `UNIQUE(provider, request_id)` is
 unchanged: extra accounts' rows use the scoped request id
 `<account>\u{1f}<id>`, primary rows keep the provider's id. `ingest::roots()`
 returns primary roots then those of each enabled `settings.accounts` entry
@@ -856,6 +882,7 @@ raw reasoning effort and model variants.
 |---|---|---|
 | `settings.json` | config | the settings (watched; atomic writes) |
 | `settings.history.json` | config | undo ring, 5 versions (§7) |
+| `settings.json.bad-<ms>` | config | copy of an unreadable `settings.json`, made before the app's next save; newest 3 kept (§7) |
 | `analysis-settings.json` | config | AI-assessment settings (§11) |
 | `pricing.json` | config | the user's saved price table, when any |
 | `usage.db` | data | SQLite database above (WAL) |
@@ -863,6 +890,7 @@ raw reasoning effort and model variants.
 | `alerts-state.json` | data | once-only bookkeeping for budget and weekly-summary alerts |
 | `cache/quota-<provider>[@<account>].json`, `cache/poll-state.json` | data | last-good quota per provider/account; learned poll multiplier and gates |
 | `pricing-remote.json` | data | cached source price table |
+| `backups/` | data | automatic pre-upgrade backups (`usage-pre-v<from>-to-v<to>-<ts>.db` + `.settings.json`), newest 3 (§8.1) |
 | `restore-pending/`, `pre-restore/` | data | a staged backup restore, applied before the database opens at the next start; the replaced files (`backup::apply_pending`) |
 
 The data directory is the local app-data folder, except on Windows where an
@@ -922,7 +950,7 @@ newest by default) through the same `restore-pending/` mechanism as `restore_dat
 (`backup::stage_files`); the staged files are swapped in at the next start of a
 build that has `apply_pending` (v0.6+), which keeps the replaced files in
 `pre-restore/`. Starting the *newer* build instead restores and then migrates
-forward again. Settings -> Integrations lists the backups with "Reveal in folder".
+forward again. Settings -> Backup & history lists the backups with "Reveal in folder".
 Commands: `get_db_status`, `list_pre_upgrade_backups`,
 `reveal_pre_upgrade_backup(name)`.
 
