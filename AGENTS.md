@@ -84,7 +84,7 @@ cp -R "/Volumes/AI Usage Sidebar/AI Usage Sidebar.app" /Applications/
 hdiutil detach "/Volumes/AI Usage Sidebar"
 ```
 
-The app is not notarised. After telling the user, clear the quarantine flag:
+Unless the release notes say the build is signed and notarised (it is only when the maintainer configured signing secrets), the app is not notarised. After telling the user, clear the quarantine flag:
 `xattr -dr com.apple.quarantine "/Applications/AI Usage Sidebar.app"`.
 On first refresh macOS asks for access to the Keychain item
 `Claude Code-credentials`; the user should choose **Always Allow**.
@@ -100,6 +100,32 @@ On first refresh macOS asks for access to the Keychain item
 Healthy start-up writes `platform setup: …`, `tray menu ready` and
 `sidebar revealed` to the newest log file within a few seconds. Starting the
 app a second time does not create a second instance; it opens the dashboard.
+
+Upgrades are safe to run over an existing install. Before the first start of a
+new version migrates `usage.db`, the app copies it (and `settings.json`) to
+`backups/usage-pre-v<from>-to-v<to>-<timestamp>.db` (+ `.settings.json`) in the
+data folder (the folder that holds `usage.db`: the log directory above without
+its `logs/` part on Linux and Windows, `~/Library/Application Support/io.github.harveyxiacn.ai-usage-sidebar/`
+on macOS), newest 3 kept; if that copy cannot be written the migration does not
+run and the log says so. To go back after an upgrade, close the app, then:
+
+```sh
+ai-usage-sidebar --restore-pre-upgrade --list            # show the backups
+ai-usage-sidebar --restore-pre-upgrade                   # stage the newest
+ai-usage-sidebar --restore-pre-upgrade --file <NAME>     # stage one from --list
+```
+
+(`--list` and `--file` cannot be combined; exit code 2 = nothing to restore or
+staging failed.) It only *stages* the restore, with the same mechanism as
+Settings → Backup & history; nothing changes until the next start of a v0.6 or
+newer build (start the older version to go back; starting the newer one just
+restores and migrates again), which keeps the replaced files in `pre-restore/`.
+Ask the user before running it: it rolls their usage database back. A database written by a newer version is
+opened as is when that version marked it compatible (`meta.min_reader_version`
+≤ the schema this build knows); otherwise the app shows a banner, keeps the
+quota rings running and leaves the database untouched. Installing an older
+release over a newer one is only safe from v0.7 on (v0.5 and v0.6 refuse any
+newer database).
 
 What the user should see: a thin bar on the right screen edge with one ring per
 provider. Hover a ring for details, click to pin, click again to close, drag
@@ -156,6 +182,13 @@ applies within about a second — no restart, no quitting. (It also rewrites the
 file when the user changes something in the dashboard; a half-written file is
 ignored until it parses, so write it atomically or in one go.)
 
+The file is read as UTF-8 (a BOM is fine) or UTF-16 (what a PowerShell 5 `>`
+redirect writes). A file that cannot be used (truncated, not a JSON
+object, not text) is never silently replaced: start-up uses the defaults in
+memory (a hot reload keeps the current settings), and before the app's next save
+it copies the file to `settings.json.bad-<ms>` next to it (newest 3 kept) so the
+user can recover it. A blank file is replaced without a copy. A non-boolean
+`onboarded` is ignored (at start-up a valid file without a boolean one counts as onboarded).
 | Platform | Path |
 |---|---|
 | Linux | `~/.config/io.github.harveyxiacn.ai-usage-sidebar/settings.json` |
@@ -186,7 +219,7 @@ The **Tier** column is what the dashboard's Settings tab shows by default
 `basic` settings are always listed; `advanced` ones appear after the
 dashboard's "Show advanced settings" switch (a per-viewer UI choice, not a
 setting) or when a search matches them; `internal` ones are the app's own
-records. The tier changes only what is *shown*: every key works the same from
+records (22 basic, 32 advanced, 5 internal at present). The tier changes only what is *shown*: every key works the same from
 the file whatever its tier. Of `sidebarItems`, only `other`, `logo` and
 `moreButton` are advanced.
 
@@ -324,5 +357,7 @@ safe way to check an install without touching the UI.
 | macOS | quit, delete `/Applications/AI Usage Sidebar.app` |
 | Windows | Settings → Apps → AI Usage Sidebar → Uninstall |
 
-Settings and the local usage database stay behind in the directories from §3
-and §5. Delete them only if the user asks for a clean removal.
+Settings (with `settings.history.json` and any `settings.json.bad-*` copies)
+and the local usage database (with `backups/` and `pre-restore/`) stay behind
+in the directories from §3 and §5. Delete them only if the user asks for a
+clean removal.

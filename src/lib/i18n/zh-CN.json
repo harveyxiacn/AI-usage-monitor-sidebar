@@ -599,7 +599,7 @@
   "integrations.restore.ready": "{date} 的备份已就绪，重启后生效。",
   "integrations.restore.unknownDate": "未知日期",
   "integrations.restart": "立即重启",
-  "dbStatus.schemaTooNew": "用量数据库由更新版本的应用写入（结构 {found}），当前版本只支持到结构 {supported}。历史、费用和会话页面不可用，配额圆环仍正常。请更新到支持结构 {minReader} 的版本，或还原升级前备份（设置 > 集成，或运行 ai-usage-sidebar --restore-pre-upgrade）。",
+  "dbStatus.schemaTooNew": "用量数据库由更新版本的应用写入（结构 {found}），当前版本只支持到结构 {supported}。历史、费用和会话页面不可用，配额圆环仍正常。请更新到支持结构 {minReader} 的版本，或还原升级前备份（设置 > 备份与历史，或运行 ai-usage-sidebar --restore-pre-upgrade）。",
   "dbStatus.migrationBackupFailed": "用量数据库未升级，因为无法写入安全备份（{message}）。数据未被改动。请释放磁盘空间或修复文件夹权限后重启。在此之前历史、费用和会话页面不可用。",
   "dbStatus.unavailable": "无法打开用量数据库（{message}）。历史、费用和会话页面不可用，配额圆环仍正常。",
   "preUpgrade.title": "数据库升级前的备份",

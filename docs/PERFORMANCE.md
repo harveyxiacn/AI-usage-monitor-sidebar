@@ -71,6 +71,14 @@ Both benchmarks passed their counter/result correctness assertions. Usage-byte f
 - Alerts run on the snapshot the scheduler already has (no extra requests) plus one 5-minute timer for the budget and weekly-summary checks. The tray rebuilds menu items, tooltip and icon only when their content or severity changes. `snapshot.json` is one atomic write per snapshot, and only while `exportSnapshot` is on.
 - Window and hover timers are generation-counted tasks; there is no polling of window state except the 5 s geometry watchdog (off under layer-shell).
 
+## Decision support and upgrade safety (v0.7)
+
+- Routing advice is a pure function over the in-memory snapshot and its forecasts: no I/O, no extra provider request. The advice notification is claimed once per source reset period (a small in-memory map).
+- The commit view (`gitAttribution`, off by default) starts no process while off. When on, opening the view for one project runs one read-only `git log` (at most 500 commits, killed after 10 s, output capped at 4 MiB); results are cached for 5 minutes (16 entries), with the window end rounded to 5 minutes so reopening the view hits the cache. Nothing runs in the background.
+- The plan advisor runs in the webview over the quota cycles the History tab already built.
+- A schema migration first writes a `VACUUM INTO` copy of `usage.db` plus a settings copy and keeps the newest 3 (`backups/`). This happens once per upgrade, on start-up before the database opens for use; its duration was not measured.
+- Extra accounts add log roots to the existing watcher and one more request clock per account; `usage_events` gains one indexed column (`idx_usage_account_ts`).
+
 ## Robustness and maintenance (v0.6)
 
 - The log watcher re-evaluates its roots every 60 s with one `read_dir`/metadata check per root; no polling of file contents is added. Watcher errors and root changes queue the existing bounded full reconciliation.

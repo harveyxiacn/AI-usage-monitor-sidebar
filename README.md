@@ -79,8 +79,11 @@ quota is left, and when does it reset?*
 | History: usage | Incremental ingestion of session logs into SQLite. KPI tiles with period-over-period change, per-model and reasoning-effort mix, token composition and cache-hit trend, project ranking, per-day/-week/-month totals with drill-down and Top-N, a 26-week activity heatmap or weekday × hour punch card. Native CSV save and clipboard copy |
 | History: quota | Per-cycle peaks with warning / critical lines, limit-hit counts, forecast projection and "1 % of quota ≈ N tokens" per window |
 | History: cost | Optional API-equivalent price estimate (a comparison indicator, never an invoice), monthly budget line (`monthlyBudgetUsd`), subscription ROI (`subscriptionUsd`), and a notice when the built-in price table is older than 60 days |
+| History: plan advisor | In the cost view: from your own quota cycles (at least 3 weekly or 12 five-hour ones) it says whether a higher or lower plan would fit, with the evidence, and keeps the plan price as a hint only. Rules: [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) |
+| History: commits | Opt-in (`gitAttribution`, off by default): ties session token use to git commits by running a read-only `git log` in the project folders your sessions used, to show tokens and estimated cost per commit. Nothing is run while it is off |
 | Sessions | Named sessions, local aliases, real pagination and filters; opt-in prompts, responses, turn metrics and parent/child agents. An **Insights** view adds cost and active-time distributions, a turns-versus-cost scatter, top lists for expensive or failure-prone sessions and tool usage (metadata only). [Details](docs/SESSIONS.md) |
 | On-demand AI assessment | Editable send preview, prompt feedback, requirement evidence and efficiency notes; cached reports with separate human review. [Setup](docs/SESSIONS.md) |
+| Routing advice | When one provider is about to run dry and another has room, the Overview shows a card (and the popover a one-line hint) such as "switch to Codex for the next ~2 h", naming both providers' numbers. It stays silent when the data is thin. Optional `advisorNotifications` (off by default) sends it as a notification |
 | Command palette | `Ctrl+K` / `Cmd+K`: jump to any page or Settings card, refresh, rescan, pause polling, start focus mode, apply a preset, copy diagnostics, export CSV, open the log folder, or flip a setting by name |
 | Share card | Renders this month's rings, tokens, estimated cost (labelled an estimate, optionally hidden) and top model as a 1200x630 PNG to copy or save. No account e-mail is ever drawn |
 | Onboarding | A first-run wizard (language, theme, screen edge, providers), "What's new" after an update, and "Skip this version" on the update banner |
@@ -93,6 +96,8 @@ quota is left, and when does it reset?*
 | Presets | Four built-in presets (minimal, power, screen share, cyber) and up to ten of your own, with a preview of what changes |
 | Undo, import and export | The last 5 versions of `settings.json` can be restored (an edit burst counts as one); settings export to and import from a file |
 | Backup and restore | A full backup (settings plus a consistent copy of the usage database); a restore is validated, staged and applied at the next start, keeping the replaced files |
+| Downgrade safety | Before every database migration the app copies `usage.db` (and `settings.json`) to `backups/` in the data folder and keeps the newest 3 (listed under Settings → Backup & history). `ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]` stages a restore without starting the UI (applied at the next start, which keeps the replaced files). If the migration cannot be backed up it does not run. A database from a newer app that stays compatible opens as is; an incompatible one is refused with a banner while the quota rings keep working. The policy: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Settings file robustness | `settings.json` edited by hand or by another tool is accepted as UTF-8 (with or without BOM) or UTF-16; partial files, unknown keys and out-of-range values are fixed or ignored rather than resetting everything. A file that cannot be read is never overwritten silently: it is copied to `settings.json.bad-<timestamp>` first (the last 3 are kept) |
 | Diagnostics and privacy | A copyable, redacted diagnostics report (e-mails always masked, no tokens), a "Privacy & network" card listing every outbound request and every file the app keeps, and `hideAccountEmail` to mask addresses everywhere |
 | Shortcuts | A shortcut recorder that reports why a key could not be registered |
 
@@ -100,11 +105,11 @@ quota is left, and when does it reset?*
 
 | | |
 |---|---|
-| Notifications | Optional, **off by default** (master switch `notifications`): a warning when a window crosses your editable warning / critical level (once per window, level and cycle), a heads-up when a window is on pace to run out early, 80 % / 100 % of your monthly budget *estimate*, and a Monday summary of last week. Focus mode silences everything |
+| Notifications | Optional, **off by default** (master switch `notifications`): a warning when a window crosses your editable warning / critical level (once per window, level and cycle), a heads-up when a window is on pace to run out early, routing advice (`advisorNotifications`), 80 % / 100 % of your monthly budget *estimate*, and a Monday summary of last week. Focus mode silences everything |
 | Webhook | An optional second channel (generic JSON, ntfy or Slack-compatible; `https` only, the URL is never logged) and a "send test" button |
 | Status lines | `ai-usage-sidebar --print [--format json\|line\|statusline] [--provider ID]` prints your quotas from a snapshot file, for Claude Code's `statusLine`, tmux, polybar or waybar. [Details](docs/STATUSLINE.md) |
 | Providers | Claude Code and Codex (verified); GitHub Copilot and OpenRouter (experimental, never tested against a live account) |
-| Multiple accounts | Track extra Claude Code and Codex logins (up to 6) next to the primary one: each has its own ring group, quota history, forecast, and its own token, cost and session history (read from that login's own log folder). See the note under *Providers* |
+| Multiple accounts | Track extra Claude Code and Codex logins (up to 6) next to the primary one: each has its own ring group, quota history, forecast, and its own token, cost and session history (read from that login's own log folder). See the note under *Providers*; on macOS the Keychain entry of an extra Claude account is a best-effort guess |
 
 ## Providers
 
@@ -203,6 +208,9 @@ The primary Claude Code and Codex accounts and every enabled extra account are i
 > to your configured endpoint. Reports and that preview's cache key are retained
 > locally (up to 100 reports); disabling Local content clears them. API keys are
 > read from a named environment variable and are never stored in app settings.
+> **Commits (`gitAttribution`)** is off by default; when on, the app runs a
+> read-only `git log` (metadata only, no diffs) in project folders your sessions
+> already used. Nothing is sent anywhere.
 > See [Session analysis](docs/SESSIONS.md) for data boundaries and setup.
 >
 > Price checks are controlled separately from provider polling. With the
@@ -430,8 +438,13 @@ exported), `alerts-state.json` (which alerts already fired) and, after a restore
 - [x] Per-project token breakdown
 - [x] Burn-rate forecast ("at this rate your weekly window runs out in …")
 - [x] Alerts: threshold, forecast, budget, weekly summary, webhook
+- [x] Upgrade, downgrade and settings-file safety (automatic pre-upgrade backups, `--restore-pre-upgrade`, tolerant settings loading), with launch and upgrade smoke tests on all three systems
+- [x] Basic / advanced settings
+- [x] Decision support: cross-provider routing advice, plan advisor, per-commit cost (opt-in)
+- [x] Signing and package-manager pipeline (winget, Scoop, Homebrew, AUR) — in place but off until the maintainer adds the secrets and tokens
 - [ ] Budget alerts per account (the monthly budget covers all accounts)
 - [ ] Verify Copilot, OpenRouter and native Wayland on real accounts and hardware
+- [ ] Verify the macOS Keychain entry name of extra Claude accounts on a real Mac
 - [ ] Gemini CLI — blocked on its move to OS-keychain credential storage ([why](docs/PROVIDERS.md))
 - [ ] ~~Cursor~~ — not planned: ToS and endpoint stability ([why](docs/PROVIDERS.md))
 - [ ] A menu-bar-only mode on macOS (the tray can already show the percentage)
@@ -537,8 +550,11 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 历史：用量 | 增量解析会话日志入 SQLite。带环比的 KPI 磁贴、模型与推理强度构成、Token 构成与缓存命中率趋势、项目排行、按日/周/月统计（支持下钻与 Top-N）、26 周活跃热力图或星期×小时图。原生 CSV 保存与复制 |
 | 历史：配额 | 按配额周期的峰值图（含警告/严重阈值线）、撞限次数、预测投影，以及每个窗口“1% 配额 ≈ N token” |
 | 历史：成本 | 可选的 API 等价费用估算（仅作横向参考，不是账单）、月度预算线（`monthlyBudgetUsd`）、订阅回报（`subscriptionUsd`），内置价目表超过 60 天时会提示 |
+| 历史：套餐顾问 | 成本视图中：依据你自己的配额周期（至少 3 个周周期或 12 个 5 小时周期）判断更高或更低的套餐是否更合适，并列出依据；套餐价格仅作提示。规则见 [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) |
+| 历史：提交 | 需手动开启（`gitAttribution`，默认关闭）：在会话用过的项目目录里只读运行 `git log`，把会话的 token 用量对应到 git 提交，显示每次提交的 token 与估算费用；关闭时不运行任何进程 |
 | 会话 | 原生名称、本地别名、后端分页与筛选；按需开启提示词、回复、轮次指标及父子 Agent 展示。**洞察**视图提供费用与活跃时长分布、轮次×费用散点、昂贵或易失败会话的排行与工具使用情况（仅用元数据）。[详情](docs/SESSIONS.md) |
 | 按需 AI 评测 | 发送前可编辑预览，评估提示词、需求证据与效率；缓存报告，区分 AI 判断与人工确认。[配置说明](docs/SESSIONS.md) |
+| 调度建议 | 当某个服务商即将用尽而另一个还有余量时，概览页显示一张卡片（弹层底部一行提示），例如“接下来约 2 小时改用 Codex”，并列出双方的数字；数据不足时保持沉默。可选的 `advisorNotifications`（默认关闭）会以通知形式发送 |
 | 命令面板 | `Ctrl+K` / `Cmd+K`：跳转任意页面或设置卡片、刷新、重新扫描、暂停轮询、开启专注模式、应用预设、复制诊断信息、导出 CSV、打开日志目录，或按名称切换某个设置 |
 | 分享卡片 | 生成 1200×630 的 PNG（本月圆环、Token、估算费用——标注为估算，可隐藏——与最常用模型），可复制或保存；绝不绘制账号邮箱 |
 | 引导 | 首次运行向导（语言、主题、屏幕边缘、服务商）、更新后的“新功能”，以及更新横幅上的“跳过此版本” |
@@ -547,10 +563,12 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 | | |
 |---|---|
-| 查找 | 搜索框、吸附式分区导航、分卡与全部“恢复默认” |
+| 查找 | 搜索框、吸附式分区导航、分卡与全部“恢复默认”。默认只显示常用设置，**显示高级设置**（索引上方的开关）可展开其余，搜索始终能找到它们。分层依据见 [docs/SETTINGS-AUDIT.md](docs/SETTINGS-AUDIT.md) |
 | 预设 | 四个内置预设（极简、进阶、屏幕共享、赛博）和最多十个自定义预设，应用前可预览改动 |
 | 撤销、导入与导出 | 可恢复最近 5 个版本的 `settings.json`（连续编辑算一次）；设置可导出为文件或从文件导入 |
 | 备份与恢复 | 完整备份（设置加一致的用量数据库副本）；恢复前先校验并暂存，下次启动时应用，被替换的文件会保留 |
+| 降级安全 | 每次数据库迁移前，应用先把 `usage.db`（及 `settings.json`）复制到数据目录的 `backups/`，保留最新 3 份（在“设置 → 备份与历史”中列出）。`ai-usage-sidebar --restore-pre-upgrade [--list] [--file NAME]` 可不启动界面地暂存一次还原（下次启动时应用，被替换的文件会保留）；备份失败则不执行迁移。来自较新版本且仍兼容的数据库照常打开；不兼容的会被拒绝并显示横幅，配额圆环照常工作。策略见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 设置文件容错 | 手工或其他工具编辑的 `settings.json` 可为 UTF-8（带或不带 BOM）或 UTF-16；缺失的键、未知键与越界值会被补全或忽略，而不是整体重置。无法读取的文件不会被静默覆盖：先复制为 `settings.json.bad-<时间戳>`（保留最近 3 份） |
 | 诊断与隐私 | 可复制且已脱敏的诊断报告（邮箱始终遮盖，不含令牌）、列出所有外发请求与本地文件的“隐私与网络”卡片，以及在各处遮盖邮箱的 `hideAccountEmail` |
 | 快捷键 | 快捷键录制器，无法注册时会说明原因 |
 
@@ -558,11 +576,11 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 
 | | |
 |---|---|
-| 通知 | 可选，**默认关闭**（总开关 `notifications`）：窗口越过可编辑的警告/严重阈值时提醒（每个窗口、级别与周期一次）、预计提前用尽时提醒、月度预算*估算*达 80% / 100% 时提醒，以及每周一的上周摘要。专注模式会静默全部渠道 |
+| 通知 | 可选，**默认关闭**（总开关 `notifications`）：窗口越过可编辑的警告/严重阈值时提醒（每个窗口、级别与周期一次）、预计提前用尽时提醒、调度建议（`advisorNotifications`）、月度预算*估算*达 80% / 100% 时提醒，以及每周一的上周摘要。专注模式会静默全部渠道 |
 | Webhook | 可选的第二渠道（通用 JSON、ntfy 或兼容 Slack；仅 `https`，URL 不写入日志），并带“发送测试” |
 | 状态栏 | `ai-usage-sidebar --print [--format json\|line\|statusline] [--provider ID]` 从快照文件输出额度，用于 Claude Code 的 `statusLine`、tmux、polybar、waybar。[详情](docs/STATUSLINE.md) |
 | 服务商 | Claude Code 与 Codex（已验证）；GitHub Copilot 与 OpenRouter（实验性，从未在真实账号上测试） |
-| 多账号 | 在主账号之外再跟踪最多 6 个 Claude Code / Codex 登录：各有自己的圆环组、配额历史与预测，以及各自独立的 token、费用与会话历史（从该登录自己的日志目录读取），见“支持的服务与套餐”下的说明 |
+| 多账号 | 在主账号之外再跟踪最多 6 个 Claude Code / Codex 登录：各有自己的圆环组、配额历史与预测，以及各自独立的 token、费用与会话历史（从该登录自己的日志目录读取），见“支持的服务与套餐”下的说明；macOS 上额外 Claude 账号的钥匙串条目名只是尽力猜测 |
 
 ## 支持的服务与套餐
 
@@ -642,6 +660,7 @@ GitHub Copilot 则只依据其他开源项目公开的源码，以及 GitHub 自
 > **AI 评测可选**：仅点击发送时，将你检查过的预览发送到配置的接口。评测报告与预览缓存键在本机保留
 > （最多 100 份）；关闭本地内容会清除它们。API Key 仅从指定环境变量读取，不写入应用设置。
 > 设置与统计口径见[会话分析说明](docs/SESSIONS.md)。
+> **提交视图（`gitAttribution`）**默认关闭；开启后，应用会在会话用过的项目目录里只读运行 `git log`（仅元数据，不含 diff），不向任何地方发送。
 >
 > 价格检查与服务商轮询相互独立。**价格表地址**为空时，应用检查项目维护的
 > [GitHub raw pricing.json](https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pricing.json)；
@@ -831,8 +850,13 @@ https://raw.githubusercontent.com/harveyxiacn/AI-usage-monitor-sidebar/main/pric
 - [x] 按项目统计 token
 - [x] 消耗速率预测（“按此速度，你的每周额度将在 …… 用尽”）
 - [x] 提醒：阈值、预测、预算、每周摘要、Webhook
+- [x] 升级、降级与设置文件的安全（迁移前自动备份、`--restore-pre-upgrade`、宽容的设置读取），以及三个系统上的启动与升级冒烟测试
+- [x] 常用 / 高级设置分层
+- [x] 决策建议：跨服务商调度建议、套餐顾问、按提交的成本（需手动开启）
+- [x] 签名与包管理器流水线（winget、Scoop、Homebrew、AUR）——已就绪，待维护者配置密钥与令牌后启用
 - [ ] 按账号的预算提醒（月度预算目前覆盖所有账号）
 - [ ] 在真实账号与硬件上验证 Copilot、OpenRouter 与原生 Wayland
+- [ ] 在真实 Mac 上验证额外 Claude 账号的钥匙串条目名
 - [ ] Gemini CLI —— 其凭据已迁入系统钥匙串，暂时受阻（[原因](docs/PROVIDERS.md)）
 - [ ] ~~Cursor~~ —— 不计划支持：服务条款与接口稳定性（[原因](docs/PROVIDERS.md)）
 - [ ] 仅菜单栏的 macOS 模式（托盘现在已能显示百分比）

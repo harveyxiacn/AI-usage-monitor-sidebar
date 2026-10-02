@@ -3,7 +3,9 @@
 v0.6 ended with 59 settings across 16 cards in the dashboard. They all work,
 but a first-time user faced all of them at once. v0.7 sorts them into tiers and
 removes the two that were pure duplicates. Nothing a user could depend on was
-dropped without a read path.
+dropped without a read path. The decision-support work (routing advice,
+commit attribution) then added two advanced keys, `advisorNotifications` and
+`gitAttribution`, in a new advanced-only Advisor card.
 
 ## Rules used
 
@@ -40,10 +42,10 @@ The tiers live in one typed table, `src/lib/settings-tiers.ts`
 
 | | before | after |
 |---|---|---|
-| keys in `Settings` (and in the written file) | 59 | 57 |
-| basic / advanced / internal keys | - | 22 / 30 / 5 |
-| cards in the index by default | 16 | 12 |
-| controls visible by default (render suite, `.setting-field` rows) | 80 | 31 |
+| keys in `Settings` (and in the written file) | 59 | 59 (57 after removing the two duplicates, +2 advisor keys) |
+| basic / advanced / internal keys | - | 22 / 32 / 5 |
+| cards in the index by default | 16 | 12 of 17 (the Advisor card is advanced-only, so the default count is unchanged) |
+| controls visible by default (render suite, `.setting-field` rows) | 80 | 31 (measured before the Advisor card, which adds none) |
 
 ## Table
 
@@ -104,6 +106,8 @@ Decisions: **keep** (stays as is), **advanced** (moved behind the switch),
 | `pricingUrl` | Updates | advanced | advanced | custom price source |
 | `skippedVersion` | - | internal | keep | the banner's "Skip this version" |
 | `exportSnapshot` | Integrations | advanced | advanced | scripts and status lines only; whole card |
+| `advisorNotifications` | Advisor | advanced | advanced | new in v0.7; opt-in notification for routing advice (the advice itself is always shown); whole card |
+| `gitAttribution` | Advisor | advanced | advanced | new in v0.7; opt-in `git log` for the per-commit cost view; whole card |
 | `pollingPaused` | Integrations | advanced | advanced | also reachable from the tray and the palette |
 | `hideAccountEmail` | Privacy | basic | keep | the screen-sharing switch |
 | `lastSeenVersion` | - | internal | keep | "What's new" bookkeeping |

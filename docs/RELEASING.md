@@ -40,7 +40,7 @@ shape, the upgrade fixtures for the version being replaced must exist (see
 Then:
 
 ```sh
-pnpm check && pnpm test && (cd src-tauri && cargo fmt --all -- --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked)
+pnpm check && pnpm check:i18n && pnpm check:agents && pnpm test && (cd src-tauri && cargo fmt --all -- --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked)
 git commit -am "Bump version to $NEW"
 git tag "v$NEW"
 git push origin main "v$NEW"
@@ -81,8 +81,10 @@ that touches the schema:
    the release can be rolled back (`min_reader` unchanged) and mention
    `ai-usage-sidebar --restore-pre-upgrade` for anyone who needs the old data
    shape back.
-5. Windows/macOS/Linux smoke: the upgrade smoke job must log the migration and
-   leave one file in `<data dir>/backups/`.
+5. Windows/macOS/Linux smoke: the `v0.5.0` upgrade legs must log the migration
+   (`usage.db schema 2 -> N`, asserted through `SMOKE_EXPECT_MIGRATION`). The
+   smoke scripts do not look at `<data dir>/backups/`; that the backup is
+   written is covered by the Rust tests (step 3).
 
 ### 1.1 Never name the integration branch like the tag
 
@@ -276,6 +278,8 @@ in `ci.yml`, not for docs-only changes. It downloads the previous release with
 
 * **Before a release PR**, expect the `latest` legs to test the *previous*
   version; after you publish, the next PR automatically tests the new one.
+  The `latest` leg never asserts a migration line, even when one happens (while
+  v0.6.0 is the latest release, schema 3 is migrated to 4 on that leg).
 * If an asset naming scheme changes (`*_amd64.AppImage`, `*_aarch64.dmg` /
   `*_x64.dmg`, `*_x64-setup.exe`), update the patterns in `ci.yml`.
 * When `SCHEMA_VERSION` changes again, add a matrix leg for the newest release

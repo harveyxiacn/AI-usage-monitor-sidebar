@@ -2,8 +2,10 @@
 
 The Sessions dashboard connects token use to the task that produced it. All
 indexing and normal statistics are local. Sessions come from the local logs of the
-primary Claude Code and Codex accounts; extra accounts (`accounts` setting) are
-quota only and have no sessions. AI evaluation is a separate, explicit
+primary Claude Code and Codex accounts and of every enabled extra account
+(`accounts` setting, each read from its own log folder). Once an extra account
+exists, sessions carry an account tag and the list and Insights views can be
+filtered by account (details: PROVIDERS.md §5). AI evaluation is a separate, explicit
 action and is never triggered by polling, ingestion or navigation.
 
 ## Find a session
