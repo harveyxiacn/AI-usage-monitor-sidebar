@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.6.0.schema.json
+PackageIdentifier: harveyxiacn.AIUsageSidebar
+PackageVersion: @@VERSION@@
+PackageLocale: zh-CN
+Publisher: Harvey Xia
+PublisherUrl: https://github.com/harveyxiacn
+PublisherSupportUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/issues
+PackageName: AI Usage Sidebar
+PackageUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar
+License: MIT
+LicenseUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Harvey Xia
+ShortDescription: 显示 Claude Code 与 Codex 配额的屏幕边缘侧边栏
+Description: |-
+  常驻屏幕边缘的侧边栏，为每个 AI 编程助手（Claude Code、OpenAI Codex）显示一个进度环，
+  呈现当前的限额窗口与重置时间。悬停进度环可查看详情，仪表盘窗口提供设置，
+  以及从各服务商本地会话日志解析出的 token 用量历史。
+
+  应用直接读取官方 CLI 已保存在本机的登录凭据，自身没有登录功能。
+Tags:
+  - ai
+  - claude
+  - codex
+  - 开发者工具
+  - 配额
+  - 侧边栏
+ReleaseNotesUrl: https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/tag/@@TAG@@
+ManifestType: locale
+ManifestVersion: 1.6.0

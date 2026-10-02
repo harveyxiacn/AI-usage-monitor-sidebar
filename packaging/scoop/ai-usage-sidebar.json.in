@@ -1,0 +1,29 @@
+{
+    "version": "@@VERSION@@",
+    "description": "Edge sidebar showing Claude Code and Codex rate-limit quotas",
+    "homepage": "https://github.com/harveyxiacn/AI-usage-monitor-sidebar",
+    "license": "MIT",
+    "notes": "Experimental manifest: the NSIS installer is unpacked with 7-Zip instead of being run, so no uninstall entry is created and the app does not auto-start unless enabled in its settings.",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/@@TAG@@/AI.Usage.Sidebar_@@VERSION@@_x64-setup.exe#/dl.7z",
+            "hash": "@@SHA256_NSIS@@"
+        }
+    },
+    "bin": "ai-usage-sidebar.exe",
+    "shortcuts": [
+        [
+            "ai-usage-sidebar.exe",
+            "AI Usage Sidebar"
+        ]
+    ],
+    "persist": [],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/harveyxiacn/AI-usage-monitor-sidebar/releases/download/v$version/AI.Usage.Sidebar_${version}_x64-setup.exe#/dl.7z"
+            }
+        }
+    }
+}
