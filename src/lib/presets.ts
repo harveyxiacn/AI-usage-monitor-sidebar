@@ -3,7 +3,7 @@
 // A preset is a partial settings patch applied in one write through the normal
 // `settings.patch()` / `update_settings` merge, so the backend clamps and
 // validates it like any other input. Rune-free for `tests/presets.unit.ts`.
-import builtinPresets from './builtin-presets.json';
+import builtinPresets from './builtin-presets.json' with { type: 'json' };
 import { diffSettings, type SettingChange } from './settings-diff';
 import { mergeSettings, type SettingsPatch } from './settings-writer';
 import type { Settings } from './types';

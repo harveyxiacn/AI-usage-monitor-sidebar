@@ -162,6 +162,7 @@ export const mockSettings: Settings = {
   hideAccountEmail: false,
   exportSnapshot: false,
   pollingPaused: false,
+  trayDisplay: 'icon',
   alwaysOnTop: true,
   customPresets: {},
 };

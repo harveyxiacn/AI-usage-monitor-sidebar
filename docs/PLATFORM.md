@@ -299,6 +299,20 @@ Beyond the actions above the menu carries:
   the worst window of the providers shown on the bar and the `thresholds`
   setting. The icon is only swapped when the severity changes. macOS keeps
   the monochrome template glyph; it has no coloured overlay.
+* **Percentage in the icon** (`trayDisplay = "percent"`): the busiest window of
+  the providers shown on the bar (`tray_status::icon_state`, honouring
+  `percentMode`). macOS sets the menu-bar title ("73%") beside the template
+  glyph (`TrayIcon::set_title`); Windows and Linux replace the icon with a
+  rounded square in the severity colour carrying the number, drawn from a 3x5
+  pixel font scaled to the icon (`tray_status::render_percent_icon`). Without
+  data it falls back to the plain icon. The native icon / title is only
+  touched when the state (number or severity) changes.
+* **Presets** submenu: the four built-in presets
+  (`src/lib/builtin-presets.json`, shared with the dashboard so the lists
+  cannot drift) and the user's `customPresets`. A click applies the patch
+  through `settings::update`, exactly like Settings > Presets does; the
+  submenu is rebuilt only when its entries or the language change
+  (`tray_presets::signature`).
 * **Focus mode** submenu (1 hour, until tomorrow 08:00, until turned off, off)
   writing `focusUntil`. While active, `scheduler::notify_forecasts` shows
   nothing (`focus::notifications_allowed`) and, with `focusHidesSidebar`, the

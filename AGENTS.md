@@ -175,6 +175,7 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `focusHidesSidebar` | `false`, `true` | hide the bar while focus mode is on, show it again when it ends |
 | `exportSnapshot` | `false`, `true` | write `snapshot.json` (versioned, no e-mails) to the app data dir after every snapshot; `ai-usage-sidebar --print [--format json|line|statusline] [--provider ID]` reads it and exits 0, or 2 when missing/older than 15 min. See `docs/STATUSLINE.md` |
 | `pollingPaused` | `false`, `true` | skip the automatic provider polling (log ingestion continues; an explicit refresh still polls). Persisted; also a tray check item |
+| `trayDisplay` | `"icon"`, `"percent"` | `percent` adds the busiest visible window's number (per `percentMode`) to the tray icon: the menu-bar title next to the icon on macOS, rendered into the icon (coloured by severity) on Windows/Linux. The tooltip is unchanged |
 | `hideAccountEmail` | `false`, `true` | mask account e-mails as `h•••@g•••.com` (screenshots, screen sharing) |
 | `customPresets` | `{}` | the user's own presets, name → partial settings patch (max 10; created in the dashboard, rarely hand-written) |
 | `autostart` | `false`, `true` | start at login |

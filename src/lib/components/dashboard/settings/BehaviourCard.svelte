@@ -3,8 +3,11 @@
   import Field from '../Field.svelte';
   import Toggle from '../Toggle.svelte';
   import SettingsCard from './SettingsCard.svelte';
-  import { t } from '$lib/i18n/i18n.svelte';
+  import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
+  import type { TrayDisplay } from '$lib/types';
+
+  const TRAY_DISPLAYS: TrayDisplay[] = ['icon', 'percent'];
 
   const s = $derived(settings.value);
   const num = (e: Event) => Number((e.currentTarget as HTMLInputElement).value);
@@ -79,6 +82,17 @@
       label={t('settings.adaptiveRefresh')}
       onchange={(v) => void settings.patch({ adaptiveRefresh: v })}
     />
+  </Field>
+
+  <Field label={t('settings.trayDisplay')} hint={t('settings.trayDisplay.hint')}>
+    <select
+      class="field"
+      aria-label={t('settings.trayDisplay')}
+      value={s.trayDisplay}
+      onchange={(e) => void settings.patch({ trayDisplay: e.currentTarget.value as TrayDisplay })}
+    >
+      {#each TRAY_DISPLAYS as v (v)}<option value={v}>{tDyn(`settings.trayDisplay.${v}`)}</option>{/each}
+    </select>
   </Field>
 
   <Field label={t('settings.autostart')}>

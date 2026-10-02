@@ -119,6 +119,8 @@ export type VerticalAlign = 'top' | 'center' | 'bottom';
 /** concentric: one ring group per provider (outer weekly, inner 5-hour, optional 3rd scoped ring); primary: single ring; all: one ring per window */
 export type RingMode = 'concentric' | 'primary' | 'all';
 export type PercentMode = 'used' | 'remaining';
+/** What the tray icon shows: only the glyph, or the busiest window's percentage too. */
+export type TrayDisplay = 'icon' | 'percent';
 /** Whether a ring's percentage sits below it or replaces its centre logo. */
 export type PercentPosition = 'below' | 'center';
 /** What the sidebar label says: the percentage, the reset countdown, or both. */
@@ -278,6 +280,8 @@ export interface Settings {
   exportSnapshot: boolean;
   /** Skip automatic provider polling (local log ingestion keeps running). */
   pollingPaused: boolean;
+  /** `icon` (default) or `percent`: add the busiest visible window's number to the tray icon (menu-bar title on macOS). */
+  trayDisplay: TrayDisplay;
   alwaysOnTop: boolean;
   /** The user's own presets, name → partial settings patch (at most 10). */
   customPresets: Record<string, Record<string, unknown>>;
