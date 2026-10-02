@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "language": "auto",
+  "theme": "dark",
+  "surfaceStyle": "glass",
+  "cyberAccent": "neon",
+  "edge": "right",
+  "verticalAlign": "center",
+  "verticalOffset": 0,
+  "monitor": null,
+  "autoHide": false,
+  "autoHideDelayMs": 800,
+  "popoverTimeoutSec": 10,
+  "collapsedWidth": 6,
+  "ringMode": "concentric",
+  "showScopedRing": true,
+  "percentMode": "used",
+  "showPercentLabel": true,
+  "sidebarItems": {
+    "fiveHour": true,
+    "weekly": true,
+    "scoped": true,
+    "other": true,
+    "logo": true,
+    "percentLabel": true,
+    "moreButton": true
+  },
+  "refreshIntervalSec": 60,
+  "adaptiveRefresh": true,
+  "providers": {
+    "claude": {
+      "enabled": true,
+      "showInSidebar": true,
+      "order": 0
+    },
+    "codex": {
+      "enabled": true,
+      "showInSidebar": true,
+      "order": 1
+    },
+    "copilot": {
+      "enabled": false,
+      "showInSidebar": true,
+      "order": 2
+    },
+    "openrouter": {
+      "enabled": false,
+      "showInSidebar": true,
+      "order": 3
+    }
+  },
+  "ingestEnabled": true,
+  "pricingUrl": "",
+  "monthlyBudgetUsd": 0,
+  "autostart": false,
+  "autoUpdateCheck": true,
+  "shortcutToggleSidebar": "",
+  "shortcutOpenDashboard": "",
+  "opacity": 1,
+  "scale": 1,
+  "thresholds": {
+    "warn": 70,
+    "critical": 90
+  },
+  "colors": {
+    "claude": "#ff5c1a",
+    "codex": "#10a37f",
+    "copilot": "#8250df",
+    "warn": "#f5c542",
+    "critical": "#ff3b30",
+    "surface": "",
+    "text": "",
+    "openrouter": "#6467f2"
+  },
+  "sizes": {
+    "ringSize": 56,
+    "ringStroke": 4.5,
+    "barGap": 18,
+    "barPadding": 10,
+    "cornerRadius": 26,
+    "labelSize": 13
+  },
+  "notifications": false,
+  "forecastNotifications": true,
+  "hideAccountEmail": false,
+  "alwaysOnTop": true,
+  "percentPosition": "below",
+  "autoPricingCheck": true,
+  "labelContent": "percent",
+  "ringStyle": "ring",
+  "sidebarAnimations": true,
+  "accounts": [],
+  "openrouterKeyEnv": "OPENROUTER_API_KEY",
+  "subscriptionUsd": {
+    "claude": 0,
+    "codex": 0
+  },
+  "quotaRetentionDays": 365,
+  "thresholdNotifications": true,
+  "budgetNotifications": true,
+  "weeklySummary": false,
+  "webhook": {
+    "enabled": false,
+    "url": "",
+    "kind": "generic"
+  },
+  "skippedVersion": "",
+  "lastSeenVersion": "",
+  "onboarded": false,
+  "focusUntil": 0,
+  "focusHidesSidebar": false,
+  "exportSnapshot": false,
+  "pollingPaused": false,
+  "trayDisplay": "icon",
+  "customPresets": {}
+}

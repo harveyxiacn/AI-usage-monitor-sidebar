@@ -4,6 +4,51 @@ The September 2026 stability pass covers the existing Claude/Codex sidebar,
 popover and dashboard, with native CSV export. All automated data fixtures are
 synthetic; tests do not require or print personal credentials or session logs.
 
+## Upgrade and settings-robustness harness (v0.7)
+
+Two release-day bugs in v0.6.0 (an external edit of `settings.json` brought
+back the first-run wizard; a UTF-8 BOM made the whole file invalid and the next
+start reset every setting) were not caught by CI because no test opened a file
+or database written by an *older* version. The harness in
+`src-tauri/src/upgrade_tests/` does, with fixtures in `src-tauri/tests/fixtures/`
+(provenance in its `README.md`):
+
+- `db.rs`: for each schema ever released (v0.2.2, v0.3.0, v0.5.0, v0.6.0) the
+  fixture SQL rebuilds that version's `usage.db`; `Db::open` must migrate it to
+  `SCHEMA_VERSION` keeping every row, give new columns their documented defaults
+  (`quota_samples.account = ''`), end with exactly the schema of a fresh
+  database, be idempotent when reopened, answer the current queries, and roll
+  back completely when a step fails.
+- `settings_files.rs`: for each released default file (and a fully customised
+  one) `settings::load` and `settings::reload_action` must keep every field the
+  file specifies; a table of hostile files (BOM, UTF-16, CRLF, half-written,
+  trailing garbage, empty, `null`/array root, wrong types, out-of-range numbers,
+  unknown keys, deep nesting, 2 MB, duplicate keys, missing app-owned keys)
+  checks the invariants: a bad file never replaces live settings on hot reload;
+  at start-up it falls back to defaults, is left untouched, and the next save
+  keeps a copy as `settings.json.bad-<ms>` (three newest are kept).
+  UTF-16 (what a PowerShell 5 `>` redirect writes) is decoded, not rejected.
+  `{}` is a valid file and resets preferences by design; the app-owned records
+  (`onboarded`, `lastSeenVersion`, `skippedVersion`) are kept regardless.
+
+Run just these with `cargo test --locked upgrade_tests` in `src-tauri`.
+
+### When the schema or the settings change
+
+1. **Database:** if you bump `SCHEMA_VERSION` or add a table/column/index,
+   add `src-tauri/tests/fixtures/db/v<last released tag>.sql` for the version
+   *being replaced* (DDL from `git show <tag>:src-tauri/src/store/mod.rs`,
+   `sessions/store.rs`, `evaluation.rs`; a small synthetic dataset), register
+   it in `FIXTURES` in `upgrade_tests/db.rs`, and list it in the fixtures
+   README. Existing fixtures are never edited.
+2. **Settings:** if a field is added, renamed, removed or its default changes,
+   add `v<tag>-default.json` / `-customised.json` for the last released
+   version in `fixtures/settings/`, register them in `FILES`, and update the
+   expectations in `keys_added_after_a_version_load_with_their_defaults`.
+   `the_default_fixtures_still_match_todays_defaults` fails on a changed
+   default: decide whether that behaviour change is intended.
+3. Run the harness before the release PR (it is part of `cargo test`).
+
 ## v0.5.0 session analysis validation
 
 The session-analysis implementation was developed and checked on Windows x64.

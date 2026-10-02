@@ -29,6 +29,14 @@ sed -i "0,/^version = \".*\"/s//version = \"$NEW\"/" src-tauri/Cargo.toml
 git diff --stat            # exactly those four files
 ```
 
+Before the bump, if this release changed the database schema or the settings
+shape, the upgrade fixtures for the version being replaced must exist (see
+"When the schema or the settings change" in [VALIDATION.md](VALIDATION.md)):
+
+- [ ] new `src-tauri/tests/fixtures/db/v<previous>.sql` registered in `upgrade_tests/db.rs`
+- [ ] new `src-tauri/tests/fixtures/settings/v<previous>-*.json` registered in `upgrade_tests/settings_files.rs`
+- [ ] `cargo test --locked upgrade_tests` passes
+
 Then:
 
 ```sh

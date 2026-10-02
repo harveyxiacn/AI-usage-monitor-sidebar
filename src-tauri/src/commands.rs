@@ -33,6 +33,9 @@ pub mod store;
 #[cfg(test)]
 #[path = "test_support.rs"]
 pub mod test_support;
+#[cfg(test)]
+#[path = "upgrade_tests/mod.rs"]
+mod upgrade_tests;
 
 use crate::model::*;
 use crate::state::AppState;
