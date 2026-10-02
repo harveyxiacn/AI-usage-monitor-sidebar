@@ -235,6 +235,8 @@ export interface Settings {
   pricingUrl: string;
   /** Monthly *estimated* cost budget in USD; 0 = no budget line. */
   monthlyBudgetUsd: number;
+  /** Monthly subscription price per provider in USD (0 = unknown); only compared with the API-equivalent estimate. */
+  subscriptionUsd: Record<string, number>;
   autostart: boolean;
   /** ask GitHub once a day for a newer release; never installs on its own */
   autoUpdateCheck: boolean;
@@ -389,6 +391,12 @@ export interface QuotaHistoryQuery {
   from: string;
   to: string;
   provider: ProviderId | null;
+}
+
+/** Tokens/cost of one provider inside each `[from, to)` window (quota cycles). */
+export interface WindowUsageQuery {
+  provider: ProviderId;
+  windows: Array<{ from: string; to: string }>;
 }
 
 export interface QuotaSample {

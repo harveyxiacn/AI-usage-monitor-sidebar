@@ -2,10 +2,12 @@
   import { onDestroy, untrack } from 'svelte';
   import { getQuotaHistory, exportUsageCsv } from '$lib/api';
   import QuotaHistoryChart from '$lib/components/QuotaHistoryChart.svelte';
+  import QuotaCycles from './history/QuotaCycles.svelte';
   import { kindLabel } from '$lib/format';
   import { csvCell, type HistoryRange } from '$lib/history';
   import { intlLocale, t, tDyn } from '$lib/i18n/i18n.svelte';
   import { providerDisplayName } from '$lib/providers';
+  import { forecastSegment } from '$lib/quota-cycles';
   import { buildQuotaHistory, type QuotaHistorySeries } from '$lib/quota-history';
   import { settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -31,6 +33,16 @@
   const selected = $derived(series.find((s) => s.key === selectedKey) ?? series[0] ?? null);
   const selectedSeriesKey = $derived(selected?.key);
   const remaining = $derived(settings.value.percentMode === 'remaining');
+  /** dashed "at this pace" segment: only for the live window whose last sample is the current reading */
+  const forecast = $derived.by(() => {
+    void generatedAt;
+    const last = selected?.samples.at(-1);
+    if (!selected || !last || !live) return null;
+    const win = snapshot.value?.providers.find((p) => p.provider === selected.provider)?.windows
+      .find((w) => w.kind === selected.kind && w.scope === selected.scope);
+    if (!win || win.resetsAt !== last.resetsAt) return null;
+    return forecastSegment({ ts: Date.parse(last.ts), usedPercent: last.usedPercent }, win.resetsAt, win.forecast, Date.now());
+  });
   const entries = $derived(selected?.entries.filter((entry) => !changesOnly || entry.event !== 'unchanged' || entry.previous?.resetsAt !== entry.sample.resetsAt).reverse() ?? []);
   const number = (v: number) => new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 2 }).format(v);
   const percent = (v: number) => `${number(v)}%`;
@@ -102,8 +114,9 @@
       <div><dt>{t('history.quota.samples')}</dt><dd>{number(selected.samples.length)}</dd></div>
     </dl>
     <p class="muted range-note">{t(remaining ? 'history.quota.remaining' : 'history.quota.used')} · {timestamp(selected.samples[0].ts)} → {timestamp(selected.samples.at(-1)!.ts)}</p>
-    <QuotaHistoryChart series={selected} {remaining} {themeKey} />
-    <p class="muted">{t('history.quota.observedNote')}</p>
+    <QuotaHistoryChart series={selected} {remaining} {themeKey} thresholds={settings.value.thresholds} {forecast} />
+    <p class="muted">{t('history.quota.observedNote')} {t('history.quota.guidesNote')}</p>
+    <QuotaCycles allSeries={series} {selected} {themeKey} {generatedAt} />
     <div class="detail-head">
       <h4>{t('history.quota.details')}</h4>
       <label class="changes-toggle"><input type="checkbox" bind:checked={changesOnly} />{t('history.quota.changesOnly')}</label>

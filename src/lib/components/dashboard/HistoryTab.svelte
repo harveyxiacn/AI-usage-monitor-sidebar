@@ -13,6 +13,8 @@
   import UsageChart from '$lib/components/UsageChart.svelte';
   import UsageHeatmap from '$lib/components/UsageHeatmap.svelte';
   import QuotaHistoryPanel from './QuotaHistoryPanel.svelte';
+  import SubscriptionRoi from './history/SubscriptionRoi.svelte';
+  import { subscriptionTotal } from '$lib/subscription';
   import { exportUsageCsv, getUsageCalendar, getUsageHistory, getUsageSessions, onIngestProgress, reingestLogs, type Unlisten } from '$lib/api';
   import { budgetProgress, historyCsv, historyRange, localDateInput, modelVariantLabel, projectLabels, projectName, sessionModelVariants, sessionsCsv, type HistoryPreset } from '$lib/history';
   import { formatBucket, formatCost, formatEstimatedCost, formatDuration, formatInt, formatTokens } from '$lib/format';
@@ -620,7 +622,7 @@
       </header>
       {#if budget}
         {#if budget.incomplete}<p class="muted cost-note" role="status">{t('history.budget.incomplete')}</p>{/if}
-        <BudgetChart series={budget.series} budgetUsd={monthlyBudgetUsd} {themeKey} />
+        <BudgetChart series={budget.series} budgetUsd={monthlyBudgetUsd} subscriptionUsd={subscriptionTotal(settings.value.subscriptionUsd, provider || null)} {themeKey} />
         <p class="note">{t('history.costNote')}</p>
       {:else if metric !== 'cost'}
         <p class="muted">{t('history.budget.tokensHint')}</p>
@@ -629,6 +631,8 @@
       {/if}
     </div>
   {/if}
+
+  <SubscriptionRoi provider={provider || null} {themeKey} refreshKey={dataVersion} />
 
   <div class="card panel" aria-busy={loading}>
     <header class="panel-head">

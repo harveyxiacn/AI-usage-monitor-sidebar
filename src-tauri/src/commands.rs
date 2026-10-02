@@ -98,6 +98,17 @@ pub async fn get_quota_history(
     blocking(move || store::query_quota_history(&db, &query)).await
 }
 
+/// Tokens and estimated cost per time window (quota cycles) for one provider.
+#[tauri::command]
+pub async fn get_window_usage(
+    state: State<'_, AppState>,
+    query: WindowUsageQuery,
+) -> Result<Vec<TokenTotals>, String> {
+    let db = state.db()?;
+    let pricing = state.pricing.read().clone();
+    blocking(move || store::query_window_usage(&db, &query, &pricing)).await
+}
+
 #[tauri::command]
 pub async fn get_pricing(state: State<'_, AppState>) -> Result<PricingTable, String> {
     Ok(state.pricing.read().clone())

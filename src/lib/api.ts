@@ -24,7 +24,9 @@ import type {
   Settings,
   ShortcutStatus,
   SidebarState,
+  TokenTotals,
   UpdateStatus,
+  WindowUsageQuery,
 } from './types';
 import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionListQuery, SessionListResult } from './session-types';
 import type { SettingsPatch } from './settings-writer';
@@ -69,6 +71,7 @@ export const getSessionEvaluations = (provider: string, sessionId: string) => in
 export const saveEvaluationReview = (id: string, requirements: RequirementAssessment[]) => invoke<EvaluationReport>('save_evaluation_review', { id, requirements });
 export const clearSessionAnalysis = (provider: string, sessionId: string) => invoke<void>('clear_session_analysis', { provider, sessionId });
 export const getQuotaHistory = (query: QuotaHistoryQuery) => invoke<QuotaSample[]>('get_quota_history', { query });
+export const getWindowUsage = (query: WindowUsageQuery) => invoke<TokenTotals[]>('get_window_usage', { query });
 export const getPricing = () => invoke<PricingTable>('get_pricing');
 export const setPricing = (table: PricingTable) => invoke<PricingTable>('set_pricing', { table });
 /** Refreshes the configured source, or the official project source when pricingUrl is empty. */

@@ -22,6 +22,7 @@
   import { onDestroy } from 'svelte';
   import { cssVar, HEAT_ACCENT } from '$lib/colors';
   import { formatCost } from '$lib/format';
+  import { daysInMonthOf, projectToMonthEnd } from '$lib/subscription';
   import { intlLocale, t } from '$lib/i18n/i18n.svelte';
 
   Chart.register(LineController, LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend);
@@ -29,13 +30,16 @@
   interface Props {
     /** cumulative spend per elapsed local day of the current month */
     series: Array<{ date: string; cumulativeUsd: number }>;
+    /** monthly budget; 0 = no budget line */
     budgetUsd: number;
+    /** summed monthly subscription price; 0 = no subscription line (and no month-end projection) */
+    subscriptionUsd?: number;
     /** changes whenever the palette changes, forcing a rebuild */
     themeKey: string;
     height?: number;
   }
 
-  let { series, budgetUsd, themeKey, height = 200 }: Props = $props();
+  let { series, budgetUsd, subscriptionUsd = 0, themeKey, height = 200 }: Props = $props();
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let chart: Chart<'line', (number | null)[], string> | null = null;
@@ -49,15 +53,21 @@
     const strong = cssVar('--text', '#f5f5f7');
     const accent = HEAT_ACCENT[themeKey === 'light' ? 'light' : 'dark'];
     const day = new Intl.DateTimeFormat(intlLocale(), { month: 'numeric', day: 'numeric' });
+    // with a subscription the axis runs to month end and the current pace is projected onto it
+    const first = new Date(`${series[0].date}T00:00:00`);
+    const days = subscriptionUsd > 0 ? Math.max(series.length, daysInMonthOf(first.getTime())) : series.length;
+    const labels = Array.from({ length: days }, (_, i) => day.format(new Date(first.getFullYear(), first.getMonth(), first.getDate() + i)));
+    const pad = <T,>(values: T[]): (T | null)[] => [...values, ...Array.from({ length: days - values.length }, () => null)];
+    const sub = cssVar('--warn', '#f5c542');
 
     const configuration: ChartConfiguration<'line', (number | null)[], string> = {
       type: 'line',
       data: {
-        labels: series.map((point) => day.format(new Date(`${point.date}T00:00:00`))),
+        labels,
         datasets: [
           {
             label: t('history.budget.spent'),
-            data: series.map((point) => point.cumulativeUsd),
+            data: pad(series.map((point) => point.cumulativeUsd)),
             borderColor: accent,
             backgroundColor: accent,
             borderWidth: 2,
@@ -65,16 +75,35 @@
             pointHoverRadius: 4,
             tension: 0.15,
           },
-          {
+          ...(budgetUsd > 0 ? [{
             label: t('history.budget.line'),
-            data: series.map(() => budgetUsd),
+            data: labels.map(() => budgetUsd),
             borderColor: text,
             backgroundColor: text,
             borderWidth: 1.5,
             borderDash: [5, 4],
             pointRadius: 0,
             pointHoverRadius: 0,
-          },
+          }] : []),
+          ...(subscriptionUsd > 0 ? [{
+            label: t('history.roi.line'),
+            data: labels.map(() => subscriptionUsd),
+            borderColor: sub,
+            backgroundColor: sub,
+            borderWidth: 1.5,
+            borderDash: [2, 3],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+          }, {
+            label: t('history.roi.projectedLine'),
+            data: projectToMonthEnd(series, days),
+            borderColor: accent,
+            backgroundColor: accent,
+            borderWidth: 1.5,
+            borderDash: [6, 4],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+          }] : []),
         ],
       },
       options: {
@@ -91,7 +120,7 @@
           y: {
             beginAtZero: true,
             // the budget must stay on screen even on a quiet month
-            suggestedMax: budgetUsd * 1.05,
+            suggestedMax: Math.max(budgetUsd, subscriptionUsd) * 1.05,
             grid: { color: grid },
             border: { display: false },
             ticks: { color: text, font: { size: 11 }, callback: (v) => formatCost(Number(v)) },
@@ -110,6 +139,7 @@
             },
           },
           tooltip: {
+            filter: (item) => item.parsed.y != null,
             backgroundColor: surface,
             titleColor: strong,
             bodyColor: strong,
@@ -117,7 +147,7 @@
             borderWidth: 1,
             padding: 10,
             callbacks: {
-              label: (ctx) => ` ${ctx.dataset.label}: ${formatCost(ctx.parsed.y)}`,
+              label: (ctx) => ctx.parsed.y == null ? '' : ` ${ctx.dataset.label}: ${formatCost(ctx.parsed.y)}`,
             },
           },
         },
@@ -131,7 +161,7 @@
   }
 
   $effect(() => {
-    void [series, budgetUsd, themeKey, canvas];
+    void [series, budgetUsd, subscriptionUsd, themeKey, canvas];
     render();
   });
 

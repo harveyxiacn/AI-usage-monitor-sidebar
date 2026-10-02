@@ -114,6 +114,7 @@ pub fn run() {
             commands::get_usage_calendar,
             commands::get_usage_sessions,
             commands::get_quota_history,
+            commands::get_window_usage,
             commands::get_pricing,
             commands::set_pricing,
             commands::refresh_pricing,

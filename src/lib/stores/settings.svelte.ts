@@ -84,6 +84,7 @@ export const defaultSettings: Settings = {
   ingestEnabled: true,
   pricingUrl: '',
   monthlyBudgetUsd: 0,
+  subscriptionUsd: { claude: 0, codex: 0 },
   autostart: false,
   autoUpdateCheck: true,
   autoPricingCheck: true,
