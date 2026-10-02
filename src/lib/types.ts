@@ -200,6 +200,15 @@ export interface SizeSettings {
   labelSize: number;
 }
 
+export type WebhookKind = 'generic' | 'ntfy' | 'slack';
+
+export interface WebhookSettings {
+  enabled: boolean;
+  /** https:// only; may hold a secret — never echo it into logs or UI text */
+  url: string;
+  kind: WebhookKind;
+}
+
 export interface Settings {
   version: number;
   language: Language;
@@ -268,6 +277,20 @@ export interface Settings {
   notifications: boolean;
   /** warn when a window is on pace to run out before it resets */
   forecastNotifications: boolean;
+  /** warn when a window crosses `thresholds.warn` / `thresholds.critical` (needs `notifications`) */
+  thresholdNotifications: boolean;
+  /** warn when the month-to-date estimated cost reaches 80 % / 100 % of `monthlyBudgetUsd` (needs `notifications`) */
+  budgetNotifications: boolean;
+  /** Monday ~09:00 local: one notification summarising last week (needs `notifications`) */
+  weeklySummary: boolean;
+  /** optional second notification channel */
+  webhook: WebhookSettings;
+  /** update version the user chose to skip; '' = none */
+  skippedVersion: string;
+  /** app version whose release notes were last shown ("What's new"); '' = none */
+  lastSeenVersion: string;
+  /** the first-run wizard was completed or skipped */
+  onboarded: boolean;
   /** Focus / do-not-disturb: native notifications are off until this epoch ms (0 = off, -1 = until turned off). */
   focusUntil: number;
   /** While focus mode is on, also hide the sidebar. */
@@ -563,6 +586,10 @@ export interface UpdateStatus {
   error: string | null;
   /** RFC 3339 UTC of the last completed check */
   checkedAt: string | null;
+  /** bytes downloaded so far while `installing` */
+  downloaded: number;
+  /** total download size while `installing`, null when unknown */
+  total: number | null;
 }
 
 /** What became of one configured global shortcut. */
@@ -578,6 +605,34 @@ export interface ShortcutRegistrations {
   toggleSidebar: ShortcutRegistration;
   openDashboard: ShortcutRegistration;
 }
+
+/** Last completed Monday–Sunday, from `get_weekly_summary`. */
+export interface WeeklySummary {
+  /** local YYYY-MM-DD of the Monday */
+  weekStart: string;
+  /** local YYYY-MM-DD of the Sunday */
+  weekEnd: string;
+  totalTokens: number;
+  requests: number;
+  /** estimate, never billing */
+  estimatedCostUsd: number | null;
+  /** local YYYY-MM-DD of the day with the most tokens */
+  busiestDay: string | null;
+  busiestDayTokens: number;
+  /** quota windows that reached 100 % */
+  limitsHit: number;
+}
+
+/** From `get_provider_setup`: existence checks only, no credential is read. */
+export interface ProviderSetup {
+  provider: ProviderId;
+  configDir: string;
+  configDirFound: boolean;
+  credentialsFound: boolean;
+  /** shell commands that sign in, in order */
+  loginSteps: string[];
+}
+
 
 /** Why a configured global shortcut is not active; null = fine (or disabled). */
 export interface ShortcutStatus {

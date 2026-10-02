@@ -368,6 +368,63 @@ impl Default for SidebarItems {
     }
 }
 
+/// Wire format of the webhook channel.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookKind {
+    /// JSON `{title, body, provider, window, level, ts}`.
+    #[default]
+    Generic,
+    /// Plain-text body, `Title` header (ntfy.sh and compatible servers).
+    Ntfy,
+    /// Slack-compatible incoming webhook, `{"text": …}`.
+    Slack,
+}
+
+/// Second notification channel next to the native one. The URL may carry a
+/// secret (a Slack token, an ntfy topic) and is therefore never logged.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebhookSettings {
+    pub enabled: bool,
+    /// `https://` only; empty = not configured.
+    pub url: String,
+    pub kind: WebhookKind,
+}
+
+/// Last week's usage, for the weekly-summary notification and Overview card.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklySummary {
+    /// Local `YYYY-MM-DD` of the Monday the summarised week started on.
+    pub week_start: String,
+    /// Local `YYYY-MM-DD` of the Sunday it ended on.
+    pub week_end: String,
+    pub total_tokens: i64,
+    pub requests: i64,
+    /// Sum of priced requests (an estimate, never billing).
+    pub estimated_cost_usd: Option<f64>,
+    /// Local `YYYY-MM-DD` of the day with the most tokens, if any activity.
+    pub busiest_day: Option<String>,
+    pub busiest_day_tokens: i64,
+    /// Quota windows (per provider/kind/scope/cycle) that reached 100 %.
+    pub limits_hit: u32,
+}
+
+/// Where a provider's CLI stands on this machine; no credential is read.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSetup {
+    pub provider: String,
+    /// The CLI's config directory (honouring `CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
+    pub config_dir: String,
+    pub config_dir_found: bool,
+    /// A credentials file exists (existence only, contents are never read).
+    pub credentials_found: bool,
+    /// Shell commands that sign in, in order.
+    pub login_steps: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Thresholds {
@@ -508,6 +565,22 @@ pub struct Settings {
     pub notifications: bool,
     /// Warn when a window is on pace to run out before it resets.
     pub forecast_notifications: bool,
+    /// Warn when a window crosses `thresholds.warn` / `thresholds.critical`.
+    pub threshold_notifications: bool,
+    /// Warn when the month-to-date estimated cost reaches 80 % / 100 % of
+    /// `monthly_budget_usd` (needs a budget > 0).
+    pub budget_notifications: bool,
+    /// Monday ~09:00 local: one notification summarising the previous week.
+    pub weekly_summary: bool,
+    /// Optional second notification channel (see `alerts::notifier`).
+    pub webhook: WebhookSettings,
+    /// Update version the user chose to skip; the banner stays quiet for it.
+    pub skipped_version: String,
+    /// App version whose release notes were last shown ("What's new").
+    pub last_seen_version: String,
+    /// The first-run wizard was completed or skipped. Settings files that
+    /// already exist when this key is introduced count as onboarded.
+    pub onboarded: bool,
     /// Focus / do-not-disturb: native notifications are suppressed until this
     /// epoch-ms instant. `0` = off, `-1` = until the user turns it off.
     pub focus_until: i64,
@@ -594,6 +667,13 @@ impl Default for Settings {
             sizes: SizeSettings::default(),
             notifications: false,
             forecast_notifications: true,
+            threshold_notifications: true,
+            budget_notifications: true,
+            weekly_summary: false,
+            webhook: WebhookSettings::default(),
+            skipped_version: String::new(),
+            last_seen_version: String::new(),
+            onboarded: false,
             focus_until: 0,
             focus_hides_sidebar: false,
             hide_account_email: false,
@@ -911,6 +991,10 @@ pub struct UpdateStatus {
     pub error: Option<String>,
     /// RFC 3339 UTC of the last completed check.
     pub checked_at: Option<String>,
+    /// Bytes downloaded so far while `installing`.
+    pub downloaded: u64,
+    /// Total download size while `installing`, when the server says.
+    pub total: Option<u64>,
 }
 
 /// Why a configured global shortcut is not active; `None` = registered (or

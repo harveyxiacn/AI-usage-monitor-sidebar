@@ -33,10 +33,17 @@ pub fn load(config_dir: &Path) -> Settings {
             return Settings::default();
         }
     };
-    parse(&text).unwrap_or_else(|| {
+    let Some(mut settings) = parse(&text) else {
         log::warn!("{} is not valid JSON, using defaults", path.display());
-        Settings::default()
-    })
+        return Settings::default();
+    };
+    // A settings file that predates the first-run wizard belongs to someone
+    // who already uses the app: never greet them with it. Only start-up does
+    // this; a later external edit is merged like any other.
+    if lacks_onboarded_key(&text) {
+        settings.onboarded = true;
+    }
+    settings
 }
 
 /// Turn the *contents* of a settings file into usable settings, or `None`
@@ -47,7 +54,13 @@ pub fn parse(text: &str) -> Option<Settings> {
     Some(merge(&Settings::default(), &value))
 }
 
-/// Shallow merge of a JSON patch onto `base`.
+/// `true` for a valid settings object that has no `onboarded` key.
+fn lacks_onboarded_key(text: &str) -> bool {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.as_object().map(|o| !o.contains_key("onboarded")))
+        .unwrap_or(false)
+}
 ///
 /// Known setting groups merge per key, including fields inside providers.
 /// Fields that fail to deserialize are logged and skipped. The result is
@@ -64,7 +77,13 @@ pub fn merge(base: &Settings, patch: &Value) -> Settings {
         let mut candidate = current.clone();
         if matches!(
             key.as_str(),
-            "providers" | "colors" | "sizes" | "thresholds" | "sidebarItems" | "subscriptionUsd"
+            "providers"
+                | "colors"
+                | "sizes"
+                | "thresholds"
+                | "sidebarItems"
+                | "subscriptionUsd"
+                | "webhook"
         ) {
             // per-key merge so a patch can toggle one provider / one colour only
             let mut merged = match current.get(key.as_str()) {
@@ -176,6 +195,15 @@ pub fn clamp(mut s: Settings) -> Settings {
     }
     s.quota_retention_days = s.quota_retention_days.min(3650);
     s.custom_presets = clamp_presets(std::mem::take(&mut s.custom_presets));
+
+    // The webhook only ever speaks https; a half-typed or plain-http URL is
+    // kept (so the field does not blank while editing) but cannot be enabled.
+    s.webhook.url = s.webhook.url.trim().chars().take(2048).collect();
+    if s.webhook.enabled && crate::commands::pricing::validate_url(&s.webhook.url).is_err() {
+        s.webhook.enabled = false;
+    }
+    s.skipped_version = s.skipped_version.trim().chars().take(64).collect();
+    s.last_seen_version = s.last_seen_version.trim().chars().take(64).collect();
 
     let mut warn = clamp_f64(s.thresholds.warn, 1.0, 100.0, 70.0);
     let mut critical = clamp_f64(s.thresholds.critical, 1.0, 100.0, 90.0);
@@ -911,6 +939,73 @@ mod tests {
         assert!(back.auto_hide);
         assert_eq!(back.vertical_offset, -120);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn only_a_settings_file_from_before_the_wizard_counts_as_onboarded() {
+        let dir = tempdir();
+        assert!(
+            !load(&dir).onboarded,
+            "no file: a fresh install sees the wizard"
+        );
+
+        std::fs::write(settings_path(&dir), r#"{"edge":"left"}"#).unwrap();
+        assert!(
+            load(&dir).onboarded,
+            "an existing file without the key: upgraded user"
+        );
+
+        std::fs::write(settings_path(&dir), r#"{"edge":"left","onboarded":false}"#).unwrap();
+        assert!(
+            !load(&dir).onboarded,
+            "an explicit false (wizard unfinished) is kept"
+        );
+
+        std::fs::write(settings_path(&dir), "{ not json").unwrap();
+        assert!(
+            !load(&dir).onboarded,
+            "a broken file is not evidence of a user"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_webhook_merges_per_key_and_only_enables_with_an_https_url() {
+        let base = Settings::default();
+        let merged = merge(
+            &base,
+            &json!({"webhook": {"url": "  https://ntfy.sh/my-topic  ", "kind": "ntfy"}}),
+        );
+        assert_eq!(merged.webhook.url, "https://ntfy.sh/my-topic", "trimmed");
+        assert_eq!(merged.webhook.kind, crate::model::WebhookKind::Ntfy);
+        let merged = merge(&merged, &json!({"webhook": {"enabled": true}}));
+        assert!(merged.webhook.enabled);
+        assert_eq!(
+            merged.webhook.kind,
+            crate::model::WebhookKind::Ntfy,
+            "kind survives"
+        );
+
+        let plain = merge(&merged, &json!({"webhook": {"url": "http://ntfy.sh/t"}}));
+        assert!(!plain.webhook.enabled, "plain http can never be enabled");
+        assert_eq!(
+            plain.webhook.url, "http://ntfy.sh/t",
+            "but the text is kept for editing"
+        );
+        let bad_kind = merge(&merged, &json!({"webhook": {"kind": "carrier-pigeon"}}));
+        assert_eq!(
+            bad_kind.webhook.kind,
+            crate::model::WebhookKind::Ntfy,
+            "invalid value ignored"
+        );
+    }
+
+    #[test]
+    fn the_new_notification_settings_default_to_quiet_and_on_by_type() {
+        let s = Settings::default();
+        assert!(!s.notifications && !s.weekly_summary && !s.webhook.enabled);
+        assert!(s.threshold_notifications && s.budget_notifications && s.forecast_notifications);
+        assert!(!s.onboarded && s.skipped_version.is_empty() && s.last_seen_version.is_empty());
     }
 
     #[test]

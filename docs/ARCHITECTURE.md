@@ -310,6 +310,23 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `import_settings` | – | `ImportResult | null` (native open dialog, ≤ 1 MiB; goes through the normal `update_settings` merge so unknown/invalid values are ignored; `focusUntil` and `version` are never imported; `ignored` lists keys that were unknown, invalid or clamped) |
 | `get_settings_history` | – | `SettingsVersion[]` — the undo ring, newest first (see below) |
 | `restore_settings_version` | `index: number` | `Settings` — makes ring entry `index` live; the version it replaces is pushed into the ring, so a restore can be undone |
+
+### Alerts and onboarding commands — `src-tauri/src/alerts/`, `onboarding.rs`
+| command | args | returns |
+|---|---|---|
+| `send_test_notification` | `channel: "native" \| "webhook"` | `()`; the error string is user-facing and never contains the webhook URL. Ignores the master switch and focus mode |
+| `get_notification_permission` | – | `"granted" \| "denied" \| "prompt" \| "unknown"` (desktop platforms without a permission model say `granted`) |
+| `get_weekly_summary` | – | `WeeklySummary` (last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit) |
+| `get_provider_setup` | – | `ProviderSetup[]` (Claude, Codex: config directory and credentials-file *existence* only; contents are never read) |
+
+Alerts (`alerts/`): `on_snapshot` (called by the scheduler after each refresh)
+raises threshold-crossing and forecast alerts; a slow timer started from
+`scheduler::start` raises budget (80 % / 100 % of `monthlyBudgetUsd`, once per
+month) and weekly-summary alerts. Everything goes through
+`alerts::notifier::deliver`: the `notifications` master switch, then focus mode
+(which silences every channel), then the native notification and the optional
+webhook. Once-only bookkeeping for budget and summary lives in
+`alerts-state.json` in the data directory.
 | `export_usage_csv` | `csv: string, suggestedName: string` | `string \| null` (native save dialog, UTF-8 CSV path on success; null on cancel) |
 | `backup_data` | `dest?: string` | `string | null` (creates `ai-usage-sidebar-backup-<timestamp>/` with `settings.json`, a `VACUUM INTO` copy of `usage.db` and `backup.json` inside `dest`, or inside a folder picked with a native dialog; returns the new folder, null on cancel). Backups contain local paths and session metadata |
 | `restore_data` | `src?: string` | `BackupInfo | null` (validates the backup: read-only open, `quick_check`, `meta.schema_version` not newer than the app; stages it in `<data dir>/restore-pending/`. `backup::apply_pending` swaps it in at the next start before the database opens, keeping the replaced files in `pre-restore/`) |
@@ -349,7 +366,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `popover-target` | `PopoverRequest` | platform, tells the popover window what to render |
 | `sidebar-state` | `SidebarState` | platform |
 | `dashboard-navigate` | `{ tab: string }` | platform |
-| `update-status` | `UpdateStatus` | updater, after every state change |
+| `update-status` | `UpdateStatus` | updater, after every state change and (throttled to ~4/s) while an install downloads (`downloaded` / `total` bytes) |
 | `price-update-status` | `PriceUpdateStatus` | pricing backend, after a source check, apply or status change |
 
 Each window's snapshot store also reconciles through `get_snapshot` every
@@ -389,7 +406,11 @@ shown (`autoHide=false`), `ringMode="concentric"`, every `sidebarItems` member o
 autostart off, thresholds warn 70 / critical 90, `notifications=false` with
 `forecastNotifications=true` (the predictive warning is on by default but only
 fires while `notifications` is on, at most once per window per reset period and
-only for a `medium`/`high` confidence forecast).
+only for a `medium`/`high` confidence forecast), `thresholdNotifications=true`
+and `budgetNotifications=true` (both also gated by `notifications`),
+`weeklySummary=false`, `webhook` off, `onboarded=false` (a settings file that
+already exists without the key counts as onboarded).
+
 
 ### Undo ring (`settings.history.json`)
 

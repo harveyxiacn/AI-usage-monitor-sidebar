@@ -8,6 +8,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import OverviewTab from '$lib/components/dashboard/OverviewTab.svelte';
+  import OnboardingWizard from '$lib/components/dashboard/OnboardingWizard.svelte';
+  import WhatsNew from '$lib/components/dashboard/WhatsNew.svelte';
   import { st } from '$lib/session-labels.svelte';
   import { isTauri, onDashboardNavigate, type Unlisten } from '$lib/api';
   import { DASHBOARD_TAB_EVENT } from '$lib/dashboard-nav';
@@ -16,6 +18,8 @@
   import { snapshot } from '$lib/stores/snapshot.svelte';
   import { applyTheme, markWindow } from '$lib/stores/theme.svelte';
   import { update } from '$lib/stores/update.svelte';
+  import { shouldShowWizard } from '$lib/onboarding';
+  import { downloadPercent, formatBytes, updateBannerVisible } from '$lib/update-banner';
   import { pricingUpdate } from '$lib/stores/pricing-update.svelte';
   import type { DashboardTab } from '$lib/types';
 
@@ -98,11 +102,25 @@
     </nav>
   </header>
 
-  {#if update.available && !updateDismissed}
+  {#if updateBannerVisible(update.available, settings.value.skippedVersion, updateDismissed)}
     <aside class="update-bar">
-      <span>{t('update.banner', { version: update.available })}</span>
-      <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.programUpdates')}</button>
-      <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
+      {#if update.value?.installing}
+        {@const percent = downloadPercent(update.value.downloaded, update.value.total)}
+        <span role="status">
+          {#if percent === null}
+            {t('update.downloadingUnknown', { done: formatBytes(update.value.downloaded) })}
+          {:else}
+            {t('update.downloadingSize', { percent: percent ?? 0, done: formatBytes(update.value.downloaded), total: formatBytes(update.value.total ?? 0) })}
+          {/if}
+
+        </span>
+        <progress max="100" value={percent ?? undefined} aria-label={t('update.installing')}></progress>
+      {:else}
+        <span>{t('update.banner', { version: update.available ?? '' })}</span>
+        <button class="link" onclick={() => (tab = 'settings')}>{t('settings.about.programUpdates')}</button>
+        <button class="link" onclick={() => void settings.patch({ skippedVersion: update.available ?? '' })}>{t('update.skip')}</button>
+        <button class="link" onclick={() => (updateDismissed = true)}>{t('update.dismiss')}</button>
+      {/if}
     </aside>
   {/if}
 
@@ -115,6 +133,7 @@
   {/if}
 
   <main>
+    <WhatsNew />
     {#if tab === 'overview'}
       <OverviewTab />
     {:else if tab === 'history' && HistoryTab}
@@ -129,6 +148,10 @@
       <p role="status">{t('common.loading')}</p>
     {/if}
   </main>
+
+  {#if shouldShowWizard(settings.loaded, settings.value.onboarded)}
+    <OnboardingWizard />
+  {/if}
 </div>
 
 <style>
@@ -215,6 +238,13 @@
     color: var(--focus);
     text-decoration: underline;
   }
+
+  .update-bar progress {
+    width: 10rem;
+    max-width: 100%;
+    accent-color: var(--focus);
+  }
+
 
   main {
     flex: 1 1 auto;

@@ -18,6 +18,7 @@ import type {
   PopoverRequest,
   PriceUpdateStatus,
   PricingTable,
+  ProviderSetup,
   ProviderId,
   ProviderInfo,
   QuotaHistoryQuery,
@@ -31,6 +32,7 @@ import type {
   SidebarState,
   TokenTotals,
   UpdateStatus,
+  WeeklySummary,
   WindowUsageQuery,
 } from './types';
 import type { AnalysisSettings, EvaluationPreview, EvaluationReport, RequirementAssessment, SessionDetail, SessionInsights, SessionListQuery, SessionListResult } from './session-types';
@@ -135,6 +137,17 @@ export async function importSettings(): Promise<ImportResult | null> {
 export const getSettingsHistory = () => invoke<SettingsVersion[]>('get_settings_history');
 /** Make version `index` (0 = newest) the live settings; the replaced one is kept for undoing. */
 export const restoreSettingsVersion = (index: number) => invoke<Settings>('restore_settings_version', { index });
+
+// ---- notifications / onboarding ----
+/** `channel` is `'native'` or `'webhook'`; a rejected promise carries the user-facing reason. */
+export const sendTestNotification = (channel: 'native' | 'webhook') => invoke<void>('send_test_notification', { channel });
+/** OS permission for native notifications; desktops without a permission model say `granted`. */
+export const getNotificationPermission = () => invoke<'granted' | 'denied' | 'prompt' | 'unknown'>('get_notification_permission');
+/** Last completed Monday–Sunday: tokens, estimated cost, busiest day, limits hit. */
+export const getWeeklySummary = () => invoke<WeeklySummary>('get_weekly_summary');
+/** Where each provider's CLI stands (existence checks only, no credential is read). */
+export const getProviderSetup = () => invoke<ProviderSetup[]>('get_provider_setup');
+
 
 /** Native save dialog on desktop; a normal file download in browser previews. */
 export async function exportUsageCsv(csv: string, suggestedName: string): Promise<string | null> {

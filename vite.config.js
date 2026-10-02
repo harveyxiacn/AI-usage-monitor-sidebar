@@ -24,6 +24,9 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: true,
     host: host || "127.0.0.1",
+    // The dashboard bundles docs/releases/v*.md as "What's new" (src/lib/
+    // release-notes.ts); the dev server only serves what is on this list.
+    fs: { allow: ["docs/releases"] },
     hmr: host
       ? {
           protocol: "ws",

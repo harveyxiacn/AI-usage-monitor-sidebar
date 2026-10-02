@@ -1,17 +1,17 @@
 <!--
   Settings → Notifications: everything that decides when the app speaks up —
-  the two notification switches, the severity thresholds and focus mode.
+  the notification channels and thresholds (NotificationsPanel) and focus mode.
   Kept together on purpose so it can be replaced as one unit. [FRONTEND]
 -->
 <script lang="ts">
   import Field from '../Field.svelte';
   import Toggle from '../Toggle.svelte';
+  import NotificationsPanel from './NotificationsPanel.svelte';
   import SettingsCard from './SettingsCard.svelte';
   import { t } from '$lib/i18n/i18n.svelte';
   import { settings } from '$lib/stores/settings.svelte';
 
   const s = $derived(settings.value);
-  const num = (e: Event) => Number((e.currentTarget as HTMLInputElement).value);
 
   // Focus mode (do not disturb). The backend expires a timed focus by itself;
   // the dashboard only reads the deadline and writes a new one.
@@ -43,22 +43,7 @@
 </script>
 
 <SettingsCard id="notifications" title={t('settings.card.notifications')} reset="notifications">
-  <Field label={t('settings.notifications')}>
-    <Toggle
-      checked={s.notifications}
-      label={t('settings.notifications')}
-      onchange={(v) => void settings.patch({ notifications: v })}
-    />
-  </Field>
-
-  <Field label={t('settings.forecastNotifications')}>
-    <Toggle
-      checked={s.forecastNotifications}
-      disabled={!s.notifications}
-      label={t('settings.forecastNotifications')}
-      onchange={(v) => void settings.patch({ forecastNotifications: v })}
-    />
-  </Field>
+  <NotificationsPanel />
 
   <Field
     label={t('settings.focus')}
@@ -92,15 +77,4 @@
     />
   </Field>
 
-  <Field label={t('settings.warnThreshold')}>
-    <input class="field num" type="number" min="1" max={s.thresholds.critical - 1} step="1"
-      value={s.thresholds.warn} aria-label={t('settings.warnThreshold')}
-      onchange={(e) => void settings.patch({ thresholds: { warn: Math.max(1, Math.min(s.thresholds.critical - 1, Math.round(num(e)))) } })} />
-  </Field>
-
-  <Field label={t('settings.criticalThreshold')}>
-    <input class="field num" type="number" min={s.thresholds.warn + 1} max="100" step="1"
-      value={s.thresholds.critical} aria-label={t('settings.criticalThreshold')}
-      onchange={(e) => void settings.patch({ thresholds: { critical: Math.min(100, Math.max(s.thresholds.warn + 1, Math.round(num(e)))) } })} />
-  </Field>
 </SettingsCard>

@@ -33,19 +33,19 @@ export const CARD_KEYS: Record<CardId, readonly Key[]> = {
   sizeColour: ['colors', 'sizes'],
   position: ['edge', 'verticalAlign', 'verticalOffset', 'monitor', 'alwaysOnTop'],
   behaviour: ['autoHide', 'autoHideDelayMs', 'popoverTimeoutSec', 'collapsedWidth', 'refreshIntervalSec', 'adaptiveRefresh', 'autostart'],
-  notifications: ['notifications', 'forecastNotifications', 'thresholds', 'focusUntil', 'focusHidesSidebar'],
+  notifications: ['notifications', 'forecastNotifications', 'thresholdNotifications', 'budgetNotifications', 'weeklySummary', 'webhook', 'thresholds', 'focusUntil', 'focusHidesSidebar'],
   privacy: ['hideAccountEmail'],
   shortcuts: ['shortcutToggleSidebar', 'shortcutOpenDashboard'],
   providers: ['providers'],
   data: ['ingestEnabled', 'monthlyBudgetUsd', 'subscriptionUsd', 'quotaRetentionDays'],
-  updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl'],
+  updates: ['autoUpdateCheck', 'autoPricingCheck', 'pricingUrl', 'skippedVersion'],
   integrations: ['exportSnapshot', 'pollingPaused'],
 };
 
 export const CARD_IDS = Object.keys(CARD_KEYS) as CardId[];
 
-/** Keys no card resets: schema version, the deprecated mirrors, the user's presets. */
-export const UNRESET_KEYS: readonly Key[] = ['version', 'showScopedRing', 'showPercentLabel', 'customPresets'];
+/** Keys no card resets: schema version, the deprecated mirrors, the user's presets, first-run bookkeeping. */
+export const UNRESET_KEYS: readonly Key[] = ['version', 'showScopedRing', 'showPercentLabel', 'customPresets', 'lastSeenVersion', 'onboarded'];
 
 /** Patch that sets each of `keys` to its default (nested groups in full). */
 export function defaultsPatch(keys: readonly Key[], defaults: Settings): SettingsPatch {

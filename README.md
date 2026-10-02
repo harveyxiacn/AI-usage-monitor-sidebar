@@ -59,7 +59,9 @@ quota is left, and when does it reset?*
 | Cost estimate | Optional API-equivalent price estimate, clearly labelled as a comparison indicator |
 | Monthly budget | `monthlyBudgetUsd` draws the month-to-date *estimate* against your budget, with the percentage used and the pace. Estimates only — subscriptions do not bill per token |
 | Autostart | Optional login item (`--hidden`) |
-| Notifications | Optional warning when a window crosses your editable threshold |
+| Notifications | Optional, off by default: a warning when a window crosses your editable warning / critical level (once per window and cycle), a heads-up at 80 % and 100 % of your monthly budget estimate, a Monday summary of last week, and an optional webhook (generic JSON, ntfy or Slack; https only). Focus mode silences every channel |
+| Getting started | A first-run wizard (language, theme, screen edge, providers), a getting-started card while no provider is signed in, "What's new" after an update, and "Skip this version" on the update banner |
+
 | Usage forecast | "Runs out in ~40 min" / "On pace for 82 % at reset" from the recorded quota samples, a tick on the ring where the projection lands, and an optional notification when a window is on pace to run out early |
 | Screen-share safe | `hideAccountEmail` masks account addresses as `h•••@g•••.com` wherever they appear |
 

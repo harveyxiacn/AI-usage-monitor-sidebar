@@ -13,7 +13,11 @@ import { mergeSettings } from '../src/lib/settings-writer';
 import type { Settings } from '../src/lib/types';
 
 test('the frontend defaults are exactly what the browser preview starts from', () => {
-  expect(defaultSettings).toEqual(mockSettings);
+  // The preview plays an already-onboarded, up-to-date install, so the
+  // first-run bookkeeping is the one place it may differ from the defaults.
+  const { onboarded: _o, lastSeenVersion: _l, ...preview } = mockSettings;
+  const { onboarded: _do, lastSeenVersion: _dl, ...defaults } = defaultSettings;
+  expect(defaults).toEqual(preview);
 });
 
 test('every setting belongs to exactly one card, except the few nobody resets', () => {
