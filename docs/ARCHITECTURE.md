@@ -1077,3 +1077,52 @@ file rewrites invalidate checkpoints. A dirty-path queue handles ordinary update
 with periodic full reconciliation. Usage query results use a bounded generation
 and pricing-aware cache. Browser mock and dashboard panels load lazily; chart
 instances update in place, history tables paginate and hidden views reduce polling.
+
+## 12. Decision support (v0.7)
+
+Advice built from data the app already has. Every statement is an estimate
+that names its evidence, none claims a billing fact, and nothing is read, run
+or sent unless the user opened the view or switched the setting on. The code
+constants are authoritative; the numbers below mirror them.
+
+**Routing advice** (`src-tauri/src/advisor/routing.rs`, command
+`get_routing_advice`, optional notification `advisorNotifications`). A pure
+function over the in-memory snapshot and its forecasts.
+
+* *Candidates*: enabled, status `ok`, fetched at most 30 min ago
+  (`MAX_AGE_MS`), with an account-wide window (no `scope`) and a future reset.
+* *Source* (constrained): an account-wide window already at 100 %
+  (confidence `high`), or a forecast that runs out before its reset within
+  3 h (`SOURCE_HORIZON_MS`) at confidence `medium` or better. The least time
+  left wins.
+* *Target*: another candidate of `claude` or `codex` only (Copilot and
+  OpenRouter are never recommended), with at least 30 % remaining
+  (`MIN_TARGET_REMAINING`) in every account-wide window and no projected
+  run-out sooner than `max(2 x the source's time left, 60 min)`
+  (`TARGET_SAFE_FACTOR`, `MIN_TARGET_SAFE_MS`). The most headroom in its
+  binding window wins.
+* *Confidence* is the lower of the two sides; `low` yields no advice.
+  "For the next ~N h" is capped at 24 h (`MAX_DURATION_MS`).
+* The notification needs `notifications` and `advisorNotifications`, and fires
+  once per `from|to` pair and source reset period.
+
+**Plan advisor** (`src/lib/plan-advisor.ts`, shown in the History cost view).
+Only completed, reliable quota cycles of the account-wide windows count.
+
+| Verdict | Condition |
+|---|---|
+| insufficient | fewer than 3 weekly cycles (`MIN_WEEKLY_CYCLES`) **and** fewer than 12 five-hour cycles (`MIN_FIVE_HOUR_CYCLES`) |
+| upgrade | weekly limit reached in at least 2 cycles and at least 25 % of them, or the five-hour limit in at least 4 cycles and at least 20 % of them |
+| downgrade | no limit reached in any counted cycle, weekly median <= 40 % and peak <= 70 %, five-hour median <= 40 % and peak <= 80 % (each only when those cycles are numerous enough), a lower tier is known, and the API-equivalent monthly cost is below 2x the plan price |
+| keep | everything else |
+
+Tier ladders (Claude Pro / Max 5x / Max 20x, Codex Plus / Pro) and their prices
+are hints from the plan label, never billing data.
+
+**Commit cost** (`src-tauri/src/advisor/git.rs`, command
+`get_project_commits`, History -> Commits, setting `gitAttribution`, default
+off). Runs one read-only `git --no-pager log --no-merges -n 500` (hash,
+committer time, subject) with a 10 s timeout, only in a directory recorded in
+`usage_events.cwd` that sits inside a git repository. Tokens between two
+commits go to the later commit, reaching back at most 6 h; the rest is
+reported as unattributed. Results are cached 5 min.

@@ -79,7 +79,7 @@ quota is left, and when does it reset?*
 | History: usage | Incremental ingestion of session logs into SQLite. KPI tiles with period-over-period change, per-model and reasoning-effort mix, token composition and cache-hit trend, project ranking, per-day/-week/-month totals with drill-down and Top-N, a 26-week activity heatmap or weekday × hour punch card. Native CSV save and clipboard copy |
 | History: quota | Per-cycle peaks with warning / critical lines, limit-hit counts, forecast projection and "1 % of quota ≈ N tokens" per window |
 | History: cost | Optional API-equivalent price estimate (a comparison indicator, never an invoice), monthly budget line (`monthlyBudgetUsd`), subscription ROI (`subscriptionUsd`), and a notice when the built-in price table is older than 60 days |
-| History: plan advisor | In the cost view: from your own quota cycles (at least 3 weekly or 12 five-hour ones) it says whether a higher or lower plan would fit, with the evidence, and keeps the plan price as a hint only. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| History: plan advisor | In the cost view: from your own quota cycles (at least 3 weekly or 12 five-hour ones) it says whether a higher or lower plan would fit, with the evidence, and keeps the plan price as a hint only. Rules: [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) |
 | History: commits | Opt-in (`gitAttribution`, off by default): ties session token use to git commits by running a read-only `git log` in the project folders your sessions used, to show tokens and estimated cost per commit. Nothing is run while it is off |
 | Sessions | Named sessions, local aliases, real pagination and filters; opt-in prompts, responses, turn metrics and parent/child agents. An **Insights** view adds cost and active-time distributions, a turns-versus-cost scatter, top lists for expensive or failure-prone sessions and tool usage (metadata only). [Details](docs/SESSIONS.md) |
 | On-demand AI assessment | Editable send preview, prompt feedback, requirement evidence and efficiency notes; cached reports with separate human review. [Setup](docs/SESSIONS.md) |
@@ -550,7 +550,7 @@ MIT © Harvey Xia. See [LICENSE](LICENSE).
 | 历史：用量 | 增量解析会话日志入 SQLite。带环比的 KPI 磁贴、模型与推理强度构成、Token 构成与缓存命中率趋势、项目排行、按日/周/月统计（支持下钻与 Top-N）、26 周活跃热力图或星期×小时图。原生 CSV 保存与复制 |
 | 历史：配额 | 按配额周期的峰值图（含警告/严重阈值线）、撞限次数、预测投影，以及每个窗口“1% 配额 ≈ N token” |
 | 历史：成本 | 可选的 API 等价费用估算（仅作横向参考，不是账单）、月度预算线（`monthlyBudgetUsd`）、订阅回报（`subscriptionUsd`），内置价目表超过 60 天时会提示 |
-| 历史：套餐顾问 | 成本视图中：依据你自己的配额周期（至少 3 个周周期或 12 个 5 小时周期）判断更高或更低的套餐是否更合适，并列出依据；套餐价格仅作提示。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 历史：套餐顾问 | 成本视图中：依据你自己的配额周期（至少 3 个周周期或 12 个 5 小时周期）判断更高或更低的套餐是否更合适，并列出依据；套餐价格仅作提示。规则见 [docs/ARCHITECTURE.md §12](docs/ARCHITECTURE.md) |
 | 历史：提交 | 需手动开启（`gitAttribution`，默认关闭）：在会话用过的项目目录里只读运行 `git log`，把会话的 token 用量对应到 git 提交，显示每次提交的 token 与估算费用；关闭时不运行任何进程 |
 | 会话 | 原生名称、本地别名、后端分页与筛选；按需开启提示词、回复、轮次指标及父子 Agent 展示。**洞察**视图提供费用与活跃时长分布、轮次×费用散点、昂贵或易失败会话的排行与工具使用情况（仅用元数据）。[详情](docs/SESSIONS.md) |
 | 按需 AI 评测 | 发送前可编辑预览，评估提示词、需求证据与效率；缓存报告，区分 AI 判断与人工确认。[配置说明](docs/SESSIONS.md) |
