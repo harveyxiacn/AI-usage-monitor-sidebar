@@ -48,3 +48,22 @@ export function nextTickDelay(now: number, anchors: Array<number | null | undefi
   }
   return Math.max(250, Math.min(MINUTE, delay));
 }
+
+/**
+ * Terse, locale-free countdown for the sidebar label: "45m", "1h12", "3d4h".
+ * Empty string when the reset moment is unknown. Rounds the same way as
+ * `resetParts`, so the bar and the popover never disagree by a minute.
+ */
+export function compactReset(resetsAt: string | null | undefined, now: number): string {
+  const p = resetParts(resetsAt, now);
+  switch (p.kind) {
+    case 'unknown':
+      return '';
+    case 'min':
+      return `${p.m}m`;
+    case 'hourMin':
+      return `${p.h}h${String(p.m).padStart(2, '0')}`;
+    case 'at':
+      return `${p.d}d${p.h}h`;
+  }
+}
