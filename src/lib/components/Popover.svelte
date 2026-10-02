@@ -20,9 +20,11 @@
   import QuotaExtras from './QuotaExtras.svelte';
   import WindowRow from './WindowRow.svelte';
   import { accentFor } from '$lib/stores/rings.svelte';
+  import { sparkValues } from '$lib/quota-spark';
+  import { splitColumns } from '$lib/sidebar-visuals';
   import { formatAgo, staleHint } from '$lib/format';
   import { t, tDyn, hasKey } from '$lib/i18n/i18n.svelte';
-  import type { Edge, PercentMode, ProviderQuota, Thresholds, WindowKind } from '$lib/types';
+  import type { Edge, PercentMode, ProviderQuota, QuotaSample, QuotaWindow, Thresholds, WindowKind } from '$lib/types';
 
   interface Props {
     quota: ProviderQuota;
@@ -34,6 +36,8 @@
     /** 0..100, position of the tail tip along the bubble's docked side */
     tailPercent?: number;
     now?: number;
+    /** ~24 h of quota samples for the row sparklines; empty until loaded */
+    history?: QuotaSample[];
     /** pinned popovers get a close button (hover popovers close on their own) */
     pinned?: boolean;
     onDetails?: () => void;
@@ -48,6 +52,7 @@
     highlightKind = null,
     tailPercent = 50,
     now = Date.now(),
+    history = [],
     pinned = false,
     onDetails,
     onClose,
@@ -65,6 +70,13 @@
   const scopedWindows = $derived(quota.windows.filter((w) => w.scope != null));
 
   let showMore = $state(false);
+
+  /**
+   * Top/bottom bar: the bubble has room to spread sideways, so with three or
+   * more rows it becomes two columns (account-wide windows | the others).
+   */
+  const columns = $derived(edge === 'top' || edge === 'bottom' ? splitColumns(mainWindows, scopedWindows) : null);
+  const spark = (w: QuotaWindow) => sparkValues(history, quota.provider, w, now);
 
   const statusHint = $derived.by(() => {
     if (quota.status === 'ok') return null;
@@ -99,7 +111,7 @@
   });
 </script>
 
-<div class="root" data-edge={edge} style:--tail-y={tailOffset} style:--tail-x={tailOffset}>
+<div class="root" class:wide={columns !== null} data-edge={edge} style:--tail-y={tailOffset} style:--tail-x={tailOffset}>
   <div class="bubble surface" role="dialog" aria-label={t('popover.title', { provider: quota.displayName })}>
     <div class="sr-only" role="status" aria-live="polite">{statusAnnouncement}</div>
     <header>
@@ -115,7 +127,27 @@
       {/if}
     </header>
 
-    {#if mainWindows.length === 0}
+    {#if columns}
+      <div class="cols">
+        {#each columns as col, ci (ci)}
+          <div class="rows" class:scoped={scopedWindows.length > 0 && ci === 1}>
+            {#each col as w, i (w.kind + ':' + (w.scope ?? '') + ':' + i)}
+              <WindowRow
+                window={w}
+                accent={accentFor(quota.provider, w.scope != null ? 1 : Math.max(0, mainWindows.indexOf(w)))}
+                {thresholds}
+                {percentMode}
+                {now}
+                context="popover"
+                compact={w.scope != null}
+                spark={spark(w)}
+                highlight={highlightKind != null && w.scope == null && w.kind === highlightKind}
+              />
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {:else if mainWindows.length === 0}
       <p class="empty">{t('status.noWindows')}</p>
     {:else}
       <div class="rows">
@@ -127,13 +159,14 @@
             {percentMode}
             {now}
             context="popover"
+            spark={spark(w)}
             highlight={highlightKind != null && w.kind === highlightKind}
           />
         {/each}
       </div>
     {/if}
 
-    {#if scopedWindows.length > 0}
+    {#if scopedWindows.length > 0 && !columns}
       <button
         class="more"
         aria-expanded={showMore}
@@ -154,6 +187,7 @@
               {now}
               context="popover"
               compact
+              spark={spark(w)}
             />
           {/each}
         </div>
@@ -196,6 +230,19 @@
     width: max-content;
     max-width: 22.5rem; /* 360px @ scale 1 */
     min-width: 19rem; /* ≈ the reference bubble; keeps short labels from producing a cramped card */
+  }
+
+  /* two-column layout on a top/bottom bar */
+  .root.wide {
+    min-width: 34rem;
+    max-width: 44rem;
+  }
+
+  .cols {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 1.25rem;
+    align-items: start;
   }
 
   /* the tail gutter is on the side that faces the bar */

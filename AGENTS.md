@@ -155,6 +155,9 @@ values are ignored and numbers are clamped. Write only what the user asked for.
 | `ringMode` | `"concentric"`, `"primary"`, `"all"` | one ring per provider, or one per window |
 | `percentMode` | `"used"`, `"remaining"` | |
 | `percentPosition` | `"below"`, `"center"` | show the percentage below each ring, or in its centre in place of the provider logo; used only when `sidebarItems.percentLabel` is on |
+| `labelContent` | `"percent"`, `"reset"`, `"both"` | what the label says: the percentage, the reset countdown (`1h12`) or both (`73% · 1h12`). With `percentPosition: "center"` the centre always shows the percent and the countdown (if requested) goes below the ring. On `top`/`bottom` edges the label sits to the right of each ring and uses the spare width: `"percent"` and `"both"` both show `73% · 1h12` there, `"reset"` shows the countdown only |
+| `ringStyle` | `"ring"`, `"bar"` | `ring` = concentric rings; `bar` = compact mode, one slim progress bar per visible window with a logo dot and the label (much smaller footprint) |
+| `sidebarAnimations` | `true`, `false` | one-shot pulse when a window crosses warn/critical and a flash when it resets (never on first load; also disabled by the OS reduced-motion setting) |
 | `showPercentLabel` | `true` | deprecated alias of `sidebarItems.percentLabel` |
 | `sidebarItems` | `{"fiveHour":true,"weekly":true,"scoped":true,"other":true,"logo":true,"percentLabel":true,"moreButton":true}` | what the bar draws; hidden items are still polled and still shown in the dashboard |
 | `refreshIntervalSec` | `60` | quota polling period (Claude is never polled faster than every 120 s) |

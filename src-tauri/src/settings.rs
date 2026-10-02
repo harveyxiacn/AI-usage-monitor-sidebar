@@ -634,6 +634,39 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_visual_settings_default_validate_and_round_trip() {
+        use crate::model::{LabelContent, RingStyle};
+        let base = Settings::default();
+        assert_eq!(base.label_content, LabelContent::Percent);
+        assert_eq!(base.ring_style, RingStyle::Ring);
+        assert!(base.sidebar_animations);
+
+        let old = merge(&base, &json!({"percentMode": "remaining"}));
+        assert_eq!(old.label_content, LabelContent::Percent);
+        assert_eq!(old.ring_style, RingStyle::Ring);
+
+        let invalid = merge(
+            &base,
+            &json!({"labelContent": "nope", "ringStyle": 3, "sidebarAnimations": "x"}),
+        );
+        assert_eq!(invalid.label_content, LabelContent::Percent);
+        assert_eq!(invalid.ring_style, RingStyle::Ring);
+        assert!(invalid.sidebar_animations);
+
+        let set = merge(
+            &base,
+            &json!({"labelContent": "both", "ringStyle": "bar", "sidebarAnimations": false}),
+        );
+        assert_eq!(set.label_content, LabelContent::Both);
+        assert_eq!(set.ring_style, RingStyle::Bar);
+        assert!(!set.sidebar_animations);
+        let wire = serde_json::to_value(&set).unwrap();
+        assert_eq!(wire["labelContent"], "both");
+        assert_eq!(wire["ringStyle"], "bar");
+        assert_eq!(wire["sidebarAnimations"], false);
+    }
+
+    #[test]
     fn percent_position_defaults_for_old_files_and_round_trips_center() {
         let base = Settings::default();
         assert_eq!(base.percent_position, PercentPosition::Below);

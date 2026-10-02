@@ -396,6 +396,40 @@ the centre instead of the provider logo. Both positions follow
 `sidebarItems.percentLabel`; turning it off restores the centre logo when
 `sidebarItems.logo` is enabled. Existing settings default to `"below"`.
 
+### Sidebar visuals (labels, animations, compact mode)
+
+Pure rules live in `src/lib/sidebar-visuals.ts` (label layout, forecast arc
+geometry, collapsed-handle segments, popover column split), `src/lib/ring-events.ts`
+(snapshot diff for the animations) and `src/lib/quota-spark.ts` (24 h sparkline
+samples + a 60 s cache); each has a `tests/*.unit.ts`.
+
+- `labelContent` (`percent` | `reset` | `both`): the countdown is the terse
+  `1h12` / `45m` / `3d4h`, refreshed on the next reset-minute boundary. The
+  centre of a ring only fits the percentage, so `percentPosition="center"` keeps
+  it there and moves the countdown to the usual label slot. A top/bottom bar
+  writes the label to the right of each ring and then shows percent and
+  countdown unless `labelContent="reset"`.
+- `sidebarAnimations`: crossing into warn/critical plays one ~600 ms outward
+  pulse on that arc, a sharp drop (at least 25 points from at least 30) plays a
+  brief flash. The first snapshot and the first one after a threshold edit only
+  seed the baseline. Reduced motion hides both.
+- `ringStyle="bar"` (`MiniBar.svelte`): each provider is a logo dot plus one
+  slim bar per visible window (column on left/right edges, row on top/bottom).
+  Severity, forecast tick, the dashed forecast run and the status badge are all
+  kept and stay shape-coded. The sidebar still sizes the window by measuring the
+  painted element (`observeSize` -> `sidebar_relayout`), so no Rust change.
+- Forecast: next to the existing tick a translucent dashed arc runs from the
+  current value to the projected one (capped at 100 %). A projection of 100 %
+  adds an hourglass badge and the forecast text joins the group's aria-label.
+  Only arcs that already carry a tick (confidence above `low`) get any of it.
+- Collapsed handle: one equal segment per polled provider in that provider's
+  severity colour (all windows count, as for `barSeverity`); its title and aria
+  label name the busiest provider and its percentage.
+- Popover: each row has a 24 h used-% sparkline from `get_quota_history`,
+  fetched when the popover is shown and cached for a minute. On a top/bottom bar
+  with at least three rows the bubble is two columns (account-wide | per-model
+  limits, or the rows halved when there are no scoped windows).
+
 Rules, implemented in `src/lib/sidebar-items.ts` and unit-tested in
 `tests/sidebar-items.unit.ts`:
 * windows are filtered **before** the ring groups are built, so the same rules
