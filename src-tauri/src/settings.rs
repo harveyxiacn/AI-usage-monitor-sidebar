@@ -551,11 +551,32 @@ pub fn reload_action(
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ReloadAction::Wait;
     };
-    match parse(text) {
+    match parse(text).map(|next| keep_bookkeeping(next, text, in_memory)) {
         None => ReloadAction::Wait,
         Some(next) if next == *in_memory => ReloadAction::Ignore,
         Some(next) => ReloadAction::Apply(Box::new(next)),
     }
+}
+
+/// The app's own records, not preferences: an external edit that does not
+/// mention one (a partial file, a hand-written one, one from before the key
+/// existed) keeps the live value instead of resetting it to the default —
+/// otherwise editing `settings.json` would bring back the first-run wizard,
+/// the release notes or a skipped update.
+fn keep_bookkeeping(mut next: Settings, text: &str, live: &Settings) -> Settings {
+    let Ok(Value::Object(file)) = serde_json::from_str::<Value>(text) else {
+        return next;
+    };
+    if !file.contains_key("onboarded") {
+        next.onboarded = live.onboarded;
+    }
+    if !file.contains_key("lastSeenVersion") {
+        next.last_seen_version = live.last_seen_version.clone();
+    }
+    if !file.contains_key("skippedVersion") {
+        next.skipped_version = live.skipped_version.clone();
+    }
+    next
 }
 
 /// True when a watcher event concerns `settings.json` itself. The watch is on
@@ -1039,6 +1060,36 @@ mod tests {
         assert!(back.auto_hide);
         assert_eq!(back.vertical_offset, -120);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_external_edit_keeps_the_app_records_it_does_not_mention() {
+        let live = Settings {
+            onboarded: true,
+            last_seen_version: "0.6.0".into(),
+            skipped_version: "0.6.1".into(),
+            ..Settings::default()
+        };
+        // a partial, hand-written file: the preference applies, the records stay
+        let ReloadAction::Apply(next) = reload_action(Some(br#"{"edge":"left"}"#), None, &live)
+        else {
+            panic!("an edit must apply");
+        };
+        assert!(next.onboarded);
+        assert_eq!(next.last_seen_version, "0.6.0");
+        assert_eq!(next.skipped_version, "0.6.1");
+        assert_ne!(next.edge, live.edge, "the edited preference applies");
+        // a file that does name them still wins
+        let ReloadAction::Apply(next) = reload_action(
+            Some(br#"{"onboarded":false,"lastSeenVersion":"","skippedVersion":""}"#),
+            None,
+            &live,
+        ) else {
+            panic!("an edit must apply");
+        };
+        assert!(
+            !next.onboarded && next.last_seen_version.is_empty() && next.skipped_version.is_empty()
+        );
     }
 
     #[test]
