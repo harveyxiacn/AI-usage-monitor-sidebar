@@ -112,6 +112,44 @@ pub fn window_samples(
     Ok(out)
 }
 
+/// One window whose samples `window_samples_many` should load.
+pub struct WindowQuery<'a> {
+    pub provider: &'a str,
+    pub kind: WindowKind,
+    pub scope: Option<&'a str>,
+    pub since: i64,
+}
+
+/// `window_samples` for several windows under one lock acquisition and one
+/// prepared statement; the result has one entry per query, in order.
+pub fn window_samples_many(
+    db: &Db,
+    queries: &[WindowQuery<'_>],
+) -> Result<Vec<Vec<crate::commands::forecast::Sample>>> {
+    let conn = db.lock();
+    let mut stmt = conn.prepare_cached(
+        "SELECT ts, used_percent, resets_at FROM quota_samples
+         WHERE provider = ?1 AND kind = ?2 AND ((scope IS NULL AND ?3 IS NULL) OR scope = ?3)
+           AND ts >= ?4
+         ORDER BY ts, id",
+    )?;
+    let mut out = Vec::with_capacity(queries.len());
+    for q in queries {
+        let rows = stmt.query_map(
+            rusqlite::params![q.provider, q.kind.as_str(), q.scope, q.since],
+            |r| {
+                Ok(crate::commands::forecast::Sample {
+                    ts_ms: r.get(0)?,
+                    used_percent: r.get(1)?,
+                    resets_at_ms: r.get(2)?,
+                })
+            },
+        )?;
+        out.push(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    Ok(out)
+}
+
 /// Read stored samples in `[from, to)`, oldest first.
 pub fn query_quota_history(db: &Db, q: &QuotaHistoryQuery) -> Result<Vec<QuotaSample>> {
     let (from, to) = super::usage::query_range(&q.from, &q.to)?;
@@ -584,5 +622,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn batched_window_samples_match_the_single_window_query() {
+        let db = Db::open_in_memory().unwrap();
+        let now = 1_789_430_400_000i64;
+        raw_sample(&db, "claude", None, 10.0, now - 1_000);
+        raw_sample(&db, "claude", Some("Fable"), 20.0, now - 500);
+        raw_sample(&db, "codex", None, 30.0, now - 100);
+        let queries = [
+            WindowQuery {
+                provider: "claude",
+                kind: WindowKind::FiveHour,
+                scope: None,
+                since: 0,
+            },
+            WindowQuery {
+                provider: "claude",
+                kind: WindowKind::FiveHour,
+                scope: Some("Fable"),
+                since: 0,
+            },
+            WindowQuery {
+                provider: "codex",
+                kind: WindowKind::FiveHour,
+                scope: None,
+                since: now,
+            },
+        ];
+        let many = window_samples_many(&db, &queries).unwrap();
+        assert_eq!(many.len(), 3);
+        assert_eq!(many[0].len(), 1);
+        assert_eq!(many[0][0].used_percent, 10.0);
+        assert_eq!(many[1][0].used_percent, 20.0);
+        assert!(many[2].is_empty(), "`since` still filters");
     }
 }
