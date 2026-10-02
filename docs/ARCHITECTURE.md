@@ -293,6 +293,7 @@ JS side (Tauri converts to snake_case Rust parameters).
 | `get_usage_calendar` | `query: CalendarQuery` | `CalendarResult` (local-day calendar **and** weekday × hour punch card from one scan) |
 | `get_usage_sessions` | `query: SessionQuery` | `SessionsResult` (top `limit` sessions by tokens + the full-range count/totals) |
 | `get_quota_history` | `query: QuotaHistoryQuery` | `QuotaSample[]` |
+| `get_window_usage` | `query: WindowUsageQuery` (`provider`, `windows: [{from, to}]`, max 200) | `TokenTotals[]`, one per window, `[from, to)`; used to relate quota cycles to tokens |
 | `get_pricing` | – | `PricingTable` |
 | `set_pricing` | `table: PricingTable` | `PricingTable` |
 | `get_price_update_status` | – | `PriceUpdateStatus` (cached status; never touches the network) |
@@ -430,6 +431,20 @@ line on the History tab) complete the defaults, together with
 budget. When it is set and the History tab shows cost, the tab draws the
 month-to-date cumulative estimate against it and states the percentage used
 and the linear pace. It never affects quotas, notifications or billing.
+
+`subscriptionUsd` (map provider → USD per month, each 0 – 10 000, 0 = unknown)
+is what the user pays for a subscription. The History tab compares this month's
+API-equivalent *estimate* with it ("N× your subscription"), projects the month
+end at the current pace and draws it on the budget chart. Plan-based prices in
+Settings are hints only. `subscriptionUsd` is merged per key like `providers`.
+
+Quota cycles (History → quota panel): samples of a window are split by
+`resets_at` (deadlines closer than 5 minutes are one cycle); a cycle starts at
+`resets_at` minus the window length (5 h / 7 d by kind). The tokens (and
+estimated cost) of a cycle come from `get_window_usage` over that interval, and
+"tokens per 1 %" is the median over the last 8 completed cycles whose samples
+reach the end of the cycle and whose peak is at least 5 %. Only local session
+logs are counted, so the figure is an approximation.
 
 `cyberAccent` (`neon` | `matrix` | `amber` | `ice` | `synthwave`) picks the
 neon pair the `cyber` surface is painted with. `applyTheme` stamps it on
