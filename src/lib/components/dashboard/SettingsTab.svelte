@@ -24,6 +24,7 @@
   import { formatAgo } from '$lib/format';
   import { t, tDyn } from '$lib/i18n/i18n.svelte';
   import { providerDisplayName } from '$lib/providers';
+  import { planPriceHint } from '$lib/subscription';
   import { shortcutProblem } from '$lib/shortcuts';
   import { defaultSidebarItems, settings } from '$lib/stores/settings.svelte';
   import { snapshot } from '$lib/stores/snapshot.svelte';
@@ -687,6 +688,25 @@
         onchange={(e) => void settings.patch({ monthlyBudgetUsd: Math.min(1_000_000, Math.max(0, e.currentTarget.valueAsNumber || 0)) })}
       />
     </Field>
+
+    {#each ['claude', 'codex'] as id (id)}
+      {@const quota = snapshot.value?.providers.find((p) => p.provider === id)}
+      {@const suggestion = planPriceHint(id, quota?.planLabel ?? quota?.plan)}
+      <Field
+        label={t('settings.subscriptionUsd', { provider: providerDisplayName(id) })}
+        hint={t('settings.subscriptionHint') + (suggestion ? ' ' + t('settings.subscriptionSuggest', { price: '$' + suggestion }) : '')}
+      >
+        <input
+          class="field num"
+          type="number"
+          min="0"
+          max="10000"
+          step="1"
+          value={s.subscriptionUsd[id] ?? 0}
+          onchange={(e) => void settings.patch({ subscriptionUsd: { [id]: Math.min(10_000, Math.max(0, e.currentTarget.valueAsNumber || 0)) } })}
+        />
+      </Field>
+    {/each}
 
     <Field label={t('history.rescan')}>
       <button class="btn" disabled={rescanning} onclick={() => void rescan()}>
